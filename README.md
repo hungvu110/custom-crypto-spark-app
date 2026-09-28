@@ -252,20 +252,22 @@ Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncr
 đọc KV v2 (`GET /v1/<kv-mount>/data/<VAULT_KV_PATH>/<tên bảng>`, lấy field `VAULT_KEY_FIELD`), rồi thu
 hồi token (`POST /v1/auth/token/revoke-self`). Lỗi không bao giờ in JWT, token hay giá trị prefix.
 
-Với path hiện tại `kv/hla-datalake/datalake/spark-application/key-prefix/<tên bảng>`, mỗi secret
-phải có field `keyPrefix` (đổi bằng `VAULT_KEY_FIELD`). Cấu hình phía Vault (làm 1 lần):
+Với path hiện tại `kv/hla-datalake/datalake/spark-application/<tên bảng>` (KV v2 — không có đoạn
+`key-prefix` trong path), mỗi secret phải có field `keyPrefix` (đổi bằng `VAULT_KEY_FIELD`).
+Cấu hình phía Vault (làm 1 lần, chỉ cần khi dùng Kubernetes auth — xem "Xác thực bằng token Vault
+tĩnh" bên dưới nếu Vault dùng token tĩnh như hạ tầng hiện tại):
 
 ```bash
 vault auth enable kubernetes
 vault write auth/kubernetes/config kubernetes_host="https://<K8S_API_SERVER>:443"   # + token_reviewer_jwt / kubernetes_ca_cert nếu Vault chạy ngoài cluster
 vault policy write spark-key-prefix - <<'EOF'
-path "kv/data/hla-datalake/datalake/spark-application/key-prefix/*" { capabilities = ["read"] }
+path "kv/data/hla-datalake/datalake/spark-application/*" { capabilities = ["read"] }
 EOF
 vault write auth/kubernetes/role/spark-application \
   bound_service_account_names=spark-application-sa \
   bound_service_account_namespaces=vlp-tenantw1xjixm-wsytjjtr0-ingestion \
   policies=spark-key-prefix ttl=5m
-vault kv put kv/hla-datalake/datalake/spark-application/key-prefix/sample_table keyPrefix='<giá trị thật>'
+vault kv put kv/hla-datalake/datalake/spark-application/sample_table keyPrefix='<giá trị thật>'
 ```
 
 #### Xác thực bằng token Vault tĩnh (`VAULT_AUTH_METHOD=token`)
@@ -290,7 +292,7 @@ token đó có quyền ghi, rộng hơn nhiều so với việc chỉ đọc `ke
 
 ```bash
 vault policy write spark-key-prefix - <<'POLICY'
-path "kv/data/hla-datalake/datalake/key-prefix/*" { capabilities = ["read"] }
+path "kv/data/hla-datalake/datalake/spark-application/*" { capabilities = ["read"] }
 POLICY
 # Token định kỳ: sống thêm mỗi lần renew; lib KHÔNG tự renew nên phải renew định kỳ hoặc đặt period đủ dài rồi rotate
 vault token create -policy=spark-key-prefix -period=768h -orphan -display-name=spark-column-crypto
