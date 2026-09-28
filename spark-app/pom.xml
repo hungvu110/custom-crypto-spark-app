@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>vai.lakehouse</groupId>
+    <artifactId>sample-spark-application-privacy-parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+
+  <!-- Giữ artifactId cũ để tên jar (Dockerfile, k8s/spark-application.yaml) không đổi. -->
+  <artifactId>sample-spark-application-privacy</artifactId>
+  <name>sample-spark-application-privacy</name>
+  <description>
+    Spark 3.5.1 sample app đọc/ghi HDFS (Dell Isilon OneFS) với wire encryption
+    (dfs.data.transfer.protection = privacy) bật, kèm patch tương thích block token.
+  </description>
+
+  <dependencies>
+    <!-- Thư viện mã hoá cột: đóng gói vào fat jar của app (shade bên dưới). -->
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>column-crypto-lib</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      Cần để compile LenientBlockTokenIdentifier.
+      Class con CHỈ tham chiếu DataInput + API public của BlockTokenIdentifier,
+      KHÔNG chạm protobuf -> compile với bản thường là đủ, không cần
+      hadoop-client-api shaded.
+    -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-hdfs-client</artifactId>
+      <version>${hadoop.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-common</artifactId>
+      <version>${hadoop.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      Delta Lake: đóng gói vào fat jar (KHÔNG "provided" — cluster không có
+      sẵn), giống hệt cách vlp-spark-sample bundle delta-spark vào assembly
+      jar. Dùng cho TABLE_TYPE=delta của luồng CREATE TABLE + INSERT.
+    -->
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-spark_${scala.binary.version}</artifactId>
+      <version>${delta.version}</version>
+    </dependency>
+
+    <!--
+      Đọc file cấu hình mã hoá cột (ColumnCryptoConfig) dạng YAML. Đóng gói
+      vào fat jar (KHÔNG "provided" — cluster không có sẵn), lib nhỏ, không
+      xung đột transitive.
+    -->
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <version>2.2</version>
+    </dependency>
+
+    <!--
+      Test-only. "provided" ở trên vẫn nằm trên test classpath nên
+      BusinessLogicSpec chạy được SparkSession local mà không cần cluster Isilon thật.
+    -->
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+      </plugin>
+
+
+      <!--
+        Jar "thin" chỉ chứa patch block-token (vai.lakehouse.hdfs.*) để nhét
+        thẳng vào /opt/spark/jars/ của image Spark History Server — SHS chạy
+        HistoryServer JVM riêng, không dùng file jar chính (org.example.*),
+        nhưng vẫn cần patch này trên classpath để đọc được event log ghi
+        trên Isilon HKH (xem docs/spark-history-server-hdfs-hkh-kerberos.md).
+        Không cần Spark/Hadoop/Scala runtime kèm theo vì SHS đã có sẵn.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.1</version>
+        <executions>
+          <execution>
+            <id>block-token-patch</id>
+            <phase>package</phase>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>block-token-patch</classifier>
+              <excludes>
+                <exclude>org/example/**</exclude>
+                <exclude>conf/**</exclude>
+                <exclude>log4j2.properties</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <!--
+                  BẮT BUỘC: giữ và merge META-INF/services.
+                  Thiếu transformer này thì file đăng ký ServiceLoader sẽ bị mất
+                  và toàn bộ giải pháp không hoạt động.
+                -->
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>org.example.SparkApp</mainClass>
+                </transformer>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <!--
+                TUYỆT ĐỐI KHÔNG relocate org.apache.hadoop.*
+                LenientBlockTokenIdentifier phải kế thừa đúng class thật
+                mà Hadoop runtime đang dùng.
+              -->
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+  </build>
+</project>

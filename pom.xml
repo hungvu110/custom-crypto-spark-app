@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>vai.lakehouse</groupId>
+  <artifactId>sample-spark-application-privacy-parent</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>sample-spark-application-privacy-parent</name>
+  <description>
+    Parent của 2 module:
+      - column-crypto-lib : thư viện mã hoá/giải mã cột (DataFrame API + SQL function),
+                            đưa vào sql-engine / Spark app qua spark.jars.
+      - spark-app         : Spark 3.5.1 sample app đọc/ghi HDFS (Dell Isilon OneFS) với wire
+                            encryption bật, kèm patch block token; dùng column-crypto-lib.
+  </description>
+
+  <modules>
+    <module>column-crypto-lib</module>
+    <module>spark-app</module>
+  </modules>
+
+  <properties>
+    <scala.version>2.12.18</scala.version>
+    <scala.binary.version>2.12</scala.binary.version>
+    <spark.version>3.5.1</spark.version>
+    <hadoop.version>3.3.4</hadoop.version>
+    <scalatest.version>3.2.18</scalatest.version>
+    <!-- Khớp đúng version delta-spark mà vlp-spark-sample/build.sbt đang dùng
+         thành công (target Spark 3.5.x) — không được lệch version. -->
+    <delta.version>3.2.0</delta.version>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <build>
+    <sourceDirectory>src/main/scala</sourceDirectory>
+    <testSourceDirectory>src/test/scala</testSourceDirectory>
+    <pluginManagement>
+    <plugins>
+
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+        <version>4.8.1</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>compile</goal>
+              <goal>testCompile</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <scalaVersion>${scala.version}</scalaVersion>
+          <args>
+            <arg>-deprecation</arg>
+            <arg>-feature</arg>
+          </args>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <version>2.2.0</version>
+        <configuration>
+          <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
+          <junitxml>.</junitxml>
+          <!--
+            Spark 3.5.1 dùng reflection vào các package nội bộ của JDK
+            (sun.nio.ch, java.nio, v.v.) mà JDK 17+ mặc định đóng theo module
+            system. Cần mở các module đó (xem argLine) để chạy local[*] test
+            trên máy dev dùng JDK mới; không ảnh hưởng tới cluster thật
+            (Spark Operator image tự set JVM options phù hợp runtime của nó).
+          -->
+          <argLine>
+            --add-opens=java.base/java.lang=ALL-UNNAMED
+            --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+            --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+            --add-opens=java.base/java.io=ALL-UNNAMED
+            --add-opens=java.base/java.net=ALL-UNNAMED
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+            --add-opens=java.base/java.util=ALL-UNNAMED
+            --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+            --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+            --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+            --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+            --add-opens=java.base/sun.security.action=ALL-UNNAMED
+            --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+          </argLine>
+        </configuration>
+        <executions>
+          <execution>
+            <id>test</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+    </pluginManagement>
+  </build>
+</project>

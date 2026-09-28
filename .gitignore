@@ -1,0 +1,13 @@
+# Build output (Maven multi-module: target/ ở root và trong từng module)
+target/
+
+# IDE / tooling
+.metals/
+.vscode/
+.bloop/
+.bsp/
+*.iml
+.idea/
+
+# OS
+.DS_Store

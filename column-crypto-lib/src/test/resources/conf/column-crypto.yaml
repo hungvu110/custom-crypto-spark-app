@@ -1,0 +1,12 @@
+# Cấu hình mã hoá cột theo dataset/table — KHÔNG chứa bí mật, commit được vào Git.
+#
+# Bản này đóng sẵn trong jar làm mặc định cho dev/local. Production nên
+# override bằng ConfigMap mount (biến môi trường CRYPTO_CONFIG_PATH).
+# keyPrefix KHÔNG nằm ở đây: mỗi bảng 1 file trong thư mục CRYPTO_KEY_PREFIX_DIR
+# (production mount từ K8s Secret "key-prefix"; dev: conf/key-prefix/<tên bảng>).
+datasets:
+  sample_table:
+    keyField: "created_at"
+    encryptedColumns:
+      - "name"
+      - "city"

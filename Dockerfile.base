@@ -1,0 +1,42 @@
+# Base image DÙNG CHUNG cho mọi Spark application: đã nhúng sẵn patch block token
+# Isilon (package vai.lakehouse.hdfs) và bật sẵn qua spark-defaults.conf.
+#
+# Các app chỉ cần:   FROM <registry>/spark-base-hdfs-compat:<tag>
+# rồi COPY jar business logic của mình — KHÔNG cần đóng gói patch vào jar app,
+# không cần cấu hình shade/ServicesResourceTransformer, không cần sửa CRD.
+# Xem docs/HDFS_PATCH_AT_SCALE.md (Chiến lược B) và README.md mục 7.
+#
+# Build (context = thư mục gốc project, cần thấy spark-app/target/*.jar):
+#   mvn -B clean package
+#   docker build -f Dockerfile.base -t hub.vtcc.vn:8989/spark-base-hdfs-compat:1.0.0 .
+#   docker push hub.vtcc.vn:8989/spark-base-hdfs-compat:1.0.0
+FROM apache/spark:3.5.1-scala2.12-java11-ubuntu
+
+USER root
+
+# Jar "thin" do maven-jar-plugin sinh ra (classifier block-token-patch): chỉ chứa
+# vai.lakehouse.hdfs.* + META-INF/services, không kèm Spark/Hadoop/app code.
+# Đổi bằng: --build-arg PATCH_JAR=<đường-dẫn-khác>
+ARG PATCH_JAR=spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar
+
+# /opt/spark/jars/* nằm trên classpath của driver VÀ executor của MỌI app dùng
+# image này, không cần khai spark.jars. Tên file cố định để đổi phiên bản patch
+# không làm đổi đường dẫn.
+COPY ${PATCH_JAR} /opt/spark/jars/vai-lakehouse-hdfs-compat.jar
+
+# Bật patch làm mặc định qua SparkPlugin (BlockTokenFixPlugin).
+# Vì sao dùng Plugin thay vì chỉ dựa vào ServiceLoader: jar nằm chung thư mục
+# /opt/spark/jars với hadoop-client-api, thứ tự nạp trong thư mục đó KHÔNG được
+# đảm bảo, mà cơ chế ServiceLoader cần jar patch nạp SAU Hadoop (last-write-wins).
+# Plugin ghi đè tokenKindMap lúc Spark khởi động nên không phụ thuộc thứ tự.
+#
+# LƯU Ý: spark.plugins trong sparkConf của CRD sẽ GHI ĐÈ (không cộng dồn) giá trị
+# này. App nào tự khai spark.plugins phải nối thêm:
+#   spark.plugins: vai.lakehouse.hdfs.BlockTokenFixPlugin,<plugin-khac>
+RUN echo "spark.plugins vai.lakehouse.hdfs.BlockTokenFixPlugin" >> /opt/spark/conf/spark-defaults.conf
+
+# Nới quyền để chạy được dù securityContext của cluster ép UID/GID khác 185.
+# Giữ USER 185 (không set root) để không vi phạm runAsNonRoot của cluster.
+RUN chmod -R 777 /opt/spark/jars /opt/spark/conf /tmp
+
+USER 185
