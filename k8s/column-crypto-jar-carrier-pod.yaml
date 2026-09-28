@@ -1,0 +1,57 @@
+# Pod TẠM (không phải Deployment/Job) chỉ để lấy jar column-crypto-lib ra khỏi image, dùng khi
+# không thể copy file jar thủ công vào môi trường prod. Image dựng từ Dockerfile.jar-carrier ở
+# root project — build/push từ máy có quyền push registry, KHÔNG cần build trực tiếp trên cluster.
+#
+# Quy trình:
+#   1. mvn -B -pl column-crypto-lib -am clean package
+#   2. docker build -f Dockerfile.jar-carrier -t <registry>/column-crypto-jar-carrier:v1 .
+#      docker push <registry>/column-crypto-jar-carrier:v1
+#   3. Sửa "image:" bên dưới cho khớp registry/tag vừa push, và "namespace:" cho khớp namespace
+#      bạn có quyền kubectl, rồi:
+#        kubectl apply -f k8s/column-crypto-jar-carrier-pod.yaml
+#        kubectl wait --for=condition=Ready pod/column-crypto-jar-carrier \
+#          -n vlp-tenantw1xjixm-wsytjjtr0-ingestion --timeout=60s
+#   4. Lấy jar ra máy có kubectl (từ đó tự đưa tiếp lên HDFS bằng `hdfs dfs -put`, hoặc dùng
+#      thẳng làm nguồn cho spark.jars nếu máy này đã có quyền hdfs):
+#        kubectl cp vlp-tenantw1xjixm-wsytjjtr0-ingestion/column-crypto-jar-carrier:/opt/artifacts/column-crypto-lib.jar \
+#          ./column-crypto-lib.jar
+#   5. Dọn pod ngay sau khi lấy xong — đây là pod tạm, không nên để chạy lâu dài:
+#        kubectl delete -f k8s/column-crypto-jar-carrier-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: column-crypto-jar-carrier
+  # GIẢ ĐỊNH — đổi theo namespace bạn thực sự có quyền kubectl apply/cp.
+  namespace: vlp-tenantw1xjixm-wsytjjtr0-ingestion
+  labels:
+    app.kubernetes.io/name: column-crypto-jar-carrier
+    app.kubernetes.io/component: jar-carrier
+spec:
+  # Chỉ chạy 1 lần để cp jar ra rồi xoá — không cần Kubernetes tự khởi động lại nếu container thoát.
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+  containers:
+    - name: carrier
+      # GIẢ ĐỊNH — thay bằng registry/tag thật đã build/push ở bước 2 phía trên.
+      image: hub.vtcc.vn:8989/<ten-project-cua-ban>/column-crypto-jar-carrier:v1
+      imagePullPolicy: Always
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        runAsUser: 1000
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+  # Đổi/xoá nếu registry chứa image này không cần pull secret riêng.
+  imagePullSecrets:
+    - name: vlp-registry

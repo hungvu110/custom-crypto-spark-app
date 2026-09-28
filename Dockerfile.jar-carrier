@@ -1,0 +1,33 @@
+# Dockerfile.jar-carrier
+#
+# Đóng gói jar column-crypto-lib vào MỘT image tối giản, dùng để mang jar vào môi trường prod
+# khi không thể copy file thủ công vào cluster đích: build + push image này qua pipeline/máy
+# có quyền push registry, rồi chạy k8s/column-crypto-jar-carrier-pod.yaml TRÊN cluster đích và
+# `kubectl cp` jar ra khỏi pod — xem hướng dẫn đầy đủ ở comment trong file pod yaml đó.
+#
+# Image chỉ cần "đứng yên" để kubectl cp lấy jar ra, không cần JDK/Spark/Scala.
+#
+# Build (context = thư mục gốc project, cần thấy column-crypto-lib/target/*.jar):
+#   mvn -B -pl column-crypto-lib -am clean package
+#   docker build -f Dockerfile.jar-carrier -t <registry>/column-crypto-jar-carrier:v1 .
+#   docker push <registry>/column-crypto-jar-carrier:v1
+FROM alpine:3.20
+
+# uid=1000 tường minh (không phải uid mặc định của alpine) — trùng yêu cầu chạy image bằng
+# user 1000 của môi trường đích. "adduser -D": không cần mật khẩu, không cần shell login.
+RUN adduser -D -u 1000 -h /home/carrier carrier
+
+ARG JAR=column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar
+RUN mkdir -p /opt/artifacts
+COPY ${JAR} /opt/artifacts/column-crypto-lib.jar
+RUN chown -R carrier:carrier /opt/artifacts
+
+# Chạy bằng uid 1000 — khớp yêu cầu runAsUser: 1000 của Pod (securityContext không cần override
+# UID nữa vì image đã build sẵn đúng UID, nhưng vẫn khai lại trong pod yaml cho tường minh/an toàn
+# nếu cluster có Pod Security Admission ép runAsNonRoot).
+USER 1000
+WORKDIR /opt/artifacts
+
+# Không có tiến trình dài hạn nào thật sự cần chạy — giữ container Running bằng "tail -f /dev/null"
+# (có sẵn trong alpine/busybox, không cần cài thêm) để có thời gian kubectl cp trước khi xoá pod.
+CMD ["tail", "-f", "/dev/null"]
