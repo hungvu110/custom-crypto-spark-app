@@ -19,9 +19,15 @@ trait ConfigSource {
   def describe(key: String): String
 }
 
-/** sql-engine / SparkApplication cấu hình qua Spark conf: `spark.columncrypto.<key>`. */
-class SparkConfSource(conf: SparkConf) extends ConfigSource {
-  override def describe(key: String): String = s"${SparkConfSource.Prefix}$key"
+/**
+ * sql-engine / SparkApplication cấu hình qua Spark conf: `<prefix><key>`. Mặc định
+ * `prefix = "spark.columncrypto."` (dùng cho column_encrypt/column_decrypt). Tham số `prefix` cho
+ * phép các bộ hàm SQL khác tái dùng nguyên `PrefixSourceFactory` với namespace conf riêng — ví dụ
+ * `cdr-crypto-udf` dùng `"spark.cdrcrypto."` để không đụng cấu hình Vault của column_encrypt (2
+ * loại prefix có thể cùng tồn tại trên 1 engine). Xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
+ */
+class SparkConfSource(conf: SparkConf, prefix: String = SparkConfSource.Prefix) extends ConfigSource {
+  override def describe(key: String): String = s"$prefix$key"
   override def get(key: String): Option[String] =
     conf.getOption(describe(key)).map(_.trim).filter(_.nonEmpty)
 }

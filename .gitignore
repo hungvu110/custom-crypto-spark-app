@@ -11,3 +11,11 @@ target/
 
 # OS
 .DS_Store
+
+# Cấu hình Claude Code cục bộ trên máy (permission/session) — không phải cấu hình chung của repo
+.claude/
+
+# Jar đối tác (DataLakeSecurity) và script test thủ công đi kèm — không phải code chính thức
+# của project, chỉ dùng để khám phá/đối chiếu thuật toán mã hoá CDR với đối tác.
+DataLakeSecurity_jv8.jar
+tools/datalake-security-test/
