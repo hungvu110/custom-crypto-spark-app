@@ -11,3 +11,8 @@ target/
 
 # OS
 .DS_Store
+
+# Jar đối tác (DataLakeSecurity) và script test thủ công đi kèm — không phải code chính thức
+# của project, chỉ dùng để khám phá/đối chiếu thuật toán mã hoá CDR với đối tác.
+DataLakeSecurity_jv8.jar
+tools/datalake-security-test/
