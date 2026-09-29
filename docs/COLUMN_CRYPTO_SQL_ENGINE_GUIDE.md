@@ -31,28 +31,49 @@ mvn -B clean package
 # -> column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar   (~66 KB, chỉ chứa vai.lakehouse.columncrypto.*)
 ```
 
-Đặt jar ở nơi engine đọc được lúc khởi động (HDFS, HTTP(S) nội bộ, hoặc chỗ upload mà UI hỗ trợ).
-Lib không đóng gói Spark/Jackson/snakeyaml nên không gây xung đột classpath.
+Đặt jar ở nơi engine đọc được lúc khởi động. Khuyến nghị dùng một thư mục trên HDFS của cụm
+(Spark tự tải file `hdfs://` về — xem "Advanced Dependency Management" trong tài liệu Spark):
+
+```bash
+hdfs dfs -mkdir -p /libs/column-crypto-lib
+hdfs dfs -put column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar /libs/column-crypto-lib/
+```
+
+`spark.jars` (built-in của Spark, không phải `spark.columncrypto.*`) hỗ trợ scheme `hdfs:`, `http:`,
+`https:`, `ftp:` (Spark tự tải file) và `local:` (phải đã có sẵn trên từng node, không qua mạng) —
+dùng `hdfs://` hoặc chỗ upload mà UI hỗ trợ, **không dùng** `spark.driver.extraLibraryPath`/
+`spark.executor.extraLibraryPath` (hai config đó set `java.library.path` cho thư viện native
+`.so`/`.dll`, không liên quan tới việc nạp jar chứa class Java/Scala). Vì cụm HKH bật Kerberos, driver
+phải login Kerberos xong và namenode chứa `/libs/column-crypto-lib` phải có trong
+`spark.kerberos.access.hadoopFileSystems`, nếu không request tải jar sẽ lỗi cùng kiểu access-denied
+như các thao tác HDFS khác. Lib không đóng gói Spark/Jackson/snakeyaml nên không gây xung đột classpath.
 
 ## 3. Cấu hình trên màn hình tạo sql-engine
 
-Điền vào ô Spark config của engine:
+Điền vào ô Spark config của engine. Nhóm dưới đây là cấu hình dùng chung, áp dụng cho cách xác thực
+**token tĩnh** (mặc định của hướng dẫn này — xem mục 3.1 vì sao):
 
-| Key                                   | Giá trị                                                                    | Ghi chú                                                                                                                                            |
-| ------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.jars`                          | đường dẫn jar ở mục 2                                                      | Nạp lib vào driver (và executor)                                                                                                                   |
-| `spark.sql.extensions`                | `<extension đang có>,vai.lakehouse.columncrypto.sql.ColumnCryptoExtension` | **Nối bằng dấu phẩy**, không ghi đè extension sẵn có (vd Ranger)                                                                                   |
-| `spark.columncrypto.source`           | `vault` (hoặc `file`, `file,vault`)                                        | Mặc định `file`                                                                                                                                    |
-| `spark.columncrypto.vault.addr`       | `https://vault.xxx:8200`                                                   | Bắt buộc khi dùng vault; nên HTTPS                                                                                                                 |
-| `spark.columncrypto.vault.authMethod` | `token` (khuyến nghị, khớp ClusterSecretStore hiện tại) hoặc `kubernetes`  | Mặc định của lib là `kubernetes` nếu bỏ trống — **luôn đặt tường minh** `token` trừ khi Vault đã bật Kubernetes auth riêng cho engine; xem mục 3.1 |
-| `spark.columncrypto.vault.token`      | token Vault tĩnh                                                           | Bắt buộc khi `authMethod=token` (lib không login/revoke). **Không dùng lại** token của ExternalSecrets — tạo token riêng chỉ đọc (mục 3.1)         |
-| `spark.columncrypto.vault.role`       | role Kubernetes auth                                                       | Chỉ cần khi `authMethod=kubernetes`; role phải bind với ServiceAccount `spark` + namespace của engine. **Bỏ qua khi dùng `token`**                 |
-| `spark.columncrypto.vault.kvBasePath` | đường dẫn gốc trong KV v2, vd `hla-datalake/datalake/.../key-prefix`       | Bắt buộc; secret của bảng T nằm ở `<kvMount>/<kvBasePath>/T`                                                                                       |
-| `spark.columncrypto.vault.kvMount`    | `kv`                                                                       | Mặc định `kv`                                                                                                                                      |
-| `spark.columncrypto.vault.authMount`  | `kubernetes`                                                               | Mặc định `kubernetes`                                                                                                                              |
-| `spark.columncrypto.vault.keyField`   | `keyPrefix`                                                                | Field chứa prefix trong secret; mặc định `keyPrefix`                                                                                               |
-| `spark.columncrypto.vault.jwtPath`    | `/var/run/secrets/kubernetes.io/serviceaccount/token`                      | Mặc định như bên; pod đã có ServiceAccount `spark`                                                                                                 |
-| `spark.columncrypto.cacheTtlSeconds`  | `300`                                                                      | Cache prefix trong bộ nhớ; `0` = tắt                                                                                                               |
+| Key                                   | Giá trị                                                                    | Ghi chú                                                                                                                                                                                                                       |
+| ------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.jars`                          | `hdfs:///libs/column-crypto-lib/column-crypto-lib-1.0-SNAPSHOT.jar`        | Nạp lib vào driver (và executor); cần Kerberos đã login + namenode có trong `spark.kerberos.access.hadoopFileSystems` (xem mục 2)                                                                                             |
+| `spark.sql.extensions`                | `<extension đang có>,vai.lakehouse.columncrypto.sql.ColumnCryptoExtension` | **Nối bằng dấu phẩy**, không ghi đè extension sẵn có (vd Ranger)                                                                                                                                                              |
+| `spark.columncrypto.source`           | `vault` (hoặc `file`, `file,vault`)                                        | Mặc định `file`                                                                                                                                                                                                               |
+| `spark.columncrypto.vault.addr`       | `http://vault.cyberspace.vn`                                               | Bắt buộc khi dùng vault. Đang là HTTP: token/keyPrefix đi trên mạng không mã hoá — nên chuyển HTTPS                                                                                                                           |
+| `spark.columncrypto.vault.authMethod` | `token`                                                                    | Mặc định của lib là `kubernetes` nếu bỏ trống — **luôn đặt tường minh** `token`, vì Vault hiện tại (`ClusterSecretStore datalake-vault`) xác thực bằng `tokenSecretRef`, không có Kubernetes auth role cho Spark; xem mục 3.1 |
+| `spark.columncrypto.vault.token`      | token Vault tĩnh (riêng, chỉ đọc)                                          | Bắt buộc. **Không dùng lại** token của ExternalSecrets (`datalake-vault-token`, có quyền ghi) — tạo token riêng chỉ đọc (mục 3.1)                                                                                             |
+| `spark.columncrypto.vault.kvMount`    | `kv`                                                                       | Mặc định `kv`, có thể bỏ trống nếu đúng mặc định                                                                                                                                                                              |
+| `spark.columncrypto.vault.kvBasePath` | `hla-datalake/datalake/spark-application`                                  | Bắt buộc; secret của bảng T nằm ở `<kvMount>/data/<kvBasePath>/T` (KV v2). **Không kèm tên bảng** ở đây — lib tự nối `/T`                                                                                                     |
+| `spark.columncrypto.vault.keyField`   | `keyPrefix`                                                                | Field chứa prefix trong secret; mặc định `keyPrefix`. Sai tên field → lỗi `has no string field 'keyPrefix'`                                                                                                                   |
+| `spark.columncrypto.cacheTtlSeconds`  | `300`                                                                      | Cache prefix trong bộ nhớ; `0` = tắt                                                                                                                                                                                          |
+
+3 config dưới đây **chỉ dùng cho `authMethod=kubernetes`** (login bằng JWT của ServiceAccount) —
+**không cần đặt và bị lib bỏ qua hoàn toàn khi `authMethod=token`** (không login nên không đọc tới):
+
+| Key                                  | Giá trị                                               | Ghi chú                                                             |
+| ------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------------------- |
+| `spark.columncrypto.vault.role`      | role Kubernetes auth                                  | Role phải bind với ServiceAccount `spark` + namespace của engine    |
+| `spark.columncrypto.vault.authMount` | `kubernetes`                                          | Mount của Kubernetes auth trên Vault (`/v1/auth/<authMount>/login`) |
+| `spark.columncrypto.vault.jwtPath`   | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Đường dẫn JWT của ServiceAccount, đọc lúc login                     |
 
 ### 3.1. Xác thực bằng token tĩnh — cách đang áp dụng thực tế
 
@@ -61,29 +82,14 @@ nếu bỏ trống): JWT của ServiceAccount → login → token tạm → đ�
 dùng được** với hạ tầng Vault hiện có, vì `ClusterSecretStore` (`datalake-vault`, dùng bởi
 ExternalSecrets) xác thực bằng `tokenSecretRef` — tức Vault ở đây cấp quyền qua **token tĩnh**,
 không có Kubernetes auth role cho ServiceAccount của Spark. Vì vậy cấu hình chuẩn cho engine là
-`authMethod=token`, không phải `kubernetes`.
-
-Ví dụ đầy đủ (thay `<token>` bằng token riêng ở dưới, không dùng token của ExternalSecrets):
-
-```
-spark.columncrypto.source              = vault
-spark.columncrypto.vault.addr          = http://vault.cyberspace.vn
-spark.columncrypto.vault.authMethod    = token
-spark.columncrypto.vault.token         = <token>
-spark.columncrypto.vault.kvMount       = kv
-spark.columncrypto.vault.kvBasePath    = hla-datalake/datalake/spark-application
-spark.columncrypto.vault.keyField      = keyPrefix
-spark.columncrypto.cacheTtlSeconds     = 300
-```
-
-`vault.kvBasePath` phải khớp đúng path bạn tạo secret trên Vault (không kèm tên bảng — lib tự nối
-`<kvBasePath>/<tên bảng>`), và mỗi secret phải có field tên `keyField` (mặc định `keyPrefix`) — đổi
-tên field khác đi sẽ khiến lib báo lỗi `has no string field 'keyPrefix'`.
+`authMethod=token`, không phải `kubernetes`. Giá trị cụ thể cho từng key nằm ở bảng ở mục 3 —
+3 key `role`/`authMount`/`jwtPath` ở bảng thứ hai của mục 3 **không cần đặt** khi dùng `token`.
 
 Lưu ý khi dùng chế độ này:
 
 - **Đừng dùng lại token của ExternalSecrets**: nó có quyền ghi (`ReadWrite`). Tạo token riêng chỉ đọc
-  path `key-prefix/*` (lệnh trong README, mục "Xác thực bằng token Vault tĩnh").
+  path `hla-datalake/datalake/spark-application/*` (lệnh cụ thể trong README, mục "Xác thực bằng
+  token Vault tĩnh").
 - Token nằm plaintext trong cấu hình engine trên UI (Spark chỉ che nó khi hiển thị/log). Ai xem được
   cấu hình engine là thấy được token; token có TTL thì phải rotate trước khi hết hạn.
 - `vault.addr` đang là HTTP thì token đi trên mạng không mã hoá — nên chuyển HTTPS.
