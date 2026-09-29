@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>vai.lakehouse</groupId>
+    <artifactId>sample-spark-application-privacy-parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>cdr-crypto-udf</artifactId>
+  <name>cdr-crypto-udf</name>
+  <description>
+    UDF (cdr_encrypt/cdr_decrypt) bọc thư viện mã hoá CDR của đối tác
+    (DataLakeSecurity_jv8.jar, class com.viettel.datalake.security.TransformDL). Khác
+    column-crypto-lib: đây là UDF thật (ScalaUDF), không phải biểu thức built-in, vì thuật toán
+    của đối tác (vòng lặp cộng dồn key + AES/ECB) không tái tạo được bằng hàm built-in của Spark.
+    Xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
+
+    Jar DataLakeSecurity_jv8.jar KHÔNG nằm trên Maven Central — cài vào local repo trước:
+      mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake
+        -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar
+    rồi build bằng profile "cdr-crypto": mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package.
+  </description>
+
+  <!--
+    Jar thuần, KHÔNG shade: giống column-crypto-lib, mọi dependency đều "provided" nên jar output
+    chỉ chứa đúng 2 class của module này (CdrCipherCore, CdrCryptoExtension) — KHÔNG chứa
+    TransformDL (jar đối tác) lẫn class của column-crypto-lib. Khi triển khai phải nạp ĐỦ CẢ 3 jar
+    qua spark.jars (xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md mục 5.2) — Spark gộp chúng vào cùng
+    1 classloader nên class ở jar này gọi được class ở 2 jar kia lúc chạy.
+  -->
+  <dependencies>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      column-crypto-lib: tái dùng PrefixSourceFactory/VaultPrefixSource/CachedPrefixSource để lấy
+      keyPrefix CDR từ Vault — không viết lại hạ tầng Vault. "provided" vì jar này phải được nạp
+      RIÊNG qua spark.jars lúc chạy (không shade vào jar của module này).
+    -->
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>column-crypto-lib</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      Jar đối tác — KHÔNG phải của mình, không đóng gói lại (xem mô tả module ở trên).
+      Cài vào local repo bằng install:install-file trước khi build (xem mô tả phía trên).
+    -->
+    <dependency>
+      <groupId>com.viettel.datalake</groupId>
+      <artifactId>datalake-security</artifactId>
+      <version>jv8</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

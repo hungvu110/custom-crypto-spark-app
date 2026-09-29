@@ -1,15 +1,23 @@
 # sample-spark-application-privacy
 
-Spark 3.5.1 (Scala 2.12) application mẫu **đọc/ghi HDFS trên Dell PowerScale/Isilon
-OneFS** khi cụm bật **wire encryption bắt buộc** (`dfs.data.transfer.protection = privacy`)
-và xác thực **Kerberos**, chạy trên Kubernetes qua **Spark Operator**.
+Project giải quyết **3 bài toán bảo mật dữ liệu** cho Spark 3.5.1 (Scala 2.12) chạy trên
+Kubernetes qua **Spark Operator**, đọc/ghi HDFS trên Dell PowerScale/Isilon OneFS:
 
-Đi kèm là một **thư viện patch nhỏ** (`vai.lakehouse.hdfs`) giúp Hadoop client ≥ 3.2.1
-làm việc được với block token của Isilon — mà **không phải hạ mức mã hoá**.
+| #   | Bài toán                                                                                                                                                                                                           | Giải pháp                                                                                                                                | Module                               |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| 1   | Isilon **ép wire encryption bắt buộc** (`dfs.data.transfer.protection = privacy`), nhưng block token của Isilon không đúng chuẩn Apache khiến Hadoop client ≥ 3.2.1 parse lỗi — **mọi thao tác đọc/ghi HDFS fail** | Patch tương thích `LenientBlockTokenIdentifier`, giữ nguyên mã hoá và Kerberos (không hạ mức bảo mật)                                    | `spark-app` (`vai.lakehouse.hdfs.*`) |
+| 2   | Mã hoá **cột dữ liệu nhạy cảm** trước khi ghi lên Data Lake, phải dùng được cả trong Spark job (DataFrame API) lẫn trên query console SQL của sql-engine, và 2 đường phải cho cùng kết quả                         | Biểu thức Catalyst **built-in** của Spark (`aes_encrypt`/`aes_decrypt`, AES-256-GCM), `keyPrefix` lấy từ K8s Secret hoặc HashiCorp Vault | `column-crypto-lib`                  |
+| 3   | Đọc/ghi CDR đã mã hoá theo **thuật toán riêng của đối tác** (không tự chọn được thuật toán; đối tác chỉ cấp thư viện Java **chỉ có decrypt**)                                                                      | **UDF** bọc thư viện đối tác + tự viết phần encrypt tương ứng (thuật toán không tái tạo được bằng hàm built-in)                          | `cdr-crypto-udf`                     |
+
+Ba module dùng chung 1 project Maven multi-module và chung hạ tầng lấy `keyPrefix` từ Vault
+(`PrefixSourceFactory`, tái dùng giữa module 2 và 3 qua namespace conf riêng). Chi tiết từng
+bài toán ở mục 1 bên dưới; ứng dụng mẫu minh hoạ bài toán 1 từ mục 5.
 
 ---
 
 ## 1. Bài toán
+
+### 1.1. Wire encryption + block token không tương thích trên Isilon
 
 | Thành phần                   | Giá trị                                                         |
 | ---------------------------- | --------------------------------------------------------------- |
@@ -29,7 +37,44 @@ thiệp ở tầng class.
 > **Ràng buộc cứng:** KHÔNG được hạ `dfs.data.transfer.protection` xuống
 > `authentication`/`integrity`. Patch giữ nguyên mã hoá, Kerberos và việc Isilon verify token.
 
+Giải pháp chi tiết ở mục 2. Ứng dụng mẫu minh hoạ (`spark-app`) từ mục 5.
+
+### 1.2. Mã hoá cột dữ liệu nhạy cảm — dùng chung từ Spark job lẫn SQL console
+
+Dữ liệu ghi lên Data Lake cần mã hoá một số cột (PII, số điện thoại, ISDN...) trước khi lưu,
+với các ràng buộc:
+
+- Giải mã lại đúng dữ liệu gốc bất kể ghi bằng Spark job (DataFrame API) hay đọc bằng câu SQL
+  trên sql-engine (Spark Thrift Server) — 2 đường phải luôn khớp nhau.
+- Key mã hoá sinh **riêng cho từng dòng**, từ 1 cột plaintext sẵn có trên dòng đó (`keyField`)
+  cộng với 1 `keyPrefix` bí mật lấy từ Vault/K8s Secret — không dùng chung 1 key cho cả bảng.
+- Không tự viết thuật toán mã hoá tay — dùng hàm đã được Spark kiểm chứng sẵn.
+
+Giải pháp: `column-crypto-lib`, biểu thức Catalyst **built-in** (`aes_encrypt`/`aes_decrypt`,
+AES-256-GCM) — chi tiết cách dùng ở mục "Mã hoá cột" trong mục 5, kiến trúc built-in so với
+UDF tại [`docs/COLUMN_CRYPTO_ARCHITECTURE.md`](./docs/COLUMN_CRYPTO_ARCHITECTURE.md), hướng dẫn
+nạp vào sql-engine tại [`docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`](./docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md).
+
+### 1.3. Đọc/ghi CDR theo đúng thuật toán mã hoá của đối tác
+
+Một luồng dữ liệu khác (CDR) được đối tác mã hoá bằng thuật toán **riêng của họ** trước khi
+giao — AES-128-ECB với cách sinh key (cộng dồn ký tự theo `prefix + field`) hoàn toàn khác
+`column-crypto-lib`. Đối tác chỉ cấp một thư viện Java **chỉ có decrypt**, project phải:
+
+- Gọi đúng thư viện decrypt thật của họ (không tái tạo lại thuật toán bằng tay).
+- Tự viết phần encrypt tương ứng — đối tác không cung cấp.
+- Dùng được trên SQL console, y hệt cách dùng `column_encrypt`/`column_decrypt` của mục 1.2.
+
+Vì thuật toán của đối tác không tái tạo được bằng biểu thức built-in của Spark (vòng lặp cộng
+dồn key có độ dài động), hướng đi bắt buộc là **UDF** — khác hẳn kiến trúc của
+`column-crypto-lib`. Giải pháp: `cdr-crypto-udf` — kế hoạch và code chi tiết tại
+[`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`](./docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md).
+
 ## 2. Giải pháp tổng quan
+
+> Mục 2–9 mô tả giải pháp cho **bài toán 1** (mục 1.1, wire encryption/block token). Giải pháp
+> cho bài toán 2 và 3 nằm ở mục "Mã hoá cột" trong mục 5 và ở `docs/COLUMN_CRYPTO_ARCHITECTURE.md`
+> / `docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`.
 
 ```mermaid
 flowchart LR
@@ -54,39 +99,47 @@ token đúng chuẩn Apache. Khi đó chỉ cần gỡ package `vai.lakehouse.hd
 
 ## 3. Project gồm những gì
 
-| Thành phần                                                              | Vai trò                                                                                                                                                                                                                                                       |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **App mẫu** `org.example.SparkApp`                                      | Job Spark: tạo DB nếu chưa có → tạo bảng nếu chưa có → insert dữ liệu mẫu → query lại (giống `vlp-spark-sample/MainApp.scala`, cộng thêm Kerberos + diagnostics wire encryption cho Isilon)                                                                   |
-| **Lib mã hoá cột** `column-crypto-lib` (`vai.lakehouse.columncrypto.*`) | Mã hoá/giải mã cột AES-256-GCM dùng được qua **DataFrame API** lẫn **SQL function** (`column_encrypt`/`column_decrypt`), lấy `keyPrefix` từ K8s Secret mount và/hoặc Vault. Jar riêng, nạp được vào sql-engine (xem `docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`) |
-| **Patch lib** `vai.lakehouse.hdfs.*`                                    | Vá tương thích block token Isilon (xem mục 2)                                                                                                                                                                                                                 |
-| **Log4j2 config**                                                       | Chỉ log phần quan trọng của app (logger `VLP`), chặn chatter Spark/Hadoop                                                                                                                                                                                     |
-| **Dockerfile**                                                          | Đóng gói app lên base `apache/spark:3.5.1-scala2.12-java11-ubuntu`                                                                                                                                                                                            |
-| **k8s/spark-application.yaml**                                          | Manifest `SparkApplication` chạy app trên cluster                                                                                                                                                                                                             |
-| **docs/**                                                               | Tài liệu kỹ thuật chi tiết (mục 10)                                                                                                                                                                                                                           |
+| Thành phần                                                               | Vai trò                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **App mẫu** `org.example.SparkApp`                                       | Job Spark: tạo DB nếu chưa có → tạo bảng nếu chưa có → insert dữ liệu mẫu → query lại (giống `vlp-spark-sample/MainApp.scala`, cộng thêm Kerberos + diagnostics wire encryption cho Isilon)                                                                               |
+| **Lib mã hoá cột** `column-crypto-lib` (`vai.lakehouse.columncrypto.*`)  | Bài toán 2 (mục 1.2): mã hoá/giải mã cột AES-256-GCM qua **DataFrame API** lẫn **SQL function** (`column_encrypt`/`column_decrypt`), lấy `keyPrefix` từ K8s Secret mount và/hoặc Vault. Jar riêng, nạp được vào sql-engine (xem `docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`) |
+| **UDF mã hoá CDR** `cdr-crypto-udf` (`vai.lakehouse.columncrypto.cdr.*`) | Bài toán 3 (mục 1.3): `cdr_encrypt`/`cdr_decrypt` bọc thư viện mã hoá CDR của đối tác (`TransformDL`), thuật toán do đối tác quy định. Module riêng, chỉ build khi bật profile Maven `cdr-crypto` (xem `docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`)                             |
+| **Patch lib** `vai.lakehouse.hdfs.*`                                     | Bài toán 1 (mục 1.1): vá tương thích block token Isilon (xem mục 2)                                                                                                                                                                                                       |
+| **Log4j2 config**                                                        | Chỉ log phần quan trọng của app (logger `VLP`), chặn chatter Spark/Hadoop                                                                                                                                                                                                 |
+| **Dockerfile**                                                           | Đóng gói app lên base `apache/spark:3.5.1-scala2.12-java11-ubuntu`                                                                                                                                                                                                        |
+| **k8s/spark-application.yaml**                                           | Manifest `SparkApplication` chạy app trên cluster                                                                                                                                                                                                                         |
+| **docs/**                                                                | Tài liệu kỹ thuật chi tiết (mục 10)                                                                                                                                                                                                                                       |
 
-`mvn package` (multi-module: `column-crypto-lib` + `spark-app`) sinh ra **3 artifact**:
+`mvn package` (mặc định, không profile) build `column-crypto-lib` + `spark-app`, sinh ra **3
+artifact**. `cdr-crypto-udf` (module bài toán 3) KHÔNG build mặc định — cần jar đối tác cài cục
+bộ trước và bật profile `cdr-crypto` (xem mục 6.5):
 
-| Artifact                                                                               | Nội dung                                                            | Dùng cho                                                                 |
-| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar`                          | Jar thuần (~66 KB, không shade): chỉ `vai.lakehouse.columncrypto.*` | sql-engine (`spark.jars` + `spark.sql.extensions`) hoặc app Spark bất kỳ |
-| `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar`                   | Fat jar: app + lib mã hoá + patch + `META-INF/services`             | Chạy SparkApplication (`mainApplicationFile`)                            |
-| `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar` | Jar "thin" chỉ chứa `vai.lakehouse.hdfs.*` + `META-INF/services`    | Nhét vào `/opt/spark/jars/` của image khác (ví dụ Spark History Server)  |
+| Artifact                                                                               | Nội dung                                                                           | Dùng cho                                                                 |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar`                          | Jar thuần (~66 KB, không shade): chỉ `vai.lakehouse.columncrypto.*`                | sql-engine (`spark.jars` + `spark.sql.extensions`) hoặc app Spark bất kỳ |
+| `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar`                   | Fat jar: app + lib mã hoá + patch + `META-INF/services`                            | Chạy SparkApplication (`mainApplicationFile`)                            |
+| `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar` | Jar "thin" chỉ chứa `vai.lakehouse.hdfs.*` + `META-INF/services`                   | Nhét vào `/opt/spark/jars/` của image khác (ví dụ Spark History Server)  |
+| `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`)         | Jar thuần (~15 KB): chỉ `vai.lakehouse.columncrypto.cdr.*`, KHÔNG chứa jar đối tác | sql-engine, nạp CÙNG với `column-crypto-lib.jar` và jar đối tác (3 jar)  |
 
 ## 4. Cấu trúc thư mục
 
 ```
 .
-├── pom.xml                         # parent (properties + pluginManagement), 2 module bên dưới
+├── pom.xml                         # parent: properties + pluginManagement + profile "cdr-crypto"
 ├── Dockerfile
+├── DataLakeSecurity_jv8.jar         # jar đối tác (KHÔNG commit — .gitignore), cần cho profile cdr-crypto
+├── tools/datalake-security-test/    # script test thủ công đối chiếu thuật toán đối tác (KHÔNG commit)
 ├── k8s/
 │   └── spark-application.yaml
 ├── docs/
-│   ├── COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md        # dùng lib trong sql-engine: config UI + query console
-│   ├── SPARK_HDFS_WIRE_ENCRYPTION_TASK.md       # root cause + thiết kế patch
-│   ├── HDFS_BLOCK_TOKEN_PATCH_FLOW.md           # diagram + ảnh hưởng hiệu năng
-│   ├── HDFS_PATCH_AT_SCALE.md                   # phân phối patch cho nhiều app
+│   ├── COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md        # bài toán 2: dùng lib trong sql-engine, config UI + query console
+│   ├── COLUMN_CRYPTO_ARCHITECTURE.md            # bài toán 2: kiến trúc built-in vs UDF, bảng so sánh
+│   ├── PARTNER_CDR_CRYPTO_UDF_PLAN.md           # bài toán 3: plan UDF mã hoá CDR đối tác
+│   ├── SPARK_HDFS_WIRE_ENCRYPTION_TASK.md       # bài toán 1: root cause + thiết kế patch
+│   ├── HDFS_BLOCK_TOKEN_PATCH_FLOW.md           # bài toán 1: diagram + ảnh hưởng hiệu năng
+│   ├── HDFS_PATCH_AT_SCALE.md                   # bài toán 1: phân phối patch cho nhiều app
 │   └── spark-history-server-hdfs-hkh-kerberos.md
-├── column-crypto-lib/              # THƯ VIỆN mã hoá cột (jar thuần, Spark provided)
+├── column-crypto-lib/              # BÀI TOÁN 2: thư viện mã hoá cột (jar thuần, Spark provided)
 │   └── src/
 │       ├── main/scala/vai/lakehouse/columncrypto/
 │       │   ├── CryptoExpressions.scala       # NGUỒN DUY NHẤT của công thức mã hoá (Catalyst Expression)
@@ -94,11 +147,17 @@ token đúng chuẩn Apache. Khi đó chỉ cần gỡ package `vai.lakehouse.hd
 │       │   ├── ColumnCryptoConfig.scala      # settings YAML: keyField/encryptedColumns (chỉ DataFrame API dùng)
 │       │   ├── prefix/
 │       │   │   ├── PrefixSource.scala        # trait + FilePrefixSource (Secret mount) + ChainedPrefixSource (fallback) + CachedPrefixSource (TTL)
-│       │   │   ├── VaultPrefixSource.scala   # Vault KV v2 qua Kubernetes auth
-│       │   │   └── PrefixSourceFactory.scala # dựng nguồn từ ConfigSource (env hoặc spark.columncrypto.*)
+│       │   │   ├── VaultPrefixSource.scala   # Vault KV v2, Kubernetes auth hoặc token tĩnh
+│       │   │   └── PrefixSourceFactory.scala # dựng nguồn từ ConfigSource (env, spark.columncrypto.* hoặc spark.cdrcrypto.*)
 │       │   └── sql/ColumnCryptoExtension.scala # đăng ký SQL function column_encrypt / column_decrypt
 │       └── test/                             # unit test + test SQL bằng SparkSession local
-└── spark-app/                      # APP mẫu + patch block token, phụ thuộc column-crypto-lib
+├── cdr-crypto-udf/                 # BÀI TOÁN 3: UDF mã hoá CDR đối tác (profile Maven "cdr-crypto")
+│   └── src/
+│       ├── main/scala/vai/lakehouse/columncrypto/cdr/
+│       │   ├── CdrCipherCore.scala           # gọi decrypt() thật của đối tác + tự viết encrypt() qua reflection
+│       │   └── CdrCryptoExtension.scala      # đăng ký SQL function cdr_encrypt / cdr_decrypt (ScalaUDF thật, không phải built-in)
+│       └── test/                             # unit test + test SQL — cần jar đối tác cài cục bộ để chạy
+└── spark-app/                      # BÀI TOÁN 1: app mẫu + patch block token, phụ thuộc column-crypto-lib
     └── src/
         ├── main/
         │   ├── resources/
@@ -276,8 +335,8 @@ app — ví dụ ExternalSecrets `ClusterSecretStore` đang dùng `tokenSecretRe
 
 | Env (SparkApplication)    | Spark conf (sql-engine)               | Ý nghĩa                                                   |
 | ------------------------- | ------------------------------------- | --------------------------------------------------------- |
-| `VAULT_AUTH_METHOD=token` | `spark.columncrypto.vault.authMethod` | `kubernetes` (mặc định) hoặc `token`                       |
-| `VAULT_TOKEN`             | `spark.columncrypto.vault.token`      | Token Vault; bắt buộc khi `token`. Không cần `VAULT_ROLE`  |
+| `VAULT_AUTH_METHOD=token` | `spark.columncrypto.vault.authMethod` | `kubernetes` (mặc định) hoặc `token`                      |
+| `VAULT_TOKEN`             | `spark.columncrypto.vault.token`      | Token Vault; bắt buộc khi `token`. Không cần `VAULT_ROLE` |
 
 Ở chế độ này lib **không login và không `revoke-self`** (revoke một token dùng chung sẽ làm hỏng mọi
 dịch vụ đang dùng nó, kể cả ExternalSecrets). Token không bao giờ xuất hiện trong thông báo lỗi và
@@ -344,17 +403,19 @@ thấy `log4j2.properties` (chỉ có `spark.properties` của ConfigMap) — đ
 Yêu cầu: JDK 11+, Maven 3.8+ (lần build đầu cần mạng để tải dependency). Scala/Spark/Hadoop được khai
 `provided` — không đóng gói vào jar (riêng `delta-spark` đóng gói vào fat jar, xem mục 1).
 
-Project là Maven **multi-module** — chạy lệnh ở thư mục gốc:
+Project là Maven **multi-module** — chạy lệnh ở thư mục gốc. `cdr-crypto-udf` KHÔNG build mặc
+định (profile `cdr-crypto`, xem mục 6.5):
 
-| Module              | Artifact                                                                                          | Dùng cho                                     |
-| ------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `column-crypto-lib` | `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar`                                     | Nạp vào sql-engine hoặc app Spark bất kỳ     |
-| `spark-app`         | `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar` (+ `-block-token-patch.jar`) | Chạy SparkApplication; đã gộp sẵn lib mã hoá |
+| Module              | Artifact                                                                                          | Dùng cho                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `column-crypto-lib` | `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar`                                     | Nạp vào sql-engine hoặc app Spark bất kỳ                      |
+| `spark-app`         | `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar` (+ `-block-token-patch.jar`) | Chạy SparkApplication; đã gộp sẵn lib mã hoá                  |
+| `cdr-crypto-udf`    | `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`)                    | Nạp vào sql-engine CÙNG `column-crypto-lib.jar` + jar đối tác |
 
-### 6.1. Build cả project
+### 6.1. Build cả project (bài toán 1 + 2)
 
 ```bash
-mvn -B clean package        # build + chạy test cả 2 module, ra đủ 3 jar ở bảng trên
+mvn -B clean package        # build + chạy test column-crypto-lib + spark-app, ra đủ 3 jar ở bảng trên
 ```
 
 ### 6.2. Build riêng lib mã hoá (`column-crypto-lib`)
@@ -404,6 +465,32 @@ lỗi được báo đúng. Phần I/O thật với Isilon (wire encryption, blo
 thật) và việc nạp jar vào sql-engine **không thể** unit test cục bộ — phải verify trên cluster
 (mục 8 và `docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`). Trên JDK 17+, `pom.xml` gốc đã cấu hình sẵn
 `--add-opens` cho test JVM.
+
+### 6.5. Build & test `cdr-crypto-udf` (bài toán 3 — cần jar đối tác)
+
+Module này phụ thuộc `DataLakeSecurity_jv8.jar` (KHÔNG commit vào repo — xem `.gitignore`), nên
+KHÔNG build mặc định. Phải cài jar đối tác vào local Maven repo trước, rồi build bằng profile
+`cdr-crypto`:
+
+```bash
+# 1. Cài jar đối tác (chỉ cần làm 1 lần, hoặc khi đối tác đổi version)
+mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar \
+  -DgroupId=com.viettel.datalake -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar
+
+# 2. Build + test (-am: tự build column-crypto-lib trước, module này phụ thuộc nó)
+mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean test
+mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package -DskipTests
+# -> cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar (~15 KB, chỉ vai.lakehouse.columncrypto.cdr.*)
+```
+
+| Test                     | Nội dung                                                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CdrCipherCoreSpec`      | `decrypt()` đọc đúng ciphertext mẫu đối tác, `encrypt()` khớp byte-for-byte (AES/ECB tất định), roundtrip, field rỗng, `verifyCompatibility()`                                        |
+| `CdrCryptoExtensionSpec` | `cdr_encrypt`/`cdr_decrypt` qua SQL: roundtrip, khớp byte-for-byte với `CdrCipherCore` gọi trực tiếp, INSERT/SELECT bảng parquet thật, view, namespace conf riêng `spark.cdrcrypto.*` |
+
+`mvn clean package`/`mvn test` **không có `-Pcdr-crypto`** (mục 6.1, 6.4) hoàn toàn không đụng
+module này — build chính không bao giờ fail vì thiếu jar đối tác. Chi tiết đầy đủ:
+[`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`](./docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md).
 
 Kiểm tra jar trước khi dùng — thiếu bước này patch có thể **âm thầm** không hoạt động:
 
@@ -503,11 +590,12 @@ chưa, `userClassPathFirst` có bị bật không — xem
 
 ## 10. Tài liệu chi tiết
 
-| Tài liệu                                                                                             | Nội dung                                                                                         |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [`docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`](./docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md)                 | Nạp `column-crypto-lib` vào sql-engine, cấu hình Vault (kể cả token tĩnh), cú pháp query console  |
-| [`docs/COLUMN_CRYPTO_ARCHITECTURE.md`](./docs/COLUMN_CRYPTO_ARCHITECTURE.md)                         | Kiến trúc biểu thức built-in hiện tại so với phương án UDF, bảng so sánh chi tiết                 |
-| [`docs/SPARK_HDFS_WIRE_ENCRYPTION_TASK.md`](./docs/SPARK_HDFS_WIRE_ENCRYPTION_TASK.md)               | Bối cảnh, stack trace, root cause, thiết kế patch, verify, fallback Plugin                       |
-| [`docs/HDFS_BLOCK_TOKEN_PATCH_FLOW.md`](./docs/HDFS_BLOCK_TOKEN_PATCH_FLOW.md)                       | Diagram Mermaid: luồng lỗi, luồng đã vá, class thuộc lib nào, ảnh hưởng khi chạy dữ liệu lớn     |
-| [`docs/HDFS_PATCH_AT_SCALE.md`](./docs/HDFS_PATCH_AT_SCALE.md)                                       | Cách dùng patch cho nhiều SparkApplication (~100 app, monorepo)                                  |
-| [`docs/spark-history-server-hdfs-hkh-kerberos.md`](./docs/spark-history-server-hdfs-hkh-kerberos.md) | Cấu hình Spark History Server đọc event log từ HDFS HKH (Kerberos), dùng jar `block-token-patch` |
+| Tài liệu                                                                                             | Nội dung                                                                                             |
+| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| [`docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`](./docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md)                 | Nạp `column-crypto-lib` vào sql-engine, cấu hình Vault (kể cả token tĩnh), cú pháp query console     |
+| [`docs/COLUMN_CRYPTO_ARCHITECTURE.md`](./docs/COLUMN_CRYPTO_ARCHITECTURE.md)                         | Kiến trúc biểu thức built-in hiện tại so với phương án UDF, bảng so sánh chi tiết                    |
+| [`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`](./docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md)                       | Plan UDF bọc thư viện mã hoá CDR của đối tác (`TransformDL`): module, code, deploy, so sánh built-in |
+| [`docs/SPARK_HDFS_WIRE_ENCRYPTION_TASK.md`](./docs/SPARK_HDFS_WIRE_ENCRYPTION_TASK.md)               | Bối cảnh, stack trace, root cause, thiết kế patch, verify, fallback Plugin                           |
+| [`docs/HDFS_BLOCK_TOKEN_PATCH_FLOW.md`](./docs/HDFS_BLOCK_TOKEN_PATCH_FLOW.md)                       | Diagram Mermaid: luồng lỗi, luồng đã vá, class thuộc lib nào, ảnh hưởng khi chạy dữ liệu lớn         |
+| [`docs/HDFS_PATCH_AT_SCALE.md`](./docs/HDFS_PATCH_AT_SCALE.md)                                       | Cách dùng patch cho nhiều SparkApplication (~100 app, monorepo)                                      |
+| [`docs/spark-history-server-hdfs-hkh-kerberos.md`](./docs/spark-history-server-hdfs-hkh-kerberos.md) | Cấu hình Spark History Server đọc event log từ HDFS HKH (Kerberos), dùng jar `block-token-patch`     |

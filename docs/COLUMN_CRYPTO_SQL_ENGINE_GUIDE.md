@@ -38,21 +38,21 @@ Lib không đóng gói Spark/Jackson/snakeyaml nên không gây xung đột clas
 
 Điền vào ô Spark config của engine:
 
-| Key                                  | Giá trị                                                                 | Ghi chú                                                                 |
-| ------------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `spark.jars`                         | đường dẫn jar ở mục 2                                                    | Nạp lib vào driver (và executor)                                         |
-| `spark.sql.extensions`               | `<extension đang có>,vai.lakehouse.columncrypto.sql.ColumnCryptoExtension` | **Nối bằng dấu phẩy**, không ghi đè extension sẵn có (vd Ranger)          |
-| `spark.columncrypto.source`          | `vault` (hoặc `file`, `file,vault`)                                      | Mặc định `file`                                                          |
-| `spark.columncrypto.vault.addr`      | `https://vault.xxx:8200`                                                 | Bắt buộc khi dùng vault; nên HTTPS                                       |
-| `spark.columncrypto.vault.authMethod`| `token` (khuyến nghị, khớp ClusterSecretStore hiện tại) hoặc `kubernetes` | Mặc định của lib là `kubernetes` nếu bỏ trống — **luôn đặt tường minh** `token` trừ khi Vault đã bật Kubernetes auth riêng cho engine; xem mục 3.1 |
-| `spark.columncrypto.vault.token`     | token Vault tĩnh                                                         | Bắt buộc khi `authMethod=token` (lib không login/revoke). **Không dùng lại** token của ExternalSecrets — tạo token riêng chỉ đọc (mục 3.1) |
-| `spark.columncrypto.vault.role`      | role Kubernetes auth                                                     | Chỉ cần khi `authMethod=kubernetes`; role phải bind với ServiceAccount `spark` + namespace của engine. **Bỏ qua khi dùng `token`** |
-| `spark.columncrypto.vault.kvBasePath`| đường dẫn gốc trong KV v2, vd `hla-datalake/datalake/.../key-prefix`     | Bắt buộc; secret của bảng T nằm ở `<kvMount>/<kvBasePath>/T`              |
-| `spark.columncrypto.vault.kvMount`   | `kv`                                                                     | Mặc định `kv`                                                            |
-| `spark.columncrypto.vault.authMount` | `kubernetes`                                                             | Mặc định `kubernetes`                                                    |
-| `spark.columncrypto.vault.keyField`  | `keyPrefix`                                                              | Field chứa prefix trong secret; mặc định `keyPrefix`                     |
-| `spark.columncrypto.vault.jwtPath`   | `/var/run/secrets/kubernetes.io/serviceaccount/token`                   | Mặc định như bên; pod đã có ServiceAccount `spark`                        |
-| `spark.columncrypto.cacheTtlSeconds` | `300`                                                                    | Cache prefix trong bộ nhớ; `0` = tắt                                     |
+| Key                                   | Giá trị                                                                    | Ghi chú                                                                                                                                            |
+| ------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.jars`                          | đường dẫn jar ở mục 2                                                      | Nạp lib vào driver (và executor)                                                                                                                   |
+| `spark.sql.extensions`                | `<extension đang có>,vai.lakehouse.columncrypto.sql.ColumnCryptoExtension` | **Nối bằng dấu phẩy**, không ghi đè extension sẵn có (vd Ranger)                                                                                   |
+| `spark.columncrypto.source`           | `vault` (hoặc `file`, `file,vault`)                                        | Mặc định `file`                                                                                                                                    |
+| `spark.columncrypto.vault.addr`       | `https://vault.xxx:8200`                                                   | Bắt buộc khi dùng vault; nên HTTPS                                                                                                                 |
+| `spark.columncrypto.vault.authMethod` | `token` (khuyến nghị, khớp ClusterSecretStore hiện tại) hoặc `kubernetes`  | Mặc định của lib là `kubernetes` nếu bỏ trống — **luôn đặt tường minh** `token` trừ khi Vault đã bật Kubernetes auth riêng cho engine; xem mục 3.1 |
+| `spark.columncrypto.vault.token`      | token Vault tĩnh                                                           | Bắt buộc khi `authMethod=token` (lib không login/revoke). **Không dùng lại** token của ExternalSecrets — tạo token riêng chỉ đọc (mục 3.1)         |
+| `spark.columncrypto.vault.role`       | role Kubernetes auth                                                       | Chỉ cần khi `authMethod=kubernetes`; role phải bind với ServiceAccount `spark` + namespace của engine. **Bỏ qua khi dùng `token`**                 |
+| `spark.columncrypto.vault.kvBasePath` | đường dẫn gốc trong KV v2, vd `hla-datalake/datalake/.../key-prefix`       | Bắt buộc; secret của bảng T nằm ở `<kvMount>/<kvBasePath>/T`                                                                                       |
+| `spark.columncrypto.vault.kvMount`    | `kv`                                                                       | Mặc định `kv`                                                                                                                                      |
+| `spark.columncrypto.vault.authMount`  | `kubernetes`                                                               | Mặc định `kubernetes`                                                                                                                              |
+| `spark.columncrypto.vault.keyField`   | `keyPrefix`                                                                | Field chứa prefix trong secret; mặc định `keyPrefix`                                                                                               |
+| `spark.columncrypto.vault.jwtPath`    | `/var/run/secrets/kubernetes.io/serviceaccount/token`                      | Mặc định như bên; pod đã có ServiceAccount `spark`                                                                                                 |
+| `spark.columncrypto.cacheTtlSeconds`  | `300`                                                                      | Cache prefix trong bộ nhớ; `0` = tắt                                                                                                               |
 
 ### 3.1. Xác thực bằng token tĩnh — cách đang áp dụng thực tế
 
@@ -148,20 +148,20 @@ Cột đã mã hoá phải khai kiểu `STRING` trong DDL (giá trị là Base64
 
 ## 6. Xử lý sự cố
 
-| Triệu chứng                                              | Nguyên nhân thường gặp                                                                                     |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `Undefined function: column_encrypt`                     | Extension chưa nạp: sai tên class trong `spark.sql.extensions`, jar chưa nằm trên classpath lúc khởi động, hoặc chưa restart engine |
-| `ClassNotFoundException ... ColumnCryptoExtension`       | `spark.jars` không nạp kịp lúc khởi tạo session; đặt jar vào `/opt/spark/jars` của image hoặc dùng `spark.driver.extraClassPath` |
-| `Missing required setting: spark.columncrypto.vault.addr` | Thiếu key bắt buộc trong Spark conf                                                                        |
-| `Missing required setting: spark.columncrypto.vault.token` | `authMethod=token` nhưng thiếu `vault.token`                                                               |
-| `Invalid spark.columncrypto.vault.authMethod`             | Giá trị khác `token`/`kubernetes`, hoặc gõ sai chính tả                                                     |
-| `Vault read of secret '...' failed: HTTP 403` (chế độ `token`) | Token thiếu quyền đọc path `kvBasePath` — kiểm tra lại policy, xem mục 3.1                              |
-| `Vault login failed: HTTP 403` (chế độ `kubernetes`)      | Role không bind với ServiceAccount/namespace của engine                                                     |
-| `Vault read of secret '...' failed: HTTP 404`            | Sai `kvBasePath`/`kvMount` hoặc chưa có secret cho bảng đó                                                  |
-| `has no string field 'keyPrefix'`                         | Secret tồn tại nhưng tên field khác `vault.keyField` (mặc định `keyPrefix`) — đổi tên field trong secret hoặc set lại `vault.keyField` |
-| `Cannot read service account token`                      | Chỉ xảy ra ở chế độ `kubernetes` (pod tắt automount ServiceAccount token); chế độ `token` không đọc file này |
-| `first argument must be a constant string`               | Tham số đầu phải là literal `'tên_bảng'`, không phải cột hay biểu thức                                       |
-| `Tag mismatch` (`AES_CRYPTO_ERROR`)                      | Sai bảng (sai prefix), sai cột `keyField`, hoặc giải mã cột chưa được mã hoá                                |
+| Triệu chứng                                                    | Nguyên nhân thường gặp                                                                                                                 |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `Undefined function: column_encrypt`                           | Extension chưa nạp: sai tên class trong `spark.sql.extensions`, jar chưa nằm trên classpath lúc khởi động, hoặc chưa restart engine    |
+| `ClassNotFoundException ... ColumnCryptoExtension`             | `spark.jars` không nạp kịp lúc khởi tạo session; đặt jar vào `/opt/spark/jars` của image hoặc dùng `spark.driver.extraClassPath`       |
+| `Missing required setting: spark.columncrypto.vault.addr`      | Thiếu key bắt buộc trong Spark conf                                                                                                    |
+| `Missing required setting: spark.columncrypto.vault.token`     | `authMethod=token` nhưng thiếu `vault.token`                                                                                           |
+| `Invalid spark.columncrypto.vault.authMethod`                  | Giá trị khác `token`/`kubernetes`, hoặc gõ sai chính tả                                                                                |
+| `Vault read of secret '...' failed: HTTP 403` (chế độ `token`) | Token thiếu quyền đọc path `kvBasePath` — kiểm tra lại policy, xem mục 3.1                                                             |
+| `Vault login failed: HTTP 403` (chế độ `kubernetes`)           | Role không bind với ServiceAccount/namespace của engine                                                                                |
+| `Vault read of secret '...' failed: HTTP 404`                  | Sai `kvBasePath`/`kvMount` hoặc chưa có secret cho bảng đó                                                                             |
+| `has no string field 'keyPrefix'`                              | Secret tồn tại nhưng tên field khác `vault.keyField` (mặc định `keyPrefix`) — đổi tên field trong secret hoặc set lại `vault.keyField` |
+| `Cannot read service account token`                            | Chỉ xảy ra ở chế độ `kubernetes` (pod tắt automount ServiceAccount token); chế độ `token` không đọc file này                           |
+| `first argument must be a constant string`                     | Tham số đầu phải là literal `'tên_bảng'`, không phải cột hay biểu thức                                                                 |
+| `Tag mismatch` (`AES_CRYPTO_ERROR`)                            | Sai bảng (sai prefix), sai cột `keyField`, hoặc giải mã cột chưa được mã hoá                                                           |
 
 Xem log driver của engine để biết extension có nạp được không: lỗi khởi tạo extension in ra ngay
 lúc engine khởi động.
