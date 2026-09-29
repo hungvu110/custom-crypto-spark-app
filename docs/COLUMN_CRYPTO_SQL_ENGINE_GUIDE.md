@@ -28,8 +28,12 @@ ghi bằng job SparkApplication đọc được bằng SQL và ngược lại (c
 
 ```bash
 mvn -B clean package
-# -> column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar   (~66 KB, chỉ chứa vai.lakehouse.columncrypto.*)
+# -> column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar   (chỉ chứa vai.lakehouse.columncrypto.*)
+# -> key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar          (hạ tầng lấy keyPrefix, chứa vai.lakehouse.keyprefix.*)
 ```
+
+Cần **cả 2 jar**: `column-crypto-lib` không chứa code đọc keyPrefix (Vault/file/env) mà dùng `key-prefix-lib`.
+Thiếu `key-prefix-lib.jar` thì extension lỗi `NoClassDefFoundError: vai/lakehouse/keyprefix/...`.
 
 Đặt jar ở nơi engine đọc được lúc khởi động. Khuyến nghị dùng một thư mục trên HDFS của cụm
 (Spark tự tải file `hdfs://` về — xem "Advanced Dependency Management" trong tài liệu Spark):
@@ -37,6 +41,7 @@ mvn -B clean package
 ```bash
 hdfs dfs -mkdir -p /libs/column-crypto-lib
 hdfs dfs -put column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar /libs/column-crypto-lib/
+hdfs dfs -put key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar /libs/column-crypto-lib/
 ```
 
 `spark.jars` (built-in của Spark, không phải `spark.columncrypto.*`) hỗ trợ scheme `hdfs:`, `http:`,
@@ -55,7 +60,7 @@ như các thao tác HDFS khác. Lib không đóng gói Spark/Jackson/snakeyaml n
 
 | Key                                  | Giá trị                                                                 | Ghi chú                                                                 |
 | ------------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `spark.jars`                         | `hdfs:///libs/column-crypto-lib/column-crypto-lib-1.0-SNAPSHOT.jar`     | Nạp lib vào driver (và executor); cần Kerberos đã login + namenode có trong `spark.kerberos.access.hadoopFileSystems` (xem mục 2) |
+| `spark.jars`                         | `hdfs:///libs/column-crypto-lib/key-prefix-lib-1.0-SNAPSHOT.jar,hdfs:///libs/column-crypto-lib/column-crypto-lib-1.0-SNAPSHOT.jar` | Nạp 2 lib vào driver (và executor); cần Kerberos đã login + namenode có trong `spark.kerberos.access.hadoopFileSystems` (xem mục 2) |
 | `spark.sql.extensions`               | `<extension đang có>,vai.lakehouse.columncrypto.sql.ColumnCryptoExtension` | **Nối bằng dấu phẩy**, không ghi đè extension sẵn có (vd Ranger)          |
 | `spark.columncrypto.source`          | `vault` (hoặc `file`, `file,vault`)                                      | Mặc định `file`                                                          |
 | `spark.columncrypto.vault.addr`      | `http://vault.cyberspace.vn`                                            | Bắt buộc khi dùng vault. Đang là HTTP: token/keyPrefix đi trên mạng không mã hoá — nên chuyển HTTPS |

@@ -23,13 +23,13 @@
     Jar DataLakeSecurity_jv8.jar KHÔNG nằm trên Maven Central — cài vào local repo trước:
       mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake
         -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar
-    rồi build bằng profile "cdr-crypto": mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package.
+    rồi build: mvn -pl cdr-crypto-udf -am clean package (hoặc build cả project ở thư mục gốc).
   </description>
 
   <!--
     Jar thuần, KHÔNG shade: giống column-crypto-lib, mọi dependency đều "provided" nên jar output
     chỉ chứa đúng 2 class của module này (CdrCipherCore, CdrCryptoExtension) — KHÔNG chứa
-    TransformDL (jar đối tác) lẫn class của column-crypto-lib. Khi triển khai phải nạp ĐỦ CẢ 3 jar
+    TransformDL (jar đối tác) lẫn class của key-prefix-lib. Khi triển khai phải nạp ĐỦ CẢ 3 jar
     qua spark.jars (xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md mục 5.2) — Spark gộp chúng vào cùng
     1 classloader nên class ở jar này gọi được class ở 2 jar kia lúc chạy.
   -->
@@ -49,13 +49,14 @@
     </dependency>
 
     <!--
-      column-crypto-lib: tái dùng PrefixSourceFactory/VaultPrefixSource/CachedPrefixSource để lấy
-      keyPrefix CDR từ Vault — không viết lại hạ tầng Vault. "provided" vì jar này phải được nạp
-      RIÊNG qua spark.jars lúc chạy (không shade vào jar của module này).
+      key-prefix-lib: tái dùng PrefixSourceFactory/VaultPrefixSource/CachedPrefixSource để lấy
+      keyPrefix CDR từ Vault — không viết lại hạ tầng Vault, và KHÔNG phụ thuộc column-crypto-lib
+      (2 lib crypto độc lập nhau). "provided" vì jar này phải được nạp RIÊNG qua spark.jars lúc
+      chạy (không shade vào jar của module này).
     -->
     <dependency>
       <groupId>vai.lakehouse</groupId>
-      <artifactId>column-crypto-lib</artifactId>
+      <artifactId>key-prefix-lib</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
     </dependency>

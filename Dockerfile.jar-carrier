@@ -1,6 +1,6 @@
 # Dockerfile.jar-carrier
 #
-# Đóng gói jar column-crypto-lib vào MỘT image tối giản, dùng để mang jar vào môi trường prod
+# Đóng gói jar column-crypto-lib (+ key-prefix-lib) vào MỘT image tối giản, dùng để mang jar vào môi trường prod
 # khi không thể copy file thủ công vào cluster đích: build + push image này qua pipeline/máy
 # có quyền push registry, rồi chạy k8s/column-crypto-jar-carrier-pod.yaml TRÊN cluster đích và
 # `kubectl cp` jar ra khỏi pod — xem hướng dẫn đầy đủ ở comment trong file pod yaml đó.
@@ -18,8 +18,11 @@ FROM alpine:3.20
 RUN adduser -D -u 1000 -h /home/carrier carrier
 
 ARG JAR=column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar
+# key-prefix-lib: hạ tầng lấy keyPrefix, column-crypto-lib phụ thuộc vào nó nên phải mang theo cả 2 jar.
+ARG PREFIX_JAR=key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar
 RUN mkdir -p /opt/artifacts
 COPY ${JAR} /opt/artifacts/column-crypto-lib.jar
+COPY ${PREFIX_JAR} /opt/artifacts/key-prefix-lib.jar
 RUN chown -R carrier:carrier /opt/artifacts
 
 # Chạy bằng uid 1000 — khớp yêu cầu runAsUser: 1000 của Pod (securityContext không cần override

@@ -1,0 +1,205 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: vlp-test-job-hungvt
+  namespace: vlp-tenantw1xjixm-wsytjjtr0-ingestion
+spec:
+  # App không dùng arguments dòng lệnh — toàn bộ cấu hình đọc qua biến môi
+  # trường (khai báo ở cả driver lẫn executor bên dưới, xem README mục 5).
+  driver:
+    coreLimit: 1000m
+    cores: 1
+    labels:
+      version: 3.5.1
+    memory: 1g
+    serviceAccount: spark-application-sa
+    env:
+      - name: APP_NAME
+        value: "SampleSparkApplicationPrivacy"
+      - name: DB_NAME
+        value: "demo_db"
+      - name: TABLE_NAME
+        value: "sample_table"
+      - name: TABLE_TYPE
+        value: "delta"
+      - name: INSERT_MODE
+        value: "append"
+      - name: ENABLE_HIVE_SUPPORT
+        value: "true"
+      # --- Mã hoá cột: BIẾN THỂ column-crypto (image target "column-crypto") ---
+      # App KHÔNG nhúng lib crypto; nó gọi hàm SQL theo tên do extension ColumnCryptoExtension đăng ký
+      # (nạp qua spark.jars + spark.sql.extensions ở sparkConf bên dưới). Cả 4 biến này chỉ driver cần.
+      # Để trống CẢ 2 tên hàm = không mã hoá.
+      - name: CRYPTO_ENCRYPT_FUNCTION
+        value: "column_encrypt"
+      - name: CRYPTO_DECRYPT_FUNCTION
+        value: "column_decrypt"
+      # Các cột cần mã hoá (phân cách bằng dấu phẩy) và cột giữ plaintext dùng làm nguyên liệu sinh key theo dòng.
+      - name: CRYPTO_ENCRYPTED_COLUMNS
+        value: "name,city"
+      - name: CRYPTO_KEY_FIELD
+        value: "created_at"
+      # Nguồn keyPrefix (nhạy cảm) do extension tự đọc từ các biến môi trường dưới đây (CHỈ driver cần).
+      #    CRYPTO_PREFIX_SOURCE=vault -> gọi thẳng Vault KV v2 bằng TOKEN (VAULT_AUTH_METHOD=token):
+      #    đọc <VAULT_KV_MOUNT>/data/<VAULT_KV_PATH>/<tên bảng>, field VAULT_KEY_FIELD (mặc định
+      #    "keyPrefix"). Token lấy từ K8s Secret "spark-vault-token" (key "token") qua secretKeyRef —
+      #    Secret CHỈ dùng để chuyển token vào pod, app không đọc gì qua ExternalSecret. Tạo Secret
+      #    (cùng namespace với driver) TRƯỚC khi apply manifest này, xem chú thích ở cuối file.
+      #    Muốn dùng K8s Secret chứa prefix thay Vault: đặt CRYPTO_PREFIX_SOURCE=file +
+      #    CRYPTO_KEY_PREFIX_DIR=/etc/key-prefix và mount Secret "key-prefix"
+      #    (k8s/key-prefix-secret.yaml) vào đó — xem README.
+      - name: CRYPTO_PREFIX_SOURCE
+        value: "vault"
+      # Địa chỉ Vault lấy từ ClusterSecretStore datalake-vault. Đang là HTTP: token và keyPrefix
+      # đi trên mạng không mã hoá (app sẽ log cảnh báo); nên chuyển sang HTTPS khi có thể.
+      - name: VAULT_ADDR
+        value: "http://vault.cyberspace.vn"
+      # Xác thực bằng token tĩnh: app KHÔNG login, KHÔNG revoke token, không cần VAULT_ROLE.
+      - name: VAULT_AUTH_METHOD
+        value: "token"
+      # Giá trị token thô (đã decode base64), được K8s tự đọc từ Secret rồi đưa vào env của driver.
+      - name: VAULT_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: spark-vault-token
+            key: token
+      - name: VAULT_KV_MOUNT
+        value: "kv"
+      # GIẢ ĐỊNH — thay bằng path thật chứa keyPrefix; mỗi bảng là 1 secret con: <VAULT_KV_PATH>/<tên bảng>.
+      - name: VAULT_KV_PATH
+        value: "hla-datalake/datalake/spark-application"
+      # Mặc định "false" — bật "true" CHỈ khi cần trace lỗi wire encryption
+      # (in ra hex dump SASL wrap/unwrap rất dài, xem SPARK_HDFS_WIRE_ENCRYPTION_TASK.md mục 14.2).
+      - name: HDFS_SASL_DEBUG
+        value: "false"
+
+  executor:
+    coreLimit: 1000m
+    cores: 1
+    instances: 1
+    labels:
+      version: 3.5.1
+    memory: 1g
+    serviceAccount: spark-application-sa
+    env:
+      - name: APP_NAME
+        value: "SampleSparkApplicationPrivacy"
+      - name: DB_NAME
+        value: "demo_db"
+      - name: TABLE_NAME
+        value: "sample_table"
+      - name: TABLE_TYPE
+        value: "delta"
+      - name: INSERT_MODE
+        value: "append"
+      - name: ENABLE_HIVE_SUPPORT
+        value: "true"
+      - name: HDFS_SASL_DEBUG
+        value: "false"
+
+  # Secret "spark-vault-token" (token Vault, NHẠY CẢM — không commit) PHẢI có trước, cùng namespace với
+  # driver (secretKeyRef không đọc được Secret ở namespace khác). Nên dùng token RIÊNG chỉ đọc
+  # path key-prefix, không dùng lại token của ExternalSecrets (xem README mục "Xác thực bằng token Vault tĩnh"):
+  #   read -rs -p "Vault token: " T; echo
+  #   kubectl create secret generic spark-vault-token \
+  #     -n vlp-tenantw1xjixm-wsytjjtr0-ingestion --from-literal=token="$T"; unset T
+  # Thiếu Secret thì pod driver không khởi động được (CreateContainerConfigError).
+  # (ConfigMap "column-crypto-settings" KHÔNG còn cần: cột mã hoá khai bằng env CRYPTO_ENCRYPTED_COLUMNS/CRYPTO_KEY_FIELD.)
+
+  hadoopConfigMap: hdfs-hadoop-hkh
+  # Image build từ Dockerfile ở root project, target "column-crypto":
+  #   docker build --target column-crypto -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1-column-crypto .
+  # Đây là tên/tag GIẢ ĐỊNH theo đúng convention cũ
+  # (hub.vtcc.vn:8989/<tên>:<tag>) -> đổi lại nếu registry path/tag thực tế
+  # của bạn khác. Base image này KHÔNG có sẵn krb5.conf/keytab -> phải mount
+  # qua volumes/volumeMounts (xem README, mục "Build & push image").
+  image: hub.vtcc.vn:8989/sample-spark-application-privacy:v1-column-crypto
+  imagePullPolicy: Always
+
+  # Fat jar chứa CẢ app code LẪN LenientBlockTokenIdentifier + META-INF/services.
+  # Spark tự thêm mainApplicationFile vào spark.jars -> jar được append SAU
+  # jar hệ thống trên classpath của cả driver lẫn executor. Đúng thứ tự cần.
+  mainApplicationFile: local:///opt/app/sample-spark-application-privacy-1.0-SNAPSHOT.jar
+  mainClass: org.example.SparkApp
+  mode: cluster
+
+  restartPolicy:
+    type: Never
+
+  sparkConf:
+    # --- Kerberos ---
+    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020
+    spark.kerberos.keytab: /etc/security/keytabs/k8s.keytab
+    spark.kerberos.principal: k8s@VAILAKEHOUSE.VIETTEL.COM
+    spark.kubernetes.kerberos.krb5.path: /etc/krb5.conf
+    spark.security.credentials.hadoopfs.enabled: "true"
+
+    # --- HDFS security: GIỮ NGUYÊN privacy, KHÔNG hạ xuống authentication ---
+    # Sửa so với bản gốc: key đúng phải có "hadoop." lặp lại vì spark.hadoop.*
+    # bị Spark strip tiền tố rồi set thẳng vào Hadoop Configuration.
+    # "spark.hadoop.security.authentication" (bản gốc) map sai sang key
+    # "security.authentication" -> không có tác dụng gì.
+    spark.hadoop.hadoop.security.authentication: kerberos
+    spark.hadoop.hadoop.security.authorization: "true"
+    spark.hadoop.fs.permissions.umask-mode: "002"
+
+    # --- BẮT BUỘC giữ false, nếu true thì thứ tự classpath đảo và patch mất tác dụng ---
+    spark.driver.userClassPathFirst: "false"
+    spark.executor.userClassPathFirst: "false"
+
+    # --- Delta Lake: bắt buộc khi TABLE_TYPE=delta (mặc định) ---
+    # Thiếu 2 dòng này thì "CREATE TABLE ... USING delta" sẽ báo
+    # DATA_SOURCE_NOT_FOUND hoặc bảng không được quản lý đúng bởi Delta
+    # catalog. delta-spark 3.2.0 đã được đóng gói sẵn trong fat jar (pom.xml).
+    #
+    # vai.lakehouse.columncrypto.sql.ColumnCryptoExtension: đăng ký column_encrypt/column_decrypt —
+    # NỐI BẰNG DẤU PHẨY, không ghi đè extension Delta ở trên.
+    spark.sql.extensions: io.delta.sql.DeltaSparkSessionExtension,vai.lakehouse.columncrypto.sql.ColumnCryptoExtension
+    spark.sql.catalog.spark_catalog: org.apache.spark.sql.delta.catalog.DeltaCatalog
+
+    # --- Nạp lib crypto: 2 jar này KHÔNG nằm trong fat jar chính (mainApplicationFile) ---
+    # Dockerfile (target column-crypto) COPY sẵn vào /opt/app/; scheme local:// giống mainApplicationFile
+    # (Spark Operator không upload jar, path phải khớp đúng trong image). key-prefix-lib là hạ tầng lấy
+    # keyPrefix (Vault/file/env) dùng chung, column-crypto-lib là extension + biểu thức mã hoá.
+    spark.jars: local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/column-crypto-lib-1.0-SNAPSHOT.jar
+
+    # --- Spark ---
+    spark.eventLog.enabled: "false"
+    spark.jars.ivy: /tmp
+    spark.scheduler.mode: FAIR
+    spark.serializer: org.apache.spark.serializer.KryoSerializer
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.sources.ignoreDataLocality.enabled: "true"
+
+    # --- Debug (verify mục 14.2 của SPARK_HDFS_WIRE_ENCRYPTION_TASK.md) ---
+    # Bỏ -Dlog4j.configuration=file:/opt/app/conf/config.properties của bản gốc:
+    # đó là cú pháp Log4j 1.x và trỏ nhầm vào file config nghiệp vụ (config.properties)
+    # thay vì file log4j. Log4j2 filter noise được cấu hình ở
+    # /opt/spark/conf/log4j2.properties trong image (COPY trong Dockerfile) —
+    # KHÔNG dựa vào bản trong fat jar, vì driver JVM tự log (banner, deprecation
+    # warning...) và Log4j2 đã chốt config trước khi classloader chứa app jar
+    # được gắn vào. Không cần -D nào cho việc này vì SPARK_CONF_DIR đã có sẵn
+    # trên classpath từ lúc JVM khởi động.
+    #
+    # -Dsun.security.krb5.debug / -Dsun.security.spnego.debug: đây là debug
+    # CỦA JDK (sun.security.krb5/jgss), in thẳng ra System.out — KHÔNG đi qua
+    # Log4j2, nên log4j2.properties/HDFS_SASL_DEBUG không tắt được. Đây chính
+    # là nguồn của khối hex dump "KrbContext.wrap/unwrap: data=[...]" rất dài.
+    # MẶC ĐỊNH TẮT — chỉ thêm lại khi cần trace lỗi Kerberos handshake:
+    #   -Dsun.security.krb5.debug=true -Dsun.security.spnego.debug=true
+    #
+    # --- BẮT BUỘC cho K8s: trỏ Log4j2 tới file config trong image ---
+    # Trên K8s, Spark mount ConfigMap riêng đè lên /opt/spark/conf (hằng số
+    # SPARK_CONF_DIR_INTERNAL trong spark-kubernetes jar) -> log4j2.properties
+    # bake trong image tại đó BỊ CHE, Log4j2 rơi về default của spark-core
+    # (rootLogger.level=info) -> tràn log INFO TaskSetManager/DAGScheduler.
+    # Vì vậy phải trỏ tường minh tới bản đặt ở /opt/app (Dockerfile COPY sẵn),
+    # là path KHÔNG bị ConfigMap mount đè. Thiếu 2 dòng này thì mọi chỉnh sửa
+    # trong log4j2.properties đều VÔ TÁC DỤNG khi chạy trên cluster.
+    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    spark.executor.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+
+  sparkVersion: 3.5.1
+  timeToLiveSeconds: 1800
+  type: Scala

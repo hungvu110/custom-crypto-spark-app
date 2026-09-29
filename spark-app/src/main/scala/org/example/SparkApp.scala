@@ -5,8 +5,6 @@ import org.apache.hadoop.security.UserGroupInformation
 import org.apache.spark.sql.SparkSession
 
 import vai.lakehouse.hdfs.BlockTokenDiagnostics
-import vai.lakehouse.columncrypto.{ColumnCrypto, ColumnCryptoConfig}
-import vai.lakehouse.columncrypto.prefix.{PrefixSource, PrefixSourceFactory}
 
 import scala.collection.JavaConverters._
 import scala.util.Try
@@ -23,6 +21,14 @@ import scala.util.Try
  * Cấu hình qua biến môi trường (đọc ở cả driver lẫn executor — xem README):
  *   APP_NAME, DB_NAME, TABLE_NAME, TABLE_TYPE (delta|iceberg|hive),
  *   INSERT_MODE (append|overwrite), ENABLE_HIVE_SUPPORT (true|false).
+ *
+ * Mã hoá cột là TUỲ CHỌN và là plugin: jar này không chứa lib crypto nào (chỉ biên dịch với API của lib, scope
+ * provided). Bật bằng cách nạp jar lib (Dockerfile + spark.jars) rồi chọn cách gọi bằng CRYPTO_PROVIDER:
+ *   - `sql` (mặc định): đăng ký extension (spark.sql.extensions) + CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION
+ *     (tên hàm SQL, vd column_encrypt/column_decrypt); để trống cả 2 tên hàm = không mã hoá.
+ *   - `cdr`: gọi thẳng DataFrame API `CdrCrypto` của cdr-crypto-udf (không cần đăng ký extension).
+ * Cả 2 cách đều cần CRYPTO_ENCRYPTED_COLUMNS (phân cách bằng dấu phẩy) và CRYPTO_KEY_FIELD. Nguồn keyPrefix
+ * (VAULT_*, CRYPTO_PREFIX_SOURCE, ...) do lib tự đọc từ biến môi trường, app không đụng tới.
  */
 object SparkApp {
 
@@ -38,7 +44,7 @@ object SparkApp {
     tableType: String,
     insertMode: String,
     enableHiveSupport: Boolean,
-    cryptoConfigPath: String,
+    crypto: Option[CryptoSettings],
     hdfsSaslDebug: Boolean
   )
 
@@ -58,10 +64,11 @@ object SparkApp {
     tableType         = env("TABLE_TYPE", "delta").toLowerCase,
     insertMode        = env("INSERT_MODE", "append").toLowerCase,
     enableHiveSupport = env("ENABLE_HIVE_SUPPORT", "true").toLowerCase == "true",
-    // Mặc định trỏ resource mẫu trong jar (dev/local). Production: settings
-    // (keyField/encryptedColumns) mount qua ConfigMap. Nguồn keyPrefix (K8s Secret mount / Vault)
-    // do PrefixSourceFactory đọc từ env CRYPTO_PREFIX_SOURCE, CRYPTO_KEY_PREFIX_DIR, VAULT_* — xem README.
-    cryptoConfigPath   = env("CRYPTO_CONFIG_PATH", "conf/column-crypto.yaml"),
+    // Mặc định KHÔNG mã hoá (cả 2 tên hàm rỗng). Sai/thiếu cấu hình ném IllegalArgumentException.
+    crypto            = CryptoStep.parse(
+      env("CRYPTO_PROVIDER", ""),
+      env("CRYPTO_ENCRYPT_FUNCTION", ""), env("CRYPTO_DECRYPT_FUNCTION", ""),
+      env("CRYPTO_ENCRYPTED_COLUMNS", ""), env("CRYPTO_KEY_FIELD", "")),
     // Mặc định TẮT — bật DEBUG cho SASL/Token in ra hex dump rất dài, chỉ nên
     // bật khi thật sự cần trace lỗi wire encryption (mục 14.2 của plan gốc).
     hdfsSaslDebug     = env("HDFS_SASL_DEBUG", "false").toLowerCase == "true"
@@ -171,17 +178,15 @@ object SparkApp {
     Log.kv("spark.sql.warehouse.dir", spark.conf.getOption("spark.sql.warehouse.dir").getOrElse("<unset>"))
   }
 
-  /** Nguồn keyPrefix theo env: file (Secret mount), vault, hoặc "file,vault" (thử file trước rồi Vault). */
-  private def buildPrefixSource(): PrefixSource = PrefixSourceFactory.create(new EnvConfigSource())
-
   // --------------------------------------------------------------------
   // Business logic: CREATE DATABASE -> CREATE TABLE -> INSERT -> QUERY
   // --------------------------------------------------------------------
 
-  private def runCreateTableAndInsert(spark: SparkSession, cfg: AppConfig, prefixSource: PrefixSource): Unit = {
-    // Lấy keyPrefix TRƯỚC mọi thao tác ghi để lỗi cấu hình/Vault fail sớm, rồi che nó khỏi plan/UI/event log.
-    val cryptoCfg = ColumnCryptoConfig.load(cfg.cryptoConfigPath, prefixSource, cfg.tableName)
-    ColumnCrypto.redactKeyPrefixInPlans(spark, cryptoCfg)
+  private def runCreateTableAndInsert(spark: SparkSession, cfg: AppConfig): Unit = {
+    // Dựng DataFrame đã mã hoá TRƯỚC mọi thao tác ghi: Spark resolve hàm SQL của extension ngay ở đây
+    // (extension tra keyPrefix và che nó khỏi plan/UI/event log), nên hàm chưa nạp / prefix hỏng thì fail sớm.
+    val sampleDf    = BusinessLogic.sampleDataFrame(spark)
+    val encryptedDf = cfg.crypto.fold(sampleDf)(c => CryptoStep.encrypt(sampleDf, cfg.tableName, c))
 
     val warehouseDir    = spark.conf.getOption("spark.sql.warehouse.dir").getOrElse("")
     val fullTableQuoted = BusinessLogic.qualifiedTable(cfg.dbName, cfg.tableName)
@@ -216,16 +221,18 @@ object SparkApp {
     logHdfsPermissions(spark, "TABLE_DIR", tableHdfsPath)
 
     Log.section("INSERT SAMPLE DATA")
-    val sampleDf = BusinessLogic.sampleDataFrame(spark)
     Log.info("Sample data schema:")
     sampleDf.printSchema()
     Log.kv("rows",              BusinessLogic.sampleRows.size)
     Log.kv("mode",              cfg.insertMode)
     Log.kv("target",            s"$fullTableDot [V1 insertInto]")
-    Log.kv("encrypted columns", cryptoCfg.encryptedColumns.mkString(", "))
-    Log.kv("key field",         cryptoCfg.keyField)
-
-    val encryptedDf = ColumnCrypto.encryptColumns(sampleDf, cryptoCfg)
+    cfg.crypto match {
+      case Some(c) =>
+        Log.kv("crypto",            c.description)
+        Log.kv("encrypted columns", c.encryptedColumns.mkString(", "))
+        Log.kv("key field",         c.keyField)
+      case None => Log.info("Column crypto: DISABLED (CRYPTO_PROVIDER/CRYPTO_ENCRYPT_FUNCTION not set)")
+    }
 
     val writeStart = System.nanoTime()
     encryptedDf.write
@@ -236,17 +243,20 @@ object SparkApp {
     logHdfsPermissions(spark, "DB_DIR",    dbHdfsPath)
     logHdfsPermissions(spark, "TABLE_DIR", tableHdfsPath)
 
-    Log.section("QUERY RESULT — ENCRYPTED (before decrypt)")
+    Log.section(if (cfg.crypto.isDefined) "QUERY RESULT — ENCRYPTED (before decrypt)" else "QUERY RESULT")
     Log.info(s"SELECT * FROM $fullTableQuoted ORDER BY id")
-    val encryptedResultDf = spark.sql(s"SELECT * FROM $fullTableQuoted ORDER BY id")
-    val rowCount = encryptedResultDf.count()
+    val resultDf = spark.sql(s"SELECT * FROM $fullTableQuoted ORDER BY id")
+    val rowCount = resultDf.count()
     Log.kv("row count", rowCount)
-    Log.info(s"Raw content read from the table (columns ${cryptoCfg.encryptedColumns.mkString(", ")} are still Base64 ciphertext):")
-    encryptedResultDf.show(truncate = false)
+    cfg.crypto.foreach { c =>
+      Log.info(s"Raw content read from the table (columns ${c.encryptedColumns.mkString(", ")} are still ciphertext):")
+    }
+    resultDf.show(truncate = false)
 
-    Log.section("QUERY RESULT — AFTER DECRYPT")
-    val plainResultDf = ColumnCrypto.decryptColumns(encryptedResultDf, cryptoCfg)
-    plainResultDf.show(truncate = false)
+    cfg.crypto.foreach { c =>
+      Log.section("QUERY RESULT — AFTER DECRYPT")
+      CryptoStep.decrypt(resultDf, cfg.tableName, c).show(truncate = false)
+    }
   }
 
   // --------------------------------------------------------------------
@@ -258,7 +268,13 @@ object SparkApp {
 
     Log.banner("SAMPLE SPARK APPLICATION PRIVACY — CREATE DB/TABLE + INSERT SAMPLE DATA (Isilon wire encryption)")
 
-    val cfg = loadConfig()
+    val cfg =
+      try loadConfig()
+      catch {
+        case e: IllegalArgumentException =>
+          Log.fail(e.getMessage)
+          sys.exit(2)
+      }
     if (!VALID_TABLE_TYPES.contains(cfg.tableType)) {
       Log.fail(s"Invalid TABLE_TYPE: '${cfg.tableType}'. Must be one of: ${VALID_TABLE_TYPES.mkString(", ")}")
       sys.exit(2)
@@ -268,14 +284,6 @@ object SparkApp {
       sys.exit(2)
     }
 
-    val prefixSource =
-      try buildPrefixSource()
-      catch {
-        case e: IllegalArgumentException =>
-          Log.fail(e.getMessage)
-          sys.exit(2)
-      }
-
     Log.section("1. CONFIG")
     Log.kv("APP_NAME",            cfg.appName)
     Log.kv("DB_NAME",             cfg.dbName)
@@ -283,19 +291,12 @@ object SparkApp {
     Log.kv("TABLE_TYPE",          cfg.tableType)
     Log.kv("INSERT_MODE",         cfg.insertMode)
     Log.kv("ENABLE_HIVE_SUPPORT", cfg.enableHiveSupport)
-    Log.kv("CRYPTO_CONFIG_PATH",  cfg.cryptoConfigPath)
-    val prefixSourceNames = env("CRYPTO_PREFIX_SOURCE", "file").toLowerCase
-    Log.kv("CRYPTO_PREFIX_SOURCE", prefixSourceNames)
-    if (prefixSourceNames.contains("file")) {
-      Log.kv("CRYPTO_KEY_PREFIX_DIR", env("CRYPTO_KEY_PREFIX_DIR", PrefixSourceFactory.DefaultFileDir))
-    }
-    if (prefixSourceNames.contains("vault")) {
-      val vaultAddr = env("VAULT_ADDR", "")
-      Log.kv("VAULT_ADDR",        vaultAddr)
-      Log.kv("VAULT_KV_PATH",     env("VAULT_KV_PATH", ""))
-      if (vaultAddr.toLowerCase.startsWith("http://")) {
-        Log.warn("VAULT_ADDR is plain HTTP: the Vault token and keyPrefix travel unencrypted on the network")
-      }
+    cfg.crypto match {
+      case Some(c) =>
+        Log.kv("column crypto",           c.description)
+        Log.kv("CRYPTO_ENCRYPTED_COLUMNS", c.encryptedColumns.mkString(", "))
+        Log.kv("CRYPTO_KEY_FIELD",        c.keyField)
+      case None => Log.kv("column crypto", "DISABLED")
     }
     Log.kv("HDFS_SASL_DEBUG",     cfg.hdfsSaslDebug)
 
@@ -320,7 +321,7 @@ object SparkApp {
       reportHdfsSecurity(spark)
 
       Log.section("3. BUSINESS LOGIC")
-      runCreateTableAndInsert(spark, cfg, prefixSource)
+      runCreateTableAndInsert(spark, cfg)
 
       Log.banner("JOB SUCCEEDED")
       Log.elapsed("total duration", jobStart)

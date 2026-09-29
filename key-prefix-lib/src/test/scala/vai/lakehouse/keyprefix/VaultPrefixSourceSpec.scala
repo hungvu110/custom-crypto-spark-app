@@ -1,4 +1,4 @@
-package vai.lakehouse.columncrypto.prefix
+package vai.lakehouse.keyprefix
 
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress

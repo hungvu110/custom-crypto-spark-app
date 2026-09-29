@@ -11,7 +11,7 @@
     <version>1.0-SNAPSHOT</version>
   </parent>
 
-  <!-- Giữ artifactId cũ để tên jar (Dockerfile, k8s/spark-application.yaml) không đổi. -->
+  <!-- Giữ artifactId cũ để tên jar (Dockerfile, k8s/spark-application-*.yaml) không đổi. -->
   <artifactId>sample-spark-application-privacy</artifactId>
   <name>sample-spark-application-privacy</name>
   <description>
@@ -20,11 +20,38 @@
   </description>
 
   <dependencies>
-    <!-- Thư viện mã hoá cột: đóng gói vào fat jar của app (shade bên dưới). -->
+    <!--
+      Lib crypto KHÔNG được đóng vào fat jar của app (không có dependency nào ở scope compile). Mã hoá là
+      plugin nạp lúc deploy (Dockerfile COPY jar + sparkConf spark.jars/spark.sql.extensions):
+        - cdr-crypto-udf + key-prefix-lib: "provided" — app biên dịch với API DataFrame `CdrCrypto`
+          (CRYPTO_PROVIDER=cdr) nhưng jar chỉ có mặt lúc chạy ở image target "cdr-crypto". Class chỉ được
+          nạp khi nhánh đó thật sự chạy, nên image "no-crypto"/"column-crypto" vẫn chạy bình thường.
+        - column-crypto-lib: chỉ "test" — app gọi hàm SQL column_encrypt theo TÊN (CRYPTO_PROVIDER=sql).
+        - datalake-security (jar đối tác): chỉ "test", để chạy thử đường cdr; không đóng gói, không phát tán.
+    -->
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>cdr-crypto-udf</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>key-prefix-lib</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>vai.lakehouse</groupId>
       <artifactId>column-crypto-lib</artifactId>
       <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.viettel.datalake</groupId>
+      <artifactId>datalake-security</artifactId>
+      <version>jv8</version>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.scala-lang</groupId>
@@ -57,6 +84,14 @@
       <artifactId>hadoop-common</artifactId>
       <version>${hadoop.version}</version>
       <scope>provided</scope>
+      <exclusions>
+        <!-- hadoop-common kéo commons-text 1.4 đè bản 1.10.0 của Spark 3.5.1 -> NoSuchMethodError khi Spark
+             dựng thông báo AnalysisException trong test. Bản của Spark (spark-core) được dùng thay thế. -->
+        <exclusion>
+          <groupId>org.apache.commons</groupId>
+          <artifactId>commons-text</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!--
@@ -68,17 +103,6 @@
       <groupId>io.delta</groupId>
       <artifactId>delta-spark_${scala.binary.version}</artifactId>
       <version>${delta.version}</version>
-    </dependency>
-
-    <!--
-      Đọc file cấu hình mã hoá cột (ColumnCryptoConfig) dạng YAML. Đóng gói
-      vào fat jar (KHÔNG "provided" — cluster không có sẵn), lib nhỏ, không
-      xung đột transitive.
-    -->
-    <dependency>
-      <groupId>org.yaml</groupId>
-      <artifactId>snakeyaml</artifactId>
-      <version>2.2</version>
     </dependency>
 
     <!--

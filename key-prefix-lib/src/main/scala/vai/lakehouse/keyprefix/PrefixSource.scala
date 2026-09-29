@@ -1,8 +1,6 @@
-package vai.lakehouse.columncrypto.prefix
+package vai.lakehouse.keyprefix
 
 import java.util.concurrent.ConcurrentHashMap
-
-import vai.lakehouse.columncrypto.ColumnCryptoConfig
 
 import scala.util.control.NonFatal
 
@@ -17,7 +15,7 @@ trait PrefixSource {
 
 /** Mỗi bảng 1 file `<dir>/<tên bảng>` (thường là thư mục mount từ K8s Secret). */
 class FilePrefixSource(dir: String) extends PrefixSource {
-  override def read(datasetName: String): String = ColumnCryptoConfig.readPrefix(dir, datasetName)
+  override def read(datasetName: String): String = PrefixFiles.readPrefix(dir, datasetName)
 }
 
 /**
@@ -28,7 +26,7 @@ class ChainedPrefixSource(sources: Seq[(String, PrefixSource)]) extends PrefixSo
   require(sources.nonEmpty, "ChainedPrefixSource needs at least one source")
 
   override def read(datasetName: String): String = {
-    ColumnCryptoConfig.requireValidDatasetName(datasetName)
+    PrefixFiles.requireValidDatasetName(datasetName)
     val failures = Seq.newBuilder[String]
     val it = sources.iterator
     while (it.hasNext) {

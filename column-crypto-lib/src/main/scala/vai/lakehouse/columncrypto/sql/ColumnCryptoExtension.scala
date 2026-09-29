@@ -7,7 +7,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Li
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StringType
 import vai.lakehouse.columncrypto.{ColumnCrypto, CryptoExpressions}
-import vai.lakehouse.columncrypto.prefix.{PrefixSource, PrefixSourceFactory, SparkConfSource}
+import vai.lakehouse.keyprefix.{ChainedConfigSource, EnvConfigSource, PrefixSource, PrefixSourceFactory, SparkConfSource}
 
 /**
  * Đăng ký 2 SQL function để chạy mã hoá/giải mã ngay trên query console của sql-engine:
@@ -17,8 +17,11 @@ import vai.lakehouse.columncrypto.prefix.{PrefixSource, PrefixSourceFactory, Spa
  * }}}
  * Bật bằng conf tĩnh (cần restart engine):
  * `spark.sql.extensions=vai.lakehouse.columncrypto.sql.ColumnCryptoExtension`
- * (nếu đã có extension khác, ví dụ Ranger, thì nối bằng dấu phẩy). Nguồn keyPrefix cấu hình bằng
- * `spark.columncrypto.*` (xem [[PrefixSourceFactory]]).
+ * (nếu đã có extension khác, ví dụ Ranger, thì nối bằng dấu phẩy). Nguồn keyPrefix cấu hình theo
+ * thứ tự ưu tiên: `spark.columncrypto.*` (Spark conf, dùng cho sql-engine) rồi tới biến môi trường
+ * `VAULT_*`/`CRYPTO_*` (dùng cho SparkApplication) — xem [[PrefixSourceFactory]]. Nhờ đó app
+ * Spark thường không cần tự dựng `PrefixSource`, chỉ cần khai env + nạp extension.
+ * Cần cả `key-prefix-lib.jar` trên classpath (hạ tầng lấy prefix dùng chung).
  *
  * keyPrefix được tra ở DRIVER lúc analyze rồi nhúng vào biểu thức dưới dạng literal, nên executor
  * không cần gọi Vault và không cần jar của lib (biểu thức chỉ gồm hàm built-in của Spark).
@@ -76,8 +79,12 @@ object ColumnCryptoExtension {
    * extension bị khởi tạo lại nhiều lần, nhưng cache prefix phải chỉ có 1.
    * Cấu hình đọc từ SparkConf của driver, là conf tĩnh nạp lúc khởi động engine.
    */
+  val ConfPrefix = "spark.columncrypto."
+
   private lazy val sharedPrefixSource: PrefixSource =
-    PrefixSourceFactory.create(new SparkConfSource(SparkEnv.get.conf))
+    PrefixSourceFactory.create(new ChainedConfigSource(Seq(
+      new SparkConfSource(SparkEnv.get.conf, ConfPrefix),
+      new EnvConfigSource())))
 
   private def datasetOf(function: String, arg: Expression): String = arg match {
     case Literal(v, StringType) if v != null => v.toString

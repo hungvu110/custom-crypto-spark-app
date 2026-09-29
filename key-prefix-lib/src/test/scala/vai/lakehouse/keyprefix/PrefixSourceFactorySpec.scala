@@ -1,4 +1,4 @@
-package vai.lakehouse.columncrypto.prefix
+package vai.lakehouse.keyprefix
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -116,7 +116,7 @@ class PrefixSourceFactorySpec extends AnyFlatSpec with Matchers {
     val conf = new SparkConf(false)
       .set("spark.columncrypto.source", " vault ")
       .set("spark.columncrypto.vault.addr", "  ")
-    val source = new SparkConfSource(conf)
+    val source = new SparkConfSource(conf, "spark.columncrypto.")
 
     source.get(Keys.Source) shouldBe Some("vault")
     source.get(Keys.VaultAddr) shouldBe None

@@ -1,6 +1,21 @@
-# Dockerfile cho sample-spark-application-privacy.
+# Dockerfile cho sample-spark-application-privacy — multi-stage, mỗi target là 1 biến thể crypto:
 #
-# Build từ base image chính thức apache/spark:3.5.1-scala2.12-java11-ubuntu
+#   docker build --target no-crypto     -t <repo>:<tag> .   # (mặc định) app thuần, KHÔNG có lib crypto
+#   docker build --target column-crypto -t <repo>:<tag> .   # + key-prefix-lib + column-crypto-lib
+#   docker build --target cdr-crypto    -t <repo>:<tag> .   # + key-prefix-lib + cdr-crypto-udf + jar đối tác
+#
+# Jar của app KHÔNG nhúng lib crypto nào (xem spark-app/pom.xml). Lib crypto chỉ là các jar rời được
+# COPY vào /opt/app/ ở từng target, rồi manifest nạp chúng qua spark.jars + spark.sql.extensions
+# (xem k8s/spark-application-column.yaml, k8s/spark-application-cdr.yaml). Image nào chứa jar nào
+# thì manifest phải khớp; app chọn hàm SQL qua CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION.
+#
+# Build jar trước khi build image (context Docker build = thư mục gốc project):
+#   mvn -B clean package                                         # -> spark-app + key-prefix-lib + column-crypto-lib
+#   mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake \
+#     -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar   # chỉ cho target cdr-crypto, làm 1 lần
+#   (mvn -B clean package ở trên đã build luôn cdr-crypto-udf; cần jar đối tác cài trước)
+#
+# Build base image chính thức apache/spark:3.5.1-scala2.12-java11-ubuntu
 # (Scala 2.12, Java 11 — khớp scala.version/hadoop.version trong pom.xml).
 # LƯU Ý: tag KHÔNG có suffix "-ubuntu" (vd 3.5.1-scala2.12-java11) không tồn
 # tại trên Docker Hub cho apache/spark — luôn phải kèm hậu tố OS.
@@ -12,7 +27,7 @@
 # (ví dụ hub.vtcc.vn:8989/test_spark_kms:v1). Nếu dùng base image này mà job
 # fail ở bước Kerberos login (chưa tới bước ghi/đọc HDFS), nghĩa là krb5.conf/
 # keytab chưa được mount đúng — không phải lỗi của Dockerfile này.
-FROM apache/spark:3.5.1-scala2.12-java11-ubuntu
+FROM apache/spark:3.5.1-scala2.12-java11-ubuntu AS base
 
 USER root
 
@@ -26,9 +41,6 @@ USER root
 # Spark Operator KHÔNG upload jar lúc submit, nó chỉ chạy đúng path có sẵn
 # TRONG IMAGE của driver/executor. Jar phải nằm ĐÚNG path khai trong CRD:
 #   local:///opt/app/sample-spark-application-privacy-1.0-SNAPSHOT.jar
-#
-# Build trước bằng `mvn -B clean package` (context Docker build = thư mục gốc
-# project, vì cần thấy spark-app/target/*.jar).
 RUN mkdir -p /opt/app
 COPY spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar \
      /opt/app/sample-spark-application-privacy-1.0-SNAPSHOT.jar
@@ -47,7 +59,7 @@ COPY spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar \
 #
 # Cách chuẩn cho K8s: để file ở path KHÔNG bị mount đè (/opt/app) rồi trỏ JVM
 # tới nó bằng -Dlog4j.configurationFile (xem sparkConf trong
-# k8s/spark-application.yaml). System property này có độ ưu tiên cao nhất trong
+# k8s/spark-application*.yaml). System property này có độ ưu tiên cao nhất trong
 # ConfigurationFactory của Log4j2 và được áp ngay lúc JVM khởi động.
 COPY spark-app/src/main/resources/log4j2.properties /opt/app/log4j2.properties
 
@@ -56,6 +68,38 @@ COPY spark-app/src/main/resources/log4j2.properties /opt/app/log4j2.properties
 # không có ConfigMap nào mount đè nên file này có tác dụng bình thường.
 COPY spark-app/src/main/resources/log4j2.properties /opt/spark/conf/log4j2.properties
 
+
+# ======================================================================
+# Target: column-crypto — hàm SQL column_encrypt/column_decrypt (AES-256-GCM, built-in expression).
+# key-prefix-lib (hạ tầng lấy keyPrefix) + column-crypto-lib đều chỉ là jar mỏng, executor không cần
+# chúng (biểu thức chỉ gồm hàm built-in của Spark), nhưng driver cần cả 2 trên classpath.
+# ======================================================================
+FROM base AS column-crypto
+COPY key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar /opt/app/key-prefix-lib-1.0-SNAPSHOT.jar
+COPY column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar /opt/app/column-crypto-lib-1.0-SNAPSHOT.jar
+# Nới lỏng quyền hết mức, xem giải thích ở target no-crypto bên dưới.
+RUN chmod -R 777 /opt/app /opt/spark /tmp
+USER 185
+
+
+# ======================================================================
+# Target: cdr-crypto — hàm SQL cdr_encrypt/cdr_decrypt bọc lib mã hoá CDR của đối tác (UDF thật,
+# executor CŨNG cần cả 3 jar dưới đây trên classpath -> spark.jars trong manifest).
+# jar đối tác KHÔNG phải tài sản của mình: chỉ COPY nguyên trạng, không repackage/shade.
+# ======================================================================
+FROM base AS cdr-crypto
+COPY key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar /opt/app/key-prefix-lib-1.0-SNAPSHOT.jar
+COPY cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar /opt/app/cdr-crypto-udf-1.0-SNAPSHOT.jar
+COPY DataLakeSecurity_jv8.jar /opt/app/DataLakeSecurity_jv8.jar
+RUN chmod -R 777 /opt/app /opt/spark /tmp
+USER 185
+
+
+# ======================================================================
+# Target: no-crypto (mặc định vì là stage cuối) — app thuần, không có lib crypto nào.
+# ======================================================================
+FROM base AS no-crypto
+
 # Nới lỏng quyền hết mức trên MỌI thư mục Spark cần đọc/ghi lúc chạy, để
 # tránh lỗi permission khi securityContext của pod trên K8s ép UID/GID khác
 # với UID mặc định "spark" (185) của base image — ví dụ runAsUser ngẫu nhiên,
@@ -63,9 +107,7 @@ COPY spark-app/src/main/resources/log4j2.properties /opt/spark/conf/log4j2.prope
 # của SparkApplication CRD. 777 (rwx cho owner/group/other) là mức lỏng nhất
 # có thể ở tầng filesystem; không có gì lỏng hơn ngoài việc chạy container
 # bằng root (không tự làm ở đây, xem USER cuối file).
-RUN chmod -R 777 /opt/app \
- && chmod -R 777 /opt/spark \
- && chmod -R 777 /tmp
+RUN chmod -R 777 /opt/app /opt/spark /tmp
 
 # Giữ lại user mặc định "spark" (uid 185) của base image thay vì set USER root
 # ở đây: nhiều cluster (OpenShift, Pod Security Admission "restricted", ...)

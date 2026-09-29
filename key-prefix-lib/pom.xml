@@ -11,27 +11,19 @@
     <version>1.0-SNAPSHOT</version>
   </parent>
 
-  <artifactId>column-crypto-lib</artifactId>
-  <name>column-crypto-lib</name>
+  <artifactId>key-prefix-lib</artifactId>
+  <name>key-prefix-lib</name>
   <description>
-    Mã hoá/giải mã cột AES-256-GCM cho Spark 3.5.x, dùng được qua DataFrame API lẫn SQL
-    (column_encrypt / column_decrypt), lấy keyPrefix từ K8s Secret mount hoặc HashiCorp Vault.
+    Lấy keyPrefix theo tên dataset từ K8s Secret mount / HashiCorp Vault / biến môi trường / Spark conf,
+    có cache. Dùng chung cho mọi lib crypto (column-crypto-lib, cdr-crypto-udf); KHÔNG chứa thuật toán
+    mã hoá nào.
   </description>
 
   <!--
     Jar thuần: KHÔNG shade. Mọi dependency đều "provided" vì Spark đã có sẵn
-    (Jackson, snakeyaml, slf4j đi kèm spark-sql). Nhờ vậy nhét jar này vào
-    spark.jars hay /opt/spark/jars của sql-engine đều không gây xung đột classpath.
+    (SparkConf, Jackson, slf4j đi kèm spark-sql).
   -->
   <dependencies>
-    <!-- Hạ tầng lấy keyPrefix dùng chung; jar riêng nên phải nằm cạnh jar này trên classpath (spark.jars). -->
-    <dependency>
-      <groupId>vai.lakehouse</groupId>
-      <artifactId>key-prefix-lib</artifactId>
-      <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-
     <dependency>
       <groupId>org.scala-lang</groupId>
       <artifactId>scala-library</artifactId>
@@ -43,17 +35,6 @@
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_${scala.binary.version}</artifactId>
       <version>${spark.version}</version>
-      <scope>provided</scope>
-    </dependency>
-
-    <!--
-      Chỉ ColumnCryptoConfig.parseSettings (đường DataFrame API) dùng snakeyaml. Spark 3.5
-      ship sẵn bản 1.33; app đóng gói bản riêng (xem spark-app/pom.xml).
-    -->
-    <dependency>
-      <groupId>org.yaml</groupId>
-      <artifactId>snakeyaml</artifactId>
-      <version>2.2</version>
       <scope>provided</scope>
     </dependency>
 

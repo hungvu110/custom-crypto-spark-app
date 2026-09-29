@@ -1,9 +1,8 @@
-package org.example
+package vai.lakehouse.keyprefix
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import vai.lakehouse.columncrypto.prefix.{FilePrefixSource, PrefixSourceFactory}
-import vai.lakehouse.columncrypto.prefix.PrefixSourceFactory.Keys
+import vai.lakehouse.keyprefix.PrefixSourceFactory.Keys
 
 class EnvConfigSourceSpec extends AnyFlatSpec with Matchers {
 

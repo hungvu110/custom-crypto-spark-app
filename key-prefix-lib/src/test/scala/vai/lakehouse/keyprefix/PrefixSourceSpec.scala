@@ -1,4 +1,4 @@
-package vai.lakehouse.columncrypto.prefix
+package vai.lakehouse.keyprefix
 
 import java.util.concurrent.atomic.AtomicInteger
 

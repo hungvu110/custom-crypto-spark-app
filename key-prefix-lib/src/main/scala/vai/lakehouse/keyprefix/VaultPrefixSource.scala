@@ -1,4 +1,4 @@
-package vai.lakehouse.columncrypto.prefix
+package vai.lakehouse.keyprefix
 
 import java.io.IOException
 import java.net.URI
@@ -9,7 +9,6 @@ import java.time.Duration
 
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import org.slf4j.LoggerFactory
-import vai.lakehouse.columncrypto.ColumnCryptoConfig
 
 import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
@@ -60,7 +59,7 @@ class VaultPrefixSource(cfg: VaultConfig) extends PrefixSource {
   private val base = cfg.addr.replaceAll("/+$", "")
 
   override def read(datasetName: String): String = {
-    ColumnCryptoConfig.requireValidDatasetName(datasetName)
+    PrefixFiles.requireValidDatasetName(datasetName)
     cfg.token match {
       case Some(staticToken) => fetchPrefix(staticToken, datasetName)
       case None =>

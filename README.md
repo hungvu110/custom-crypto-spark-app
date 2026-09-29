@@ -70,6 +70,13 @@ dồn key có độ dài động), hướng đi bắt buộc là **UDF** — kh�
 `column-crypto-lib`. Giải pháp: `cdr-crypto-udf` — kế hoạch và code chi tiết tại
 [`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`](./docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md).
 
+### 1.4. Hạ tầng dùng chung và cách nạp lib crypto
+
+Cả 2 lib crypto cần lấy `keyPrefix` (K8s Secret / Vault / env / Spark conf) — phần này tách thành
+module riêng `key-prefix-lib`, **không chứa thuật toán mã hoá**, để `column-crypto-lib` và `cdr-crypto-udf`
+độc lập nhau (không lib nào phụ thuộc lib kia). Jar của `spark-app` cũng **không nhúng** lib crypto nào:
+loại crypto nào được dùng do image target (Dockerfile) + `sparkConf`/env trong manifest quyết định — xem mục "Mã hoá cột" (mục 5).
+
 ## 2. Giải pháp tổng quan
 
 > Mục 2–9 mô tả giải pháp cho **bài toán 1** (mục 1.1, wire encryption/block token). Giải pháp
@@ -102,35 +109,44 @@ token đúng chuẩn Apache. Khi đó chỉ cần gỡ package `vai.lakehouse.hd
 | Thành phần                                                               | Vai trò                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **App mẫu** `org.example.SparkApp`                                       | Job Spark: tạo DB nếu chưa có → tạo bảng nếu chưa có → insert dữ liệu mẫu → query lại (giống `vlp-spark-sample/MainApp.scala`, cộng thêm Kerberos + diagnostics wire encryption cho Isilon)                                                                               |
+| **Lib lấy keyPrefix** `key-prefix-lib` (`vai.lakehouse.keyprefix.*`) | Hạ tầng DÙNG CHUNG của mọi lib crypto: lấy keyPrefix từ K8s Secret mount / HashiCorp Vault / biến môi trường / Spark conf, có cache; KHÔNG chứa thuật toán mã hoá |
 | **Lib mã hoá cột** `column-crypto-lib` (`vai.lakehouse.columncrypto.*`)  | Bài toán 2 (mục 1.2): mã hoá/giải mã cột AES-256-GCM qua **DataFrame API** lẫn **SQL function** (`column_encrypt`/`column_decrypt`), lấy `keyPrefix` từ K8s Secret mount và/hoặc Vault. Jar riêng, nạp được vào sql-engine (xem `docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`) |
-| **UDF mã hoá CDR** `cdr-crypto-udf` (`vai.lakehouse.columncrypto.cdr.*`) | Bài toán 3 (mục 1.3): `cdr_encrypt`/`cdr_decrypt` bọc thư viện mã hoá CDR của đối tác (`TransformDL`), thuật toán do đối tác quy định. Module riêng, chỉ build khi bật profile Maven `cdr-crypto` (xem `docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`)                             |
+| **UDF mã hoá CDR** `cdr-crypto-udf` (`vai.lakehouse.columncrypto.cdr.*`) | Bài toán 3 (mục 1.3): `cdr_encrypt`/`cdr_decrypt` bọc thư viện mã hoá CDR của đối tác (`TransformDL`), thuật toán do đối tác quy định. Dùng được cả bằng **SQL function** lẫn **DataFrame API** (`CdrCrypto.encryptColumns/decryptColumns`). Module riêng, cần jar đối tác cài cục bộ để build (xem `docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`)                             |
 | **Patch lib** `vai.lakehouse.hdfs.*`                                     | Bài toán 1 (mục 1.1): vá tương thích block token Isilon (xem mục 2)                                                                                                                                                                                                       |
 | **Log4j2 config**                                                        | Chỉ log phần quan trọng của app (logger `VLP`), chặn chatter Spark/Hadoop                                                                                                                                                                                                 |
-| **Dockerfile**                                                           | Đóng gói app lên base `apache/spark:3.5.1-scala2.12-java11-ubuntu`                                                                                                                                                                                                        |
-| **k8s/spark-application.yaml**                                           | Manifest `SparkApplication` chạy app trên cluster                                                                                                                                                                                                                         |
+| **Dockerfile** | Multi-stage trên base `apache/spark:3.5.1-scala2.12-java11-ubuntu`; 3 target: `no-crypto` (mặc định), `column-crypto`, `cdr-crypto` — mỗi target COPY (hoặc không) các jar lib crypto rời, xem mục 7 |
+| **k8s/spark-application-column.yaml** | Manifest `SparkApplication` biến thể **column-crypto** (nạp `key-prefix-lib` + `column-crypto-lib`, dùng `column_encrypt`/`column_decrypt`) |
+| **k8s/spark-application-cdr.yaml** | Manifest `SparkApplication` biến thể **cdr-crypto** (nạp `key-prefix-lib` + `cdr-crypto-udf` + jar đối tác, dùng `cdr_encrypt`/`cdr_decrypt`) |
 | **docs/**                                                                | Tài liệu kỹ thuật chi tiết (mục 10)                                                                                                                                                                                                                                       |
 
-`mvn package` (mặc định, không profile) build `column-crypto-lib` + `spark-app`, sinh ra **3
-artifact**. `cdr-crypto-udf` (module bài toán 3) KHÔNG build mặc định — cần jar đối tác cài cục
-bộ trước và bật profile `cdr-crypto` (xem mục 6.5):
+`mvn package` build `key-prefix-lib` + `column-crypto-lib` + `cdr-crypto-udf` + `spark-app`, sinh ra **5
+artifact**. Jar của `spark-app` KHÔNG nhúng lib crypto nào (chỉ biên dịch với API của lib ở scope `provided`) — các
+lib là jar rời, nạp lúc deploy qua Dockerfile (COPY) + `sparkConf` (`spark.jars`, `spark.sql.extensions`).
+**Build cần jar đối tác**: `cdr-crypto-udf` (và `spark-app` phụ thuộc nó) phải có `DataLakeSecurity_jv8.jar` đã cài
+vào `~/.m2` trước, xem mục 6.5:
 
 | Artifact                                                                               | Nội dung                                                                           | Dùng cho                                                                 |
 | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar`                          | Jar thuần (~66 KB, không shade): chỉ `vai.lakehouse.columncrypto.*`                | sql-engine (`spark.jars` + `spark.sql.extensions`) hoặc app Spark bất kỳ |
-| `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar`                   | Fat jar: app + lib mã hoá + patch + `META-INF/services`                            | Chạy SparkApplication (`mainApplicationFile`)                            |
+| `key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar` | Jar thuần: chỉ `vai.lakehouse.keyprefix.*` (hạ tầng lấy keyPrefix) | Nạp CÙNG mọi lib crypto (`column-crypto-lib`, `cdr-crypto-udf`) |
+| `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar` | Jar thuần (không shade): chỉ `vai.lakehouse.columncrypto.*` (KHÔNG gồm code lấy prefix) | sql-engine hoặc app Spark bất kỳ (`spark.jars` + `spark.sql.extensions`), nạp CÙNG `key-prefix-lib.jar` |
+| `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar` | Fat jar: app + Delta + patch + `META-INF/services` — KHÔNG chứa lib crypto | Chạy SparkApplication (`mainApplicationFile`) |
 | `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar` | Jar "thin" chỉ chứa `vai.lakehouse.hdfs.*` + `META-INF/services`                   | Nhét vào `/opt/spark/jars/` của image khác (ví dụ Spark History Server)  |
-| `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`)         | Jar thuần (~15 KB): chỉ `vai.lakehouse.columncrypto.cdr.*`, KHÔNG chứa jar đối tác | sql-engine, nạp CÙNG với `column-crypto-lib.jar` và jar đối tác (3 jar)  |
+| `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`) | Jar thuần (~15 KB): chỉ `vai.lakehouse.columncrypto.cdr.*`, KHÔNG chứa jar đối tác | Nạp CÙNG `key-prefix-lib.jar` và jar đối tác (3 jar); KHÔNG cần `column-crypto-lib.jar` |
 
 ## 4. Cấu trúc thư mục
 
 ```
 .
-├── pom.xml                         # parent: properties + pluginManagement + profile "cdr-crypto"
-├── Dockerfile
-├── DataLakeSecurity_jv8.jar         # jar đối tác (KHÔNG commit — .gitignore), cần cho profile cdr-crypto
+├── pom.xml                         # parent: properties + pluginManagement + danh sách module
+├── Dockerfile                      # multi-stage: target no-crypto | column-crypto | cdr-crypto
+├── Dockerfile.jar-carrier          # image tạm chứa column-crypto-lib.jar + key-prefix-lib.jar để mang vào prod
+├── DataLakeSecurity_jv8.jar         # jar đối tác (KHÔNG commit — .gitignore), cần để build cdr-crypto-udf/spark-app + target cdr-crypto
 ├── tools/datalake-security-test/    # script test thủ công đối chiếu thuật toán đối tác (KHÔNG commit)
 ├── k8s/
-│   └── spark-application.yaml
+│   ├── spark-application-column.yaml             # SparkApplication biến thể column-crypto
+│   ├── spark-application-cdr.yaml                # SparkApplication biến thể cdr-crypto
+│   ├── key-prefix-secret.yaml                    # mẫu K8s Secret chứa keyPrefix (nguồn "file")
+│   └── column-crypto-jar-carrier-pod.yaml        # pod tạm để lấy jar ra khỏi image jar-carrier
 ├── docs/
 │   ├── COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md        # bài toán 2: dùng lib trong sql-engine, config UI + query console
 │   ├── COLUMN_CRYPTO_ARCHITECTURE.md            # bài toán 2: kiến trúc built-in vs UDF, bảng so sánh
@@ -139,36 +155,41 @@ bộ trước và bật profile `cdr-crypto` (xem mục 6.5):
 │   ├── HDFS_BLOCK_TOKEN_PATCH_FLOW.md           # bài toán 1: diagram + ảnh hưởng hiệu năng
 │   ├── HDFS_PATCH_AT_SCALE.md                   # bài toán 1: phân phối patch cho nhiều app
 │   └── spark-history-server-hdfs-hkh-kerberos.md
-├── column-crypto-lib/              # BÀI TOÁN 2: thư viện mã hoá cột (jar thuần, Spark provided)
+├── key-prefix-lib/                 # HẠ TẦNG DÙNG CHUNG: lấy keyPrefix (jar thuần, Spark provided, không có thuật toán mã hoá)
+│   └── src/
+│       ├── main/scala/vai/lakehouse/keyprefix/
+│       │   ├── PrefixSource.scala        # trait + FilePrefixSource (Secret mount) + ChainedPrefixSource (fallback) + CachedPrefixSource (TTL)
+│       │   ├── VaultPrefixSource.scala   # Vault KV v2, Kubernetes auth hoặc token tĩnh
+│       │   ├── PrefixSourceFactory.scala # ConfigSource/SparkConfSource/ChainedConfigSource + dựng nguồn từ cấu hình
+│       │   ├── EnvConfigSource.scala     # đọc cấu hình từ biến môi trường (CRYPTO_PREFIX_SOURCE, VAULT_*, ...)
+│       │   └── PrefixFiles.scala         # đọc file prefix + kiểm tra tên dataset (chặn path traversal)
+│       └── test/                         # unit test (Vault giả bằng HTTP server cục bộ, chain/cache, env)
+├── column-crypto-lib/              # BÀI TOÁN 2: thư viện mã hoá cột (jar thuần, Spark provided; phụ thuộc key-prefix-lib)
 │   └── src/
 │       ├── main/scala/vai/lakehouse/columncrypto/
 │       │   ├── CryptoExpressions.scala       # NGUỒN DUY NHẤT của công thức mã hoá (Catalyst Expression)
 │       │   ├── ColumnCrypto.scala            # DataFrame API: encryptColumns/decryptColumns (bọc CryptoExpressions)
 │       │   ├── ColumnCryptoConfig.scala      # settings YAML: keyField/encryptedColumns (chỉ DataFrame API dùng)
-│       │   ├── prefix/
-│       │   │   ├── PrefixSource.scala        # trait + FilePrefixSource (Secret mount) + ChainedPrefixSource (fallback) + CachedPrefixSource (TTL)
-│       │   │   ├── VaultPrefixSource.scala   # Vault KV v2, Kubernetes auth hoặc token tĩnh
-│       │   │   └── PrefixSourceFactory.scala # dựng nguồn từ ConfigSource (env, spark.columncrypto.* hoặc spark.cdrcrypto.*)
 │       │   └── sql/ColumnCryptoExtension.scala # đăng ký SQL function column_encrypt / column_decrypt
 │       └── test/                             # unit test + test SQL bằng SparkSession local
-├── cdr-crypto-udf/                 # BÀI TOÁN 3: UDF mã hoá CDR đối tác (profile Maven "cdr-crypto")
+├── cdr-crypto-udf/                 # BÀI TOÁN 3: mã hoá CDR đối tác qua SQL function + DataFrame API (phụ thuộc key-prefix-lib)
 │   └── src/
 │       ├── main/scala/vai/lakehouse/columncrypto/cdr/
 │       │   ├── CdrCipherCore.scala           # gọi decrypt() thật của đối tác + tự viết encrypt() qua reflection
+│       │   ├── CdrCrypto.scala               # DataFrame API: encryptColumns/decryptColumns + transform dùng chung với SQL
+│       │   ├── CdrCryptoConfig.scala         # keyPrefix/keyField/encryptedColumns cho DataFrame API (toString che prefix)
 │       │   └── CdrCryptoExtension.scala      # đăng ký SQL function cdr_encrypt / cdr_decrypt (ScalaUDF thật, không phải built-in)
 │       └── test/                             # unit test + test SQL — cần jar đối tác cài cục bộ để chạy
-└── spark-app/                      # BÀI TOÁN 1: app mẫu + patch block token, phụ thuộc column-crypto-lib
+└── spark-app/                      # BÀI TOÁN 1: app mẫu + patch block token; lib crypto chỉ ở scope provided/test (KHÔNG vào fat jar)
     └── src/
         ├── main/
         │   ├── resources/
         │   │   ├── META-INF/services/org.apache.hadoop.security.token.TokenIdentifier
-        │   │   ├── conf/column-crypto.yaml               # keyField/encryptedColumns — không nhạy cảm, xem mục "Mã hoá cột"
-        │   │   ├── conf/key-prefix/sample_table          # keyPrefix của bảng (1 file/bảng) — MẪU DEV, production dùng K8s Secret k8s/key-prefix-secret.yaml
         │   │   └── log4j2.properties
         │   └── scala/
         │       ├── org/example/
         │       │   ├── SparkApp.scala                   # entry point, điều phối create DB/table/insert
-        │       │   ├── EnvConfigSource.scala            # đọc cấu hình nguồn keyPrefix từ env (giữ nguyên tên biến cũ)
+        │       │   ├── CryptoStep.scala                 # bước mã hoá cột: provider sql (gọi hàm theo TÊN) hoặc cdr (DataFrame API CdrCrypto)
         │       │   ├── BusinessLogic.scala              # schema + DDL + sample data (thuần, test được)
         │       │   └── Log.scala                        # banner/section/kv cho log dễ đọc
         │       └── vai/lakehouse/hdfs/
@@ -177,7 +198,7 @@ bộ trước và bật profile `cdr-crypto` (xem mục 6.5):
         │           └── BlockTokenFixPlugin.scala           # fallback qua spark.plugins
         └── test/scala/org/example/
             ├── BusinessLogicSpec.scala
-            └── EnvConfigSourceSpec.scala
+            └── CryptoStepSpec.scala             # chạy với column-crypto-lib ở scope test (mô phỏng deploy thật)
 ```
 
 ## 5. Ứng dụng mẫu
@@ -194,9 +215,12 @@ có default; validate lúc khởi động, sai giá trị sẽ `exit(2)` — cù
 | `TABLE_TYPE`                                                              | `delta`                                                                                | `delta` / `iceberg` / `hive` | `hive` → `STORED AS PARQUET`; còn lại → `USING <type>`                                                                       |
 | `INSERT_MODE`                                                             | `append`                                                                               | `append` / `overwrite`       | Chế độ ghi dữ liệu mẫu                                                                                                       |
 | `ENABLE_HIVE_SUPPORT`                                                     | `true`                                                                                 | `true` / `false`             | Bật `enableHiveSupport()` cho SparkSession                                                                                   |
-| `CRYPTO_CONFIG_PATH`                                                      | `conf/column-crypto.yaml` (mẫu dev, đóng sẵn trong jar)                                | đường dẫn file YAML          | keyField/encryptedColumns (không nhạy cảm, mount ConfigMap) — xem mục "Mã hoá cột"                                           |
-| `CRYPTO_PREFIX_SOURCE`                                                    | `file`                                                                                 | `file` / `vault`             | Nguồn keyPrefix: thư mục file (K8s Secret) hoặc HashiCorp Vault — xem mục "Mã hoá cột"                                       |
-| `CRYPTO_KEY_PREFIX_DIR`                                                   | `conf/key-prefix` (mẫu dev, đóng sẵn trong jar)                                        | đường dẫn thư mục            | Chỉ khi `file`: thư mục chứa keyPrefix, mỗi bảng 1 file `<tên bảng>` (nhạy cảm, mount K8s Secret `key-prefix`)               |
+| `CRYPTO_PROVIDER` | `sql` | `sql` / `cdr` | Cách app gọi lib crypto: `sql` = gọi hàm SQL theo tên (`CRYPTO_*_FUNCTION`); `cdr` = gọi thẳng DataFrame API `CdrCrypto` của `cdr-crypto-udf`. Xem mục "Mã hoá cột" |
+| `CRYPTO_ENCRYPT_FUNCTION`, `CRYPTO_DECRYPT_FUNCTION` | (rỗng; với `sql` rỗng cả 2 = KHÔNG mã hoá) | tên hàm SQL, vd `column_encrypt`/`column_decrypt` hoặc `cdr_encrypt`/`cdr_decrypt` | Chỉ với `CRYPTO_PROVIDER=sql`: hàm do extension (nạp qua `spark.sql.extensions`) đăng ký; đặt CẢ 2 hoặc để trống CẢ 2. Với `cdr` phải để trống |
+| `CRYPTO_ENCRYPTED_COLUMNS` | (bắt buộc khi bật mã hoá) | danh sách cột, phân cách bằng dấu phẩy | Các cột bị mã hoá, vd `name,city` |
+| `CRYPTO_KEY_FIELD` | (bắt buộc khi bật mã hoá) | tên cột | Cột KHÔNG mã hoá, giá trị của nó (theo từng dòng) dùng làm nguyên liệu sinh key; không được nằm trong `CRYPTO_ENCRYPTED_COLUMNS` |
+| `CRYPTO_PREFIX_SOURCE` | `file` | `file` / `vault` / `file,vault` | **Do extension đọc, không phải app**: nguồn keyPrefix — thư mục file (K8s Secret) hoặc HashiCorp Vault. Dùng chung cho `column_*` lẫn `cdr_*` — xem mục "Mã hoá cột" |
+| `CRYPTO_KEY_PREFIX_DIR` | `conf/key-prefix` (đọc đĩa rồi classpath; jar app không còn bản mẫu — luôn đặt tường minh) | đường dẫn thư mục | Chỉ khi `file`: thư mục chứa keyPrefix, mỗi bảng 1 file `<tên bảng>` (nhạy cảm, mount K8s Secret `key-prefix`) |
 | `VAULT_ADDR`, `VAULT_ROLE`, `VAULT_KV_PATH`                               | (bắt buộc khi `vault`)                                                                 | chuỗi                        | Địa chỉ Vault, tên role Kubernetes auth, đường dẫn KV chứa prefix (không gồm tên bảng)                                       |
 | `VAULT_KV_MOUNT`, `VAULT_AUTH_MOUNT`, `VAULT_KEY_FIELD`, `VAULT_JWT_PATH` | `kv`, `kubernetes`, `keyPrefix`, `/var/run/secrets/kubernetes.io/serviceaccount/token` | chuỗi                        | Mount KV v2, mount auth, tên field chứa prefix trong secret, file JWT của service account                                    |
 | `HDFS_SASL_DEBUG`                                                         | `false`                                                                                | `true` / `false`             | Bật DEBUG cho 2 logger SASL/Token của Hadoop — in ra hex dump wrap/unwrap rất dài, chỉ bật khi cần trace lỗi wire encryption |
@@ -205,7 +229,7 @@ Flow nghiệp vụ (`SparkApp.runCreateTableAndInsert`):
 
 1. `CREATE DATABASE IF NOT EXISTS ${DB_NAME}`
 2. `CREATE TABLE IF NOT EXISTS ${DB_NAME}.${TABLE_NAME} (id BIGINT, name STRING, city STRING, created_at STRING) USING delta` (hoặc `STORED AS PARQUET` nếu `TABLE_TYPE=hive`)
-3. Mã hoá các cột cấu hình trong `CRYPTO_CONFIG_PATH` (kèm `keyPrefix` từ nguồn `CRYPTO_PREFIX_SOURCE`, lấy TRƯỚC mọi thao tác ghi và được che khỏi plan/Spark UI; mặc định `name`, `city`), insert 5 dòng dữ liệu mẫu bằng `insertInto` (mode = `INSERT_MODE`)
+3. Nếu bật mã hoá (`CRYPTO_ENCRYPT_FUNCTION`): dựng DataFrame đã mã hoá các cột `CRYPTO_ENCRYPTED_COLUMNS` bằng hàm SQL của extension — bước này chạy TRƯỚC mọi thao tác ghi, nên hàm chưa nạp hoặc keyPrefix hỏng thì fail sớm (extension tự tra keyPrefix và che khỏi plan/Spark UI); insert 5 dòng dữ liệu mẫu bằng `insertInto` (mode = `INSERT_MODE`). Không bật thì ghi plaintext
 4. `SELECT * FROM ${DB_NAME}.${TABLE_NAME} ORDER BY id`, giải mã lại các cột đó, in kết quả plaintext
 
 - Trước khi chạy nghiệp vụ, app in mục **HDFS SECURITY DIAGNOSTICS**: các config bảo mật,
@@ -215,31 +239,60 @@ Flow nghiệp vụ (`SparkApp.runCreateTableAndInsert`):
   thư mục HDFS tương ứng (`DB_DIR`, `TABLE_DIR`) — hữu ích để trace lỗi quyền trên Isilon.
 - Khi job fail vì block token, app tự nhận diện và chỉ thẳng tới nguyên nhân/patch chưa nạp.
 
-### Mã hoá cột (`vai.lakehouse.columncrypto`, module `column-crypto-lib`)
+### Mã hoá cột — plugin, không nhúng vào jar app
 
-Mã hoá/giải mã theo cột bằng AES-256-GCM qua hàm built-in `aes_encrypt`/`aes_decrypt` của
+Jar của `spark-app` **không chứa lib crypto nào**. Mã hoá là plugin nạp lúc deploy, gồm 3 mảnh khớp nhau:
+
+| Mảnh                | Ở đâu                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------- |
+| Jar lib crypto      | `Dockerfile` COPY vào `/opt/app/` theo target (`column-crypto` hoặc `cdr-crypto`, mục 7)    |
+| Nạp + đăng ký hàm   | `sparkConf` trong manifest: `spark.jars` (đường dẫn jar) + `spark.sql.extensions` (class extension) |
+| App gọi hàm nào     | env `CRYPTO_ENCRYPT_FUNCTION`/`CRYPTO_DECRYPT_FUNCTION`/`CRYPTO_ENCRYPTED_COLUMNS`/`CRYPTO_KEY_FIELD` |
+
+App gọi lib theo 1 trong 2 cách (`CryptoStep`): (1) `CRYPTO_PROVIDER=sql` — `fn('<tên bảng>', <cột>, <cột keyField>)` theo TÊN hàm,
+hàm nào có mặt phụ thuộc extension nào được nạp; (2) `CRYPTO_PROVIDER=cdr` — gọi thẳng `CdrCrypto.encryptColumns/decryptColumns`
+(DataFrame API của `cdr-crypto-udf`). Cách (2) biên dịch với lib ở scope `provided` (không vào fat jar) và chỉ nạp class khi nhánh đó chạy,
+nên image `no-crypto`/`column-crypto` (không có jar cdr) vẫn chạy bình thường với provider `sql`.
+Muốn đổi loại crypto: đổi target image + manifest tương ứng. Không nạp extension
+mà vẫn đặt tên hàm thì job fail sớm với `AnalysisException: Undefined function`.
+
+| Biến thể        | Image target    | Manifest                             | Jar nạp (`spark.jars`)                                        | Cách app gọi                          |
+| --------------- | --------------- | ------------------------------------ | ------------------------------------------------------------- | ------------------------------------ |
+| Không mã hoá    | `no-crypto`     | (bỏ các biến `CRYPTO_*_FUNCTION`)    | không                                                         | —                                    |
+| column-crypto   | `column-crypto` | `k8s/spark-application-column.yaml`  | `key-prefix-lib` + `column-crypto-lib`                        | SQL `column_encrypt` / `column_decrypt` (`CRYPTO_PROVIDER=sql`) |
+| cdr-crypto      | `cdr-crypto`    | `k8s/spark-application-cdr.yaml`     | `key-prefix-lib` + `cdr-crypto-udf` + `DataLakeSecurity_jv8`  | DataFrame API `CdrCrypto` (`CRYPTO_PROVIDER=cdr`) hoặc SQL `cdr_encrypt`/`cdr_decrypt` |
+
+Cả hai hàm cùng hợp đồng 3 tham số `fn(tableName, value, keyValue)`: `tableName` là hằng chuỗi (nơi extension tra keyPrefix),
+`value` là cột cần xử lý, `keyValue` là giá trị cột `CRYPTO_KEY_FIELD` của chính dòng đó.
+
+**`column_encrypt`/`column_decrypt`** (module `column-crypto-lib`): AES-256-GCM qua hàm built-in `aes_encrypt`/`aes_decrypt` của
 Spark SQL (có từ Spark 3.3) — không tự viết crypto tay. Key sinh **riêng cho từng dòng**:
 
 ```
 key = SHA-256(keyPrefix || giá trị cột keyField của chính dòng đó)
 ```
 
-`encryptColumns` (trước khi ghi) và `decryptColumns` (sau khi đọc) dùng chung 1 công thức
-sinh key nên luôn đồng nhất giữa 2 chiều. Công thức nằm ở `CryptoExpressions` và được dùng chung
-cho cả **DataFrame API** lẫn **SQL function** `column_encrypt`/`column_decrypt` (dùng trên query
-console của sql-engine, xem `docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`), nên dữ liệu ghi bằng đường
-này giải mã được bằng đường kia. `ColumnCryptoConfig` ghép cấu hình từ **2 nguồn**
-(đọc đĩa trước, fallback classpath resource), tách theo mức độ nhạy cảm:
+Công thức nằm ở `CryptoExpressions`, dùng chung cho **DataFrame API** (`ColumnCrypto.encryptColumns`, thư viện vẫn giữ và có test) lẫn
+**SQL function** `column_encrypt`/`column_decrypt` (dùng trên query console của sql-engine, xem
+`docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`), nên dữ liệu ghi bằng đường này giải mã được bằng đường kia.
 
-```yaml
-# CRYPTO_CONFIG_PATH — conf/column-crypto.yaml (KHÔNG nhạy cảm, mount ConfigMap, commit được vào Git)
-datasets:
-  sample_table:
-    keyField: "created_at" # cột KHÔNG bị mã hoá, dùng làm nguyên liệu key
-    encryptedColumns:
-      - "name"
-      - "city"
+**`cdr_encrypt`/`cdr_decrypt` và `CdrCrypto`** (module `cdr-crypto-udf`): thuật toán do đối tác quy định (AES-128-ECB, xem mục 1.3 và
+`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`), là UDF thật nên **executor cũng cần đủ 3 jar**. Hỗ trợ cả 2 cách dùng, cùng 1 hàm biến đổi
+(`CdrCrypto.transform`) nên kết quả giống hệt nhau:
+
+```scala
+// DataFrame API
+val enc = CdrCrypto.encryptColumns(df, "sub_rel_product", keyField = "start_datetime", Seq("isdn"))
+val dec = CdrCrypto.decryptColumns(enc, "sub_rel_product", keyField = "start_datetime", Seq("isdn"))
+// SQL:  SELECT cdr_encrypt('sub_rel_product', isdn, start_datetime) FROM t
 ```
+
+#### keyPrefix — hạ tầng dùng chung `key-prefix-lib`
+
+Cả 2 lib lấy keyPrefix qua `key-prefix-lib`, đọc cấu hình theo thứ tự ưu tiên: `spark.<lib>.*` (Spark conf — cách sql-engine
+cấu hình) rồi tới **cùng một bộ biến môi trường** `CRYPTO_PREFIX_SOURCE`, `CRYPTO_KEY_PREFIX_DIR`, `VAULT_*`... (cách SparkApplication
+cấu hình). Vì vậy 1 khối env trong manifest cấu hình cho cả `column_*` lẫn `cdr_*`, và app không cần biết gì về nguồn prefix.
+Mỗi bảng có 1 prefix — 2 hàm dùng chung sẽ lấy cùng giá trị từ cùng path/field Vault (tách riêng bằng `spark.cdrcrypto.*` nếu sau này cần).
 
 ```yaml
 # CRYPTO_KEY_PREFIX_DIR — K8s Secret "key-prefix" (NHẠY CẢM, KHÔNG commit giá trị thật).
@@ -252,31 +305,17 @@ stringData:
   sample_table: "sample_table_dev_prefix" # -> file /etc/key-prefix/sample_table
 ```
 
-Bản dev mặc định trong jar là `conf/key-prefix/sample_table` (nội dung file = giá trị prefix).
 Ký tự xuống dòng ở cuối file được bỏ khi đọc. Tên bảng chỉ được gồm `[A-Za-z0-9_.-]` và không
-bắt đầu bằng `.` (chặn path traversal vì tên bảng đi vào đường dẫn file).
-
-Mỗi dataset phải có mặt ở **cả hai** nguồn, thiếu bên nào app fail ngay (thông báo lỗi không
-bao giờ in giá trị `keyPrefix`; `ColumnCryptoConfig.toString` cũng che nó).
+bắt đầu bằng `.` (chặn path traversal vì tên bảng đi vào đường dẫn file). Thông báo lỗi không bao giờ in
+giá trị `keyPrefix`.
 
 - `keyPrefix` là bí mật thật sự (gần tương đương credential) — `keyField` chỉ là tên cột
   (config), nhưng giá trị của nó vốn công khai với bất kỳ ai đọc được bảng, nên toàn bộ độ an
-  toàn của cơ chế này quy về việc giữ kín `keyPrefix`. Các file mặc định đóng trong jar
-  (`conf/column-crypto.yaml`, `conf/key-prefix/`) chỉ dùng cho dev/local.
-  **Production phải override** `CRYPTO_KEY_PREFIX_DIR` trỏ tới thư mục mount từ K8s Secret (và nên
-  override `CRYPTO_CONFIG_PATH` bằng ConfigMap để đổi cột mã hoá theo môi trường mà không cần
-  build lại image), không commit giá trị thật của `keyPrefix` vào git.
+  toàn của cơ chế này quy về việc giữ kín `keyPrefix`. Không commit giá trị thật của `keyPrefix` vào git.
 
-  `k8s/spark-application.yaml` mount ConfigMap `column-crypto-settings` →
-  `/etc/app-config/column-crypto.yaml` cho cả driver lẫn executor, và lấy `keyPrefix` từ Vault
-  (`CRYPTO_PREFIX_SOURCE=vault`, chỉ driver cần vì executor nhận prefix qua plan). ConfigMap phải có
-  trước khi apply manifest:
-
-  ```bash
-  kubectl create configmap column-crypto-settings \
-    --from-file=column-crypto.yaml=./column-crypto.yaml \
-    -n vlp-tenantw1xjixm-wsytjjtr0-ingestion
-  ```
+  Manifest mẫu lấy `keyPrefix` từ Vault (`CRYPTO_PREFIX_SOURCE=vault`, chỉ driver cần). Cột mã hoá khai
+  thẳng bằng env (`CRYPTO_ENCRYPTED_COLUMNS`, `CRYPTO_KEY_FIELD`) — **không còn** ConfigMap
+  `column-crypto-settings` / `CRYPTO_CONFIG_PATH`.
 
   **Nguồn `file` (K8s Secret)** — dùng khi không có Vault: đặt `CRYPTO_PREFIX_SOURCE=file`,
   `CRYPTO_KEY_PREFIX_DIR=/etc/key-prefix` và mount Secret `key-prefix` (`k8s/key-prefix-secret.yaml`,
@@ -286,10 +325,10 @@ bao giờ in giá trị `keyPrefix`; `ColumnCryptoConfig.toString` cũng che nó
   nó chỉ tách quyền đọc `keyPrefix` khỏi code/image, không phải kiểm soát truy cập theo từng lần
   decrypt như Ranger KMS.
 
-  **Che khỏi plan:** `keyPrefix` là literal trong biểu thức SQL nên mặc định sẽ hiện trong
-  `explain`/`queryExecution.toString` (tab SQL của Spark UI, event log). App gọi
-  `ColumnCrypto.redactKeyPrefixInPlans` ngay sau khi lấy prefix để đặt
-  `spark.sql.redaction.string.regex`, nên các chỗ đó chỉ hiện `*********(redacted)`.
+  **Che khỏi plan (`column_*`):** `keyPrefix` là literal trong biểu thức SQL nên mặc định sẽ hiện trong
+  `explain`/`queryExecution.toString` (tab SQL của Spark UI, event log). `ColumnCryptoExtension` tự đặt
+  `spark.sql.redaction.string.regex` ngay khi resolve hàm, nên các chỗ đó chỉ hiện `*********(redacted)`.
+  (`cdr_*` để prefix trong closure của UDF chứ không phải literal của plan, nên không cần bước này.)
 
 ### Chọn nguồn keyPrefix (`CRYPTO_PREFIX_SOURCE`)
 
@@ -300,7 +339,7 @@ bao giờ in giá trị `keyPrefix`; `ColumnCryptoConfig.toString` cũng che nó
 | `file,vault` | thử `file` trước, không có/lỗi thì fallback sang `vault`; lỗi gộp lý do của cả hai nguồn |
 
 Kết quả được cache trong bộ nhớ theo bảng, `CRYPTO_CACHE_TTL_SECONDS` (mặc định 300, `0` = tắt cache).
-Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncrypto.<key>` thay vì env
+Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncrypto.<key>` (hoặc `spark.cdrcrypto.<key>`) thay vì env
 (`source`, `file.dir`, `vault.addr`, `vault.role`, `vault.kvBasePath`, `vault.authMount`,
 `vault.kvMount`, `vault.keyField`, `vault.jwtPath`, `vault.authMethod`, `vault.token`, `cacheTtlSeconds`).
 
@@ -389,7 +428,7 @@ che hoàn toàn**. Log4j2 không thấy config nào nên rơi về bản mặc �
 `TaskSetManager`/`DAGScheduler`/`MemoryStore`... tràn ra dù `log4j2.properties` của project đã
 cấu hình đúng.
 
-Vì vậy `Dockerfile` copy file vào **2 chỗ**, và `k8s/spark-application.yaml` trỏ tường minh
+Vì vậy `Dockerfile` copy file vào **2 chỗ**, và `k8s/spark-application-*.yaml` trỏ tường minh
 tới bản không bị che:
 
 | Path trong image                    | Dùng khi                                                                                                                                                           |
@@ -405,19 +444,20 @@ thấy `log4j2.properties` (chỉ có `spark.properties` của ConfigMap) — đ
 Yêu cầu: JDK 11+, Maven 3.8+ (lần build đầu cần mạng để tải dependency). Scala/Spark/Hadoop được khai
 `provided` — không đóng gói vào jar (riêng `delta-spark` đóng gói vào fat jar, xem mục 1).
 
-Project là Maven **multi-module** — chạy lệnh ở thư mục gốc. `cdr-crypto-udf` KHÔNG build mặc
-định (profile `cdr-crypto`, xem mục 6.5):
+Project là Maven **multi-module** — chạy lệnh ở thư mục gốc. Cần cài jar đối tác vào `~/.m2` trước khi build
+(mục 6.5), vì `cdr-crypto-udf` và `spark-app` đều phụ thuộc nó:
 
-| Module              | Artifact                                                                                          | Dùng cho                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `column-crypto-lib` | `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar`                                     | Nạp vào sql-engine hoặc app Spark bất kỳ                      |
-| `spark-app`         | `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar` (+ `-block-token-patch.jar`) | Chạy SparkApplication; đã gộp sẵn lib mã hoá                  |
-| `cdr-crypto-udf`    | `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`)                    | Nạp vào sql-engine CÙNG `column-crypto-lib.jar` + jar đối tác |
+| Module              | Artifact                                                                                          | Dùng cho                                                                   |
+| ------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `key-prefix-lib`    | `key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar`                                           | Nạp CÙNG mọi lib crypto (hạ tầng lấy keyPrefix)                            |
+| `column-crypto-lib` | `column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar`                                     | Nạp vào sql-engine hoặc app Spark bất kỳ, cùng `key-prefix-lib.jar`        |
+| `spark-app`         | `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar` (+ `-block-token-patch.jar`) | Chạy SparkApplication; KHÔNG chứa lib crypto (nạp rời qua `spark.jars`)    |
+| `cdr-crypto-udf`    | `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`)                    | Nạp cùng `key-prefix-lib.jar` + jar đối tác                                |
 
 ### 6.1. Build cả project (bài toán 1 + 2)
 
 ```bash
-mvn -B clean package        # build + chạy test column-crypto-lib + spark-app, ra đủ 3 jar ở bảng trên
+mvn -B clean package        # build + chạy test key-prefix-lib + column-crypto-lib + spark-app, ra các jar ở bảng trên (trừ cdr-crypto-udf)
 ```
 
 ### 6.2. Build riêng lib mã hoá (`column-crypto-lib`)
@@ -430,36 +470,39 @@ mvn -B clean package -pl column-crypto-lib -DskipTests # bỏ qua test
 # -> column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar
 ```
 
-Jar này là jar **thuần** (~66 KB, không shade): chỉ chứa `vai.lakehouse.columncrypto.*`, không kèm
-Spark/Jackson/snakeyaml nên không gây xung đột classpath khi nạp vào engine.
+Jar này là jar **thuần** (không shade): chỉ chứa `vai.lakehouse.columncrypto.*`, không kèm
+Spark/Jackson/snakeyaml nên không gây xung đột classpath khi nạp vào engine. Nó cần `key-prefix-lib.jar`
+(`-pl column-crypto-lib -am` tự build luôn) cùng nằm trên classpath.
 
 ### 6.3. Build riêng app chính (`spark-app`)
 
 ```bash
-mvn -B clean package -pl spark-app -am                 # -am: tự build lib trước (app phụ thuộc lib)
+mvn -B clean package -pl spark-app -am                 # -am: build luôn lib (chỉ để chạy test scope test của app)
 mvn -B clean package -pl spark-app -am -DskipTests
-# -> spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar               (fat jar: app + lib + patch)
+# -> spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar               (fat jar: app + Delta + patch, KHÔNG có lib crypto)
 # -> spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar (thin, chỉ patch block token)
 ```
 
-Phải có `-am`: nếu chỉ `-pl spark-app` thì Maven đi tìm `column-crypto-lib` trong `~/.m2` và fail
-khi chưa `mvn install` lib. Fat jar của app đã đóng gói sẵn lib nên **không cần** nạp thêm jar lib
-riêng cho SparkApplication.
+Phải có `-am`: `spark-app` dùng `column-crypto-lib` + `key-prefix-lib` ở scope **test** (cho `CryptoStepSpec`), nên
+nếu chỉ `-pl spark-app` Maven đi tìm chúng trong `~/.m2` và fail khi chưa `mvn install`. Fat jar của app
+**không** đóng gói lib crypto nào: lúc deploy phải nạp jar lib qua Dockerfile + `spark.jars` (mục 7, 8).
+Kiểm tra: `unzip -l <fat jar> | grep -E 'columncrypto|keyprefix'` phải KHÔNG ra dòng nào.
 
 ### 6.4. Chạy test
 
 ```bash
-mvn -B test                                                   # test cả 2 module
+mvn -B test                                                   # test cả 3 module (mặc định)
 mvn -B test -pl column-crypto-lib                             # chỉ test lib
-mvn -B test -pl spark-app -am                                 # test app (kèm test lib)
+mvn -B test -pl spark-app -am                                 # test app (kèm test các lib)
 mvn -B test -pl column-crypto-lib \
     -DwildcardSuites=vai.lakehouse.columncrypto.sql           # chỉ 1 suite/package (tên đầy đủ)
 ```
 
 | Module              | Test                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `column-crypto-lib` | `ColumnCryptoSpec` (DataFrame API), `ColumnCryptoConfigSpec` (settings/file prefix), `VaultPrefixSourceSpec` (Vault giả bằng HTTP server cục bộ), `PrefixSourceSpec` (chain/cache), `PrefixSourceFactorySpec` (cấu hình), `ColumnCryptoExtensionSpec` (SQL function trên SparkSession local: roundtrip, tương thích 2 chiều với DataFrame API, INSERT/SELECT bảng parquet thật, view, che prefix khỏi explain) |
-| `spark-app`         | `BusinessLogicSpec` (schema/DDL/sample-data thuần), `EnvConfigSourceSpec` (ánh xạ env → cấu hình nguồn keyPrefix)                                                                                                                                                                                                                                                                                              |
+| `key-prefix-lib`    | `PrefixFilesSpec` (đọc file prefix, path traversal), `VaultPrefixSourceSpec` (Vault giả bằng HTTP server cục bộ), `PrefixSourceSpec` (chain/cache), `PrefixSourceFactorySpec` (cấu hình nguồn), `EnvConfigSourceSpec` (ánh xạ env → cấu hình) |
+| `column-crypto-lib` | `ColumnCryptoSpec` (DataFrame API), `ColumnCryptoConfigSpec` (settings YAML), `ColumnCryptoExtensionSpec` (SQL function qua SparkSession local) |
+| `spark-app`         | `BusinessLogicSpec` (schema/DDL/sample-data thuần), `CryptoStepSpec` (parse cấu hình + provider, roundtrip qua provider `sql` với extension thật ở scope test và qua provider `cdr` DataFrame API, lỗi khi hàm chưa nạp) |
 
 Test chạy trên `local[*]`, không cần cluster, Vault hay HDFS thật. Log có các dòng
 `AES_CRYPTO_ERROR ... Tag mismatch` là **bình thường**: đó là test cố ý giải mã sai key để kiểm tra
@@ -470,18 +513,18 @@ thật) và việc nạp jar vào sql-engine **không thể** unit test cục b�
 
 ### 6.5. Build & test `cdr-crypto-udf` (bài toán 3 — cần jar đối tác)
 
-Module này phụ thuộc `DataLakeSecurity_jv8.jar` (KHÔNG commit vào repo — xem `.gitignore`), nên
-KHÔNG build mặc định. Phải cài jar đối tác vào local Maven repo trước, rồi build bằng profile
-`cdr-crypto`:
+Module này phụ thuộc `DataLakeSecurity_jv8.jar` (KHÔNG commit vào repo — xem `.gitignore`) và `spark-app`
+phụ thuộc module này, nên **mọi lần build** đều cần jar đối tác đã cài vào local Maven repo (thiếu thì Maven báo
+`Could not resolve dependencies ... datalake-security:jv8`):
 
 ```bash
 # 1. Cài jar đối tác (chỉ cần làm 1 lần, hoặc khi đối tác đổi version)
 mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar \
   -DgroupId=com.viettel.datalake -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar
 
-# 2. Build + test (-am: tự build column-crypto-lib trước, module này phụ thuộc nó)
-mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean test
-mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package -DskipTests
+# 2. Build + test (-am: tự build key-prefix-lib trước, module này phụ thuộc nó)
+mvn -pl cdr-crypto-udf -am clean test
+mvn -pl cdr-crypto-udf -am clean package -DskipTests
 # -> cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar (~15 KB, chỉ vai.lakehouse.columncrypto.cdr.*)
 ```
 
@@ -489,9 +532,9 @@ mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package -DskipTests
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CdrCipherCoreSpec`      | `decrypt()` đọc đúng ciphertext mẫu đối tác, `encrypt()` khớp byte-for-byte (AES/ECB tất định), roundtrip, field rỗng, `verifyCompatibility()`                                        |
 | `CdrCryptoExtensionSpec` | `cdr_encrypt`/`cdr_decrypt` qua SQL: roundtrip, khớp byte-for-byte với `CdrCipherCore` gọi trực tiếp, INSERT/SELECT bảng parquet thật, view, namespace conf riêng `spark.cdrcrypto.*` |
+| `CdrCryptoSpec` | DataFrame API `CdrCrypto`: roundtrip + NULL, khớp byte-for-byte với `CdrCipherCore` và với SQL `cdr_encrypt`, giải mã ciphertext mẫu thật của đối tác, nhiều cột, lỗi schema, `toString` che prefix |
 
-`mvn clean package`/`mvn test` **không có `-Pcdr-crypto`** (mục 6.1, 6.4) hoàn toàn không đụng
-module này — build chính không bao giờ fail vì thiếu jar đối tác. Chi tiết đầy đủ:
+`mvn clean package`/`mvn test` (mục 6.1, 6.4) build luôn module này. Chi tiết đầy đủ:
 [`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`](./docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md).
 
 Kiểm tra jar trước khi dùng — thiếu bước này patch có thể **âm thầm** không hoạt động:
@@ -512,17 +555,32 @@ class thật của runtime).
 
 ## 7. Build & push image
 
-`Dockerfile` (root project) build trên `apache/spark:3.5.1-scala2.12-java11-ubuntu`
-(tag **phải** có hậu tố `-ubuntu`), thêm jar vào `/opt/app/` và log4j2 vào `/opt/spark/conf/`.
+`Dockerfile` (root project) là **multi-stage**, build trên `apache/spark:3.5.1-scala2.12-java11-ubuntu`
+(tag **phải** có hậu tố `-ubuntu`). Stage `base` chứa app + log4j2; mỗi target cuối thêm (hoặc không) các jar lib crypto
+rời vào `/opt/app/`. Chọn biến thể bằng `--target`:
+
+| Target                     | Thêm vào image                                                              | Manifest đi kèm                     |
+| -------------------------- | --------------------------------------------------------------------------- | ----------------------------------- |
+| `no-crypto` (mặc định)     | không                                                                       | (bỏ các biến `CRYPTO_*_FUNCTION`)   |
+| `column-crypto`            | `key-prefix-lib` + `column-crypto-lib`                                      | `k8s/spark-application-column.yaml` |
+| `cdr-crypto`               | `key-prefix-lib` + `cdr-crypto-udf` + `DataLakeSecurity_jv8.jar` (jar đối tác) | `k8s/spark-application-cdr.yaml`    |
 
 ```bash
-mvn -B clean package
-docker build -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1 .
-docker push hub.vtcc.vn:8989/sample-spark-application-privacy:v1
+mvn -B clean package                                   # spark-app + key-prefix-lib + column-crypto-lib
+
+# target column-crypto
+docker build --target column-crypto -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1-column-crypto .
+docker push hub.vtcc.vn:8989/sample-spark-application-privacy:v1-column-crypto
+
+# target cdr-crypto — cần thêm cdr-crypto-udf (mục 6.5) và DataLakeSecurity_jv8.jar ở thư mục gốc
+mvn -pl cdr-crypto-udf -am clean package -DskipTests
+docker build --target cdr-crypto -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1-cdr-crypto .
+docker push hub.vtcc.vn:8989/sample-spark-application-privacy:v1-cdr-crypto
 ```
 
 Tên/tag trên là giả định theo convention `hub.vtcc.vn:8989/<tên>:<tag>` — đổi cho khớp
-registry thực tế và sửa `image:` trong `k8s/spark-application.yaml` theo.
+registry thực tế và sửa `image:` trong manifest tương ứng. Image nào chứa jar nào thì manifest phải khớp
+(`spark.jars` chỉ tới `local:///opt/app/<jar>` có thật trong image); jar đối tác chỉ COPY nguyên trạng, không repackage.
 
 - **Jar path phải khớp CRD**: `mainApplicationFile` dùng scheme `local://` nên Spark Operator
   không upload jar — jar phải nằm đúng `/opt/app/sample-spark-application-privacy-1.0-SNAPSHOT.jar`
@@ -531,7 +589,7 @@ registry thực tế và sửa `image:` trong `k8s/spark-application.yaml` theo.
   (`/etc/security/keytabs/k8s.keytab`) phải được mount vào pod lúc chạy (Secret/ConfigMap qua
   `volumes`/`volumeMounts` trong CRD). Thiếu mount thì job fail ngay ở bước Kerberos login,
   trước cả khi chạm tới HDFS.
-- **Permission**: Dockerfile `chmod -R 777` lên `/opt/app`, `/opt/spark`, `/tmp` nhưng giữ
+- **Permission**: mỗi target cuối `chmod -R 777` lên `/opt/app`, `/opt/spark`, `/tmp` nhưng giữ
   `USER 185` (không set root) — để dù `securityContext` của cluster ép UID/GID khác thì
   Spark vẫn đọc/ghi được, mà không vi phạm `runAsNonRoot` của OpenShift / Pod Security
   Admission "restricted".
@@ -539,16 +597,18 @@ registry thực tế và sửa `image:` trong `k8s/spark-application.yaml` theo.
 ## 8. Deploy & verify trên Kubernetes
 
 ```bash
-kubectl apply -f k8s/spark-application.yaml
+kubectl apply -f k8s/spark-application-column.yaml    # hoặc k8s/spark-application-cdr.yaml, khớp với image target
 kubectl logs <driver-pod> -n vlp-tenantw1xjixm-wsytjjtr0-ingestion
 ```
 
-Các config quan trọng trong `k8s/spark-application.yaml`:
+Các config quan trọng trong `k8s/spark-application-*.yaml`:
 
 | Config                                                                              | Lý do                                                                                                                      |
 | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `mainClass: org.example.SparkApp` + `driver/executor.env`                           | Entry point; app đọc config qua env (`DB_NAME`, `TABLE_NAME`, `TABLE_TYPE`, `INSERT_MODE`, ... — sai giá trị sẽ `exit(2)`) |
-| `spark.sql.extensions` / `spark.sql.catalog.spark_catalog`                          | Bắt buộc khi `TABLE_TYPE=delta` (mặc định) để Delta catalog hoạt động đúng                                                 |
+| `spark.sql.extensions` / `spark.sql.catalog.spark_catalog`                          | Delta extension bắt buộc khi `TABLE_TYPE=delta` (mặc định); NỐI THÊM extension crypto bằng dấu phẩy (`ColumnCryptoExtension` hoặc `CdrCryptoExtension`) |
+| `spark.jars`                                                                        | Đường dẫn `local:///opt/app/...` tới các jar lib crypto (khớp target image); jar cdr cần đủ 3 jar và executor cũng nạp     |
+| `CRYPTO_ENCRYPT_FUNCTION` / `CRYPTO_DECRYPT_FUNCTION` / `CRYPTO_ENCRYPTED_COLUMNS` / `CRYPTO_KEY_FIELD` | Chọn hàm SQL và cột mã hoá; trống cả 2 tên hàm = không mã hoá                                          |
 | `hadoopConfigMap: hdfs-hadoop-hkh`                                                  | Cấp `core-site.xml`/`hdfs-site.xml` của cụm HKH                                                                            |
 | `spark.kerberos.principal / keytab / access.hadoopFileSystems`                      | Kerberos login và lấy delegation token cho HDFS                                                                            |
 | `spark.hadoop.hadoop.security.authentication / authorization`                       | Tiền tố `hadoop.` lặp lại là **đúng**: Spark strip `spark.hadoop.` rồi set phần còn lại vào Hadoop Configuration           |

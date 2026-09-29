@@ -9,7 +9,7 @@ import org.apache.spark.sql.types.{LongType, StringType, StructField, StructType
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import vai.lakehouse.columncrypto.prefix.PrefixSource
+import vai.lakehouse.keyprefix.PrefixSource
 
 /**
  * Test qua SQL thật (`local[2]`), dùng thẳng jar đối tác (đã cài `install:install-file` — xem

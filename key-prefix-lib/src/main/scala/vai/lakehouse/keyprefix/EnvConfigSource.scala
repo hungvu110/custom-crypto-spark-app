@@ -1,10 +1,10 @@
-package org.example
-
-import vai.lakehouse.columncrypto.prefix.{ConfigSource, PrefixSourceFactory}
+package vai.lakehouse.keyprefix
 
 /**
- * Đọc cấu hình lấy keyPrefix từ biến môi trường của SparkApplication. Giữ NGUYÊN tên biến của bản
- * trước (CRYPTO_PREFIX_SOURCE, CRYPTO_KEY_PREFIX_DIR, VAULT_*) nên manifest k8s hiện có không phải sửa.
+ * Đọc cấu hình lấy keyPrefix từ biến môi trường của tiến trình (SparkApplication driver/executor).
+ * Mọi lib crypto (`column-crypto-lib`, `cdr-crypto-udf`) dùng chung bộ biến `VAULT_*`/`CRYPTO_*` này:
+ * extension do Spark tự khởi tạo qua `spark.sql.extensions` (constructor không tham số) nên không
+ * ai truyền cấu hình vào được, nhưng biến môi trường là cấp OS nên đọc trực tiếp được.
  *
  * @param env mặc định là biến môi trường của tiến trình; tiêm map khác để test.
  */

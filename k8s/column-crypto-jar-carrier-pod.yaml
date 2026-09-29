@@ -15,6 +15,9 @@
 #      thẳng làm nguồn cho spark.jars nếu máy này đã có quyền hdfs):
 #        kubectl cp vlp-tenantw1xjixm-wsytjjtr0-ingestion/column-crypto-jar-carrier:/opt/artifacts/column-crypto-lib.jar \
 #          ./column-crypto-lib.jar
+#        kubectl cp vlp-tenantw1xjixm-wsytjjtr0-ingestion/column-crypto-jar-carrier:/opt/artifacts/key-prefix-lib.jar \
+#          ./key-prefix-lib.jar
+#      (cần CẢ 2 jar: spark.jars của sql-engine phải liệt kê cả key-prefix-lib.jar lẫn column-crypto-lib.jar.)
 #   5. Dọn pod ngay sau khi lấy xong — đây là pod tạm, không nên để chạy lâu dài:
 #        kubectl delete -f k8s/column-crypto-jar-carrier-pod.yaml
 apiVersion: v1

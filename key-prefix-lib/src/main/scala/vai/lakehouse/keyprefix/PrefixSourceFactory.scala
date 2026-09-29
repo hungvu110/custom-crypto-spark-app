@@ -1,4 +1,4 @@
-package vai.lakehouse.columncrypto.prefix
+package vai.lakehouse.keyprefix
 
 import java.util.concurrent.TimeUnit
 
@@ -8,7 +8,7 @@ import scala.util.Try
 
 /**
  * Nơi đọc cấu hình theo TÊN LOGIC (`source`, `vault.addr`, ...). Mỗi môi trường ánh xạ tên logic sang
- * tên vật lý của nó: biến môi trường của SparkApplication, hay `spark.columncrypto.*` của sql-engine.
+ * tên vật lý của nó: biến môi trường của SparkApplication, hay `spark.<lib>.*` của sql-engine.
  * Nhờ vậy 1 factory phục vụ cả hai cách deploy.
  */
 trait ConfigSource {
@@ -20,20 +20,25 @@ trait ConfigSource {
 }
 
 /**
- * sql-engine / SparkApplication cấu hình qua Spark conf: `<prefix><key>`. Mặc định
- * `prefix = "spark.columncrypto."` (dùng cho column_encrypt/column_decrypt). Tham số `prefix` cho
- * phép các bộ hàm SQL khác tái dùng nguyên `PrefixSourceFactory` với namespace conf riêng — ví dụ
- * `cdr-crypto-udf` dùng `"spark.cdrcrypto."` để không đụng cấu hình Vault của column_encrypt (2
- * loại prefix có thể cùng tồn tại trên 1 engine). Xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
+ * sql-engine / SparkApplication cấu hình qua Spark conf: `<prefix><key>`. Mỗi lib crypto truyền
+ * namespace conf riêng của nó (vd `"spark.columncrypto."`, `"spark.cdrcrypto."`) để 2 loại prefix
+ * cùng tồn tại trên 1 engine mà không đụng cấu hình Vault của nhau.
  */
-class SparkConfSource(conf: SparkConf, prefix: String = SparkConfSource.Prefix) extends ConfigSource {
+class SparkConfSource(conf: SparkConf, prefix: String) extends ConfigSource {
   override def describe(key: String): String = s"$prefix$key"
   override def get(key: String): Option[String] =
     conf.getOption(describe(key)).map(_.trim).filter(_.nonEmpty)
 }
 
-object SparkConfSource {
-  val Prefix = "spark.columncrypto."
+/**
+ * Thử lần lượt từng `ConfigSource` theo thứ tự, dùng giá trị đầu tiên có mặt. Cho phép một key vừa
+ * cấu hình được qua Spark conf (sql-engine) VỪA fallback về biến môi trường chung
+ * (SparkApplication) mà không cần trùng lặp logic đọc — ví dụ ưu tiên `spark.cdrcrypto.*` nếu có,
+ * nếu không thì dùng chung bộ `VAULT_*`/`CRYPTO_*` của `EnvConfigSource`.
+ */
+class ChainedConfigSource(sources: Seq[ConfigSource]) extends ConfigSource {
+  override def get(key: String): Option[String] = sources.view.flatMap(_.get(key)).headOption
+  override def describe(key: String): String = sources.map(_.describe(key)).mkString(" hoặc ")
 }
 
 /**

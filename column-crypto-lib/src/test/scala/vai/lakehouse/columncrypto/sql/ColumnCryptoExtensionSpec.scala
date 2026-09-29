@@ -11,7 +11,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import vai.lakehouse.columncrypto.{ColumnCrypto, ColumnCryptoConfig}
-import vai.lakehouse.columncrypto.prefix.PrefixSource
+import vai.lakehouse.keyprefix.PrefixSource
 
 class ColumnCryptoExtensionSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 

@@ -1,9 +1,7 @@
 package vai.lakehouse.columncrypto
 
-import java.io.{File, FileInputStream, InputStream}
-
 import org.yaml.snakeyaml.Yaml
-import vai.lakehouse.columncrypto.prefix.PrefixSource
+import vai.lakehouse.keyprefix.{PrefixFiles, PrefixSource}
 
 import scala.collection.JavaConverters._
 
@@ -31,10 +29,6 @@ case class ColumnCryptoConfig(
 }
 
 object ColumnCryptoConfig {
-
-  // Trùng bộ ký tự hợp lệ của key trong K8s Secret, và không cho bắt đầu bằng "." nên
-  // loại được "." / ".." — tên bảng đi vào đường dẫn file, không được thoát khỏi thư mục.
-  private val DatasetName = "^[A-Za-z0-9_][A-Za-z0-9_.-]*$".r
 
   private def rootMap(yamlContent: String): java.util.Map[String, Any] =
     new Yaml().load[Any](yamlContent) match {
@@ -77,36 +71,10 @@ object ColumnCryptoConfig {
     ColumnCryptoConfig(keyPrefix, s.keyField, s.encryptedColumns)
   }
 
-  private def readContent(path: String): String = {
-    val file = new File(path)
-    val stream: InputStream =
-      if (file.exists()) new FileInputStream(file)
-      else {
-        val fromClasspath = getClass.getClassLoader.getResourceAsStream(path)
-        if (fromClasspath == null) {
-          throw new IllegalArgumentException(
-            s"Column crypto config file not found: '$path' (tried both disk path and classpath resource)")
-        }
-        fromClasspath
-      }
-    try scala.io.Source.fromInputStream(stream, "UTF-8").mkString
-    finally stream.close()
-  }
-
-  /** Tên bảng đi vào đường dẫn file / URL Vault nên phải được kiểm tra trước khi dùng. */
-  def requireValidDatasetName(datasetName: String): Unit =
-    require(DatasetName.pattern.matcher(datasetName).matches(),
-      s"Invalid dataset name '$datasetName': only letters, digits, '_', '-' and '.' are allowed (must not start with '.')")
-
-  /** Đọc keyPrefix của 1 bảng từ file `<prefixDir>/<datasetName>` (đĩa trước, fallback classpath). */
-  def readPrefix(prefixDir: String, datasetName: String): String = {
-    requireValidDatasetName(datasetName)
-    val prefix = readContent(s"$prefixDir/$datasetName").replaceAll("[\\r\\n]+$", "")
-    require(prefix.nonEmpty, s"keyPrefix for dataset '$datasetName' is empty")
-    prefix
-  }
-
   /** Đọc file settings, lấy keyPrefix của bảng từ `prefixSource`, trả config đầy đủ cho 1 dataset. */
   def load(settingsPath: String, prefixSource: PrefixSource, datasetName: String): ColumnCryptoConfig =
-    merge(datasetName, parseSettings(readContent(settingsPath)), prefixSource.read(datasetName))
+    merge(
+      datasetName,
+      parseSettings(PrefixFiles.readContent(settingsPath, "Column crypto config file")),
+      prefixSource.read(datasetName))
 }

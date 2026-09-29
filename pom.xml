@@ -12,35 +12,31 @@
   <name>sample-spark-application-privacy-parent</name>
   <description>
     Parent của các module:
+      - key-prefix-lib    : lấy keyPrefix (K8s Secret / Vault / env / Spark conf) — hạ tầng dùng chung
+                            cho mọi lib crypto, không chứa thuật toán mã hoá.
       - column-crypto-lib : thư viện mã hoá/giải mã cột (DataFrame API + SQL function),
                             đưa vào sql-engine / Spark app qua spark.jars.
       - spark-app         : Spark 3.5.1 sample app đọc/ghi HDFS (Dell Isilon OneFS) với wire
-                            encryption bật, kèm patch block token; dùng column-crypto-lib.
-      - cdr-crypto-udf    : (profile "cdr-crypto") UDF bọc thư viện mã hoá CDR của đối tác
-                            (DataLakeSecurity_jv8.jar) — xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
+                            encryption bật, kèm patch block token. KHÔNG nhúng lib crypto nào: mã hoá
+                            là plugin nạp qua spark.jars + spark.sql.extensions.
+      - cdr-crypto-udf    : mã hoá CDR của đối tác (DataLakeSecurity_jv8.jar) qua cả SQL function và
+                            DataFrame API — xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
   </description>
 
-  <modules>
-    <module>column-crypto-lib</module>
-    <module>spark-app</module>
-  </modules>
-
   <!--
-    "cdr-crypto-udf" phụ thuộc DataLakeSecurity_jv8.jar (jar của đối tác, không commit vào repo —
-    xem .gitignore). Tách thành profile KHÔNG kích hoạt mặc định để "mvn clean package" ở gốc
-    không fail với người chưa `mvn install:install-file` jar đó cục bộ. Build kèm module này:
+    "cdr-crypto-udf" phụ thuộc DataLakeSecurity_jv8.jar (jar của đối tác, KHÔNG commit vào repo —
+    xem .gitignore) và spark-app compile phụ thuộc module này (gọi CdrCrypto qua DataFrame API),
+    nên build mặc định BẮT BUỘC đã cài jar đó vào ~/.m2 trước (1 lần):
     `mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake
       -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar`
-    rồi `mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package`.
+    Thiếu thì Maven báo "Could not resolve dependencies ... datalake-security:jv8".
   -->
-  <profiles>
-    <profile>
-      <id>cdr-crypto</id>
-      <modules>
-        <module>cdr-crypto-udf</module>
-      </modules>
-    </profile>
-  </profiles>
+  <modules>
+    <module>key-prefix-lib</module>
+    <module>column-crypto-lib</module>
+    <module>cdr-crypto-udf</module>
+    <module>spark-app</module>
+  </modules>
 
   <properties>
     <scala.version>2.12.18</scala.version>

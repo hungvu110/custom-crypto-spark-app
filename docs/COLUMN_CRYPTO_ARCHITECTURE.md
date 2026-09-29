@@ -85,7 +85,7 @@ biểu thức đó. Đây là lý do hướng này an toàn hơn so với việc
 ### 1.5. Nguồn `keyPrefix`: Kubernetes auth và token tĩnh
 
 `VaultPrefixSource` hỗ trợ 2 cách xác thực với Vault (chọn qua `vault.authMethod`, xem
-[`PrefixSourceFactory.scala`](../column-crypto-lib/src/main/scala/vai/lakehouse/columncrypto/prefix/PrefixSourceFactory.scala)):
+[`PrefixSourceFactory.scala`](../key-prefix-lib/src/main/scala/vai/lakehouse/keyprefix/PrefixSourceFactory.scala)):
 
 | `vault.authMethod`      | Luồng gọi Vault                                                                                                           | Khi nào dùng                                                                                                                                                           |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

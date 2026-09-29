@@ -26,10 +26,22 @@ spec:
         value: "append"
       - name: ENABLE_HIVE_SUPPORT
         value: "true"
-      # Cấu hình mã hoá tách làm 2 nguồn:
-      #  - CRYPTO_CONFIG_PATH: keyField/encryptedColumns (KHÔNG nhạy cảm) — mount từ ConfigMap.
-      #  - keyPrefix (nhạy cảm): CHỈ driver cần (executor nhận qua plan) nên chỉ khai ở driver.
-      #    CRYPTO_PREFIX_SOURCE=vault -> app tự gọi thẳng Vault KV v2 bằng TOKEN (VAULT_AUTH_METHOD=token):
+      # --- Mã hoá cột: BIẾN THỂ cdr-crypto (image target "cdr-crypto") ---
+      # App KHÔNG nhúng lib crypto (jar chỉ có mặt lúc chạy, nạp qua spark.jars ở sparkConf bên dưới) nhưng
+      # gọi thẳng DataFrame API của lib: CRYPTO_PROVIDER=cdr -> CdrCrypto.encryptColumns/decryptColumns
+      # (cdr-crypto-udf). Không đặt CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION khi dùng provider này.
+      # Muốn gọi bằng SQL function theo tên thay vì DataFrame API: bỏ CRYPTO_PROVIDER, đặt
+      # CRYPTO_ENCRYPT_FUNCTION=cdr_encrypt và CRYPTO_DECRYPT_FUNCTION=cdr_decrypt (cần CdrCryptoExtension ở
+      # spark.sql.extensions). Các biến CRYPTO_* này chỉ driver cần.
+      - name: CRYPTO_PROVIDER
+        value: "cdr"
+      # Các cột cần mã hoá (phân cách bằng dấu phẩy) và cột giữ plaintext dùng làm nguyên liệu sinh key theo dòng.
+      - name: CRYPTO_ENCRYPTED_COLUMNS
+        value: "name,city"
+      - name: CRYPTO_KEY_FIELD
+        value: "created_at"
+      # Nguồn keyPrefix (nhạy cảm) do extension tự đọc từ các biến môi trường dưới đây (CHỈ driver cần).
+      #    CRYPTO_PREFIX_SOURCE=vault -> gọi thẳng Vault KV v2 bằng TOKEN (VAULT_AUTH_METHOD=token):
       #    đọc <VAULT_KV_MOUNT>/data/<VAULT_KV_PATH>/<tên bảng>, field VAULT_KEY_FIELD (mặc định
       #    "keyPrefix"). Token lấy từ K8s Secret "spark-vault-token" (key "token") qua secretKeyRef —
       #    Secret CHỈ dùng để chuyển token vào pod, app không đọc gì qua ExternalSecret. Tạo Secret
@@ -37,8 +49,6 @@ spec:
       #    Muốn dùng K8s Secret chứa prefix thay Vault: đặt CRYPTO_PREFIX_SOURCE=file +
       #    CRYPTO_KEY_PREFIX_DIR=/etc/key-prefix và mount Secret "key-prefix"
       #    (k8s/key-prefix-secret.yaml) vào đó — xem README.
-      - name: CRYPTO_CONFIG_PATH
-        value: "/etc/app-config/column-crypto.yaml"
       - name: CRYPTO_PREFIX_SOURCE
         value: "vault"
       # Địa chỉ Vault lấy từ ClusterSecretStore datalake-vault. Đang là HTTP: token và keyPrefix
@@ -63,10 +73,6 @@ spec:
       # (in ra hex dump SASL wrap/unwrap rất dài, xem SPARK_HDFS_WIRE_ENCRYPTION_TASK.md mục 14.2).
       - name: HDFS_SASL_DEBUG
         value: "false"
-    volumeMounts:
-      - name: crypto-settings
-        mountPath: /etc/app-config
-        readOnly: true
 
   executor:
     coreLimit: 1000m
@@ -89,20 +95,9 @@ spec:
         value: "append"
       - name: ENABLE_HIVE_SUPPORT
         value: "true"
-      - name: CRYPTO_CONFIG_PATH
-        value: "/etc/app-config/column-crypto.yaml"
       - name: HDFS_SASL_DEBUG
         value: "false"
-    volumeMounts:
-      - name: crypto-settings
-        mountPath: /etc/app-config
-        readOnly: true
 
-  # ConfigMap "column-crypto-settings" (keyField/encryptedColumns, không nhạy
-  # cảm — file nguồn có thể commit vào Git) PHẢI có trước khi apply manifest này:
-  #   kubectl create configmap column-crypto-settings \
-  #     --from-file=column-crypto.yaml=./column-crypto.yaml \
-  #     -n vlp-tenantw1xjixm-wsytjjtr0-ingestion
   # Secret "spark-vault-token" (token Vault, NHẠY CẢM — không commit) PHẢI có trước, cùng namespace với
   # driver (secretKeyRef không đọc được Secret ở namespace khác). Nên dùng token RIÊNG chỉ đọc
   # path key-prefix, không dùng lại token của ExternalSecrets (xem README mục "Xác thực bằng token Vault tĩnh"):
@@ -110,20 +105,16 @@ spec:
   #   kubectl create secret generic spark-vault-token \
   #     -n vlp-tenantw1xjixm-wsytjjtr0-ingestion --from-literal=token="$T"; unset T
   # Thiếu Secret thì pod driver không khởi động được (CreateContainerConfigError).
-  # Thiếu ConfigMap thì driver fail ngay ở ColumnCryptoConfig.load() với lỗi
-  # "Column crypto config file not found" (vì path trỏ /etc/... không tồn tại).
-  volumes:
-    - name: crypto-settings
-      configMap:
-        name: column-crypto-settings
+  # (ConfigMap "column-crypto-settings" KHÔNG còn cần: cột mã hoá khai bằng env CRYPTO_ENCRYPTED_COLUMNS/CRYPTO_KEY_FIELD.)
 
   hadoopConfigMap: hdfs-hadoop-hkh
-  # Image build từ Dockerfile ở root project (FROM apache/spark:3.5.1-scala2.12-java11
-  # + jar mới). Đây là tên/tag GIẢ ĐỊNH theo đúng convention cũ
+  # Image build từ Dockerfile ở root project, target "cdr-crypto" (cần jar đối tác DataLakeSecurity_jv8.jar ở gốc project):
+  #   docker build --target cdr-crypto -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1-cdr-crypto .
+  # Đây là tên/tag GIẢ ĐỊNH theo đúng convention cũ
   # (hub.vtcc.vn:8989/<tên>:<tag>) -> đổi lại nếu registry path/tag thực tế
   # của bạn khác. Base image này KHÔNG có sẵn krb5.conf/keytab -> phải mount
   # qua volumes/volumeMounts (xem README, mục "Build & push image").
-  image: hub.vtcc.vn:8989/sample-spark-application-privacy:v1
+  image: hub.vtcc.vn:8989/sample-spark-application-privacy:v1-cdr-crypto
   imagePullPolicy: Always
 
   # Fat jar chứa CẢ app code LẪN LenientBlockTokenIdentifier + META-INF/services.
@@ -161,8 +152,19 @@ spec:
     # Thiếu 2 dòng này thì "CREATE TABLE ... USING delta" sẽ báo
     # DATA_SOURCE_NOT_FOUND hoặc bảng không được quản lý đúng bởi Delta
     # catalog. delta-spark 3.2.0 đã được đóng gói sẵn trong fat jar (pom.xml).
-    spark.sql.extensions: io.delta.sql.DeltaSparkSessionExtension
+    #
+    # vai.lakehouse.columncrypto.cdr.CdrCryptoExtension: đăng ký thêm SQL function cdr_encrypt/cdr_decrypt (UDF bọc
+    # lib mã hoá CDR của đối tác) — KHÔNG bắt buộc với CRYPTO_PROVIDER=cdr (app gọi DataFrame API), giữ lại để có thể
+    # dùng 2 hàm này trong SQL ad-hoc. NỐI BẰNG DẤU PHẨY, không ghi đè extension Delta ở trên.
+    spark.sql.extensions: io.delta.sql.DeltaSparkSessionExtension,vai.lakehouse.columncrypto.cdr.CdrCryptoExtension
     spark.sql.catalog.spark_catalog: org.apache.spark.sql.delta.catalog.DeltaCatalog
+
+    # --- Nạp lib crypto: 2 jar này KHÔNG nằm trong fat jar chính (mainApplicationFile) ---
+    # Dockerfile (target cdr-crypto) COPY sẵn vào /opt/app/; scheme local:// giống mainApplicationFile
+    # (Spark Operator không upload jar, path phải khớp đúng trong image). key-prefix-lib là hạ tầng lấy
+    # keyPrefix (Vault/file/env) dùng chung; cdr-crypto-udf là extension; DataLakeSecurity_jv8.jar là lib của
+    # đối tác. cdr_encrypt là UDF thật nên EXECUTOR cũng cần đủ 3 jar (spark.jars áp dụng cho cả executor).
+    spark.jars: local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/cdr-crypto-udf-1.0-SNAPSHOT.jar,local:///opt/app/DataLakeSecurity_jv8.jar
 
     # --- Spark ---
     spark.eventLog.enabled: "false"

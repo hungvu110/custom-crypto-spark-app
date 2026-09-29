@@ -42,7 +42,7 @@ sample-spark-application-privacy-parent (pom.xml gốc)
 ```
 
 Vì sao tách module riêng thay vì thêm vào `column-crypto-lib`:
-- `column-crypto-lib` hiện là jar **thuần**, không phụ thuộc gì ngoài Spark (`provided`). Module
+- `column-crypto-lib` là jar **thuần**, không phụ thuộc gì ngoài Spark và `key-prefix-lib` (`provided`). Module
   mới phải phụ thuộc `DataLakeSecurity_jv8.jar` — một jar không nằm trên Maven Central, không
   do mình kiểm soát vòng đời. Tách riêng để lỗi/thay đổi phía đối tác không ảnh hưởng
   `column_encrypt`/`column_decrypt` đang chạy ổn định.
@@ -94,9 +94,8 @@ Thêm profile không kích hoạt mặc định trong `pom.xml` gốc:
 </profiles>
 ```
 
-Build bình thường: `mvn clean package` — không đụng `cdr-crypto-udf`.
-Build kèm module đối tác (sau khi đã `install:install-file` ở mục 1.1):
-`mvn clean package -Pcdr-crypto`.
+Build: `mvn clean package` ở thư mục gốc (sau khi đã `install:install-file` ở mục 1.1) — module này nằm trong build
+mặc định vì `spark-app` phụ thuộc nó (gọi DataFrame API `CdrCrypto`).
 
 ## 2. `CdrCipherCore` — lõi crypto, không phụ thuộc Spark
 
@@ -190,15 +189,14 @@ import org.apache.spark.sql.SparkSessionExtensions
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Literal, ScalaUDF}
 import org.apache.spark.sql.types.StringType
-import vai.lakehouse.columncrypto.ColumnCrypto
-import vai.lakehouse.columncrypto.prefix.{PrefixSource, PrefixSourceFactory, SparkConfSource}
+import vai.lakehouse.keyprefix.{ChainedConfigSource, EnvConfigSource, PrefixSource, PrefixSourceFactory, SparkConfSource}
 
 /**
  * Đăng ký cdr_encrypt(table, value, fieldValue) / cdr_decrypt(table, value, fieldValue), bọc
  * CdrCipherCore. KHÁC ColumnCryptoExtension ở chỗ: builder trả về ScalaUDF (chạy code JVM
  * thật trên executor) thay vì cây biểu thức built-in — vì thuật toán của đối tác (vòng lặp cộng
  * dồn key + AES/ECB) không biểu diễn được bằng hàm built-in của Spark. Do đó:
- *   - Executor BẮT BUỘC có DataLakeSecurity_jv8.jar + column-crypto-lib.jar + cdr-crypto-udf.jar
+ *   - Executor BẮT BUỘC có DataLakeSecurity_jv8.jar + key-prefix-lib.jar + cdr-crypto-udf.jar
  *     trên classpath (spark.jars) — khác hẳn cdr_encrypt/cdr_decrypt built-in hiện tại.
  *   - keyPrefix nằm trong CLOSURE của UDF (không phải Literal trong plan) — không cần
  *     redactKeyPrefixInPlans để che khỏi EXPLAIN, nhưng vẫn tồn tại trong bộ nhớ/task executor.
@@ -287,18 +285,18 @@ stage riêng, không chặn build chính nếu thiếu jar.
 ```bash
 mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar \
   -DgroupId=com.viettel.datalake -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar
-mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package
+mvn -pl cdr-crypto-udf -am clean package
 # -> cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar
 ```
 
 ### 5.2. Nạp lên sql-engine — 3 jar, không phải 1
 
 ```
-spark.jars = <path>/DataLakeSecurity_jv8.jar,<path>/column-crypto-lib-1.0-SNAPSHOT.jar,<path>/cdr-crypto-udf-1.0-SNAPSHOT.jar
-spark.sql.extensions = <extension đang có>,vai.lakehouse.columncrypto.sql.ColumnCryptoExtension,vai.lakehouse.columncrypto.cdr.CdrCryptoExtension
+spark.jars = <path>/DataLakeSecurity_jv8.jar,<path>/key-prefix-lib-1.0-SNAPSHOT.jar,<path>/cdr-crypto-udf-1.0-SNAPSHOT.jar
+spark.sql.extensions = <extension đang có>,vai.lakehouse.columncrypto.cdr.CdrCryptoExtension
 ```
 
-`DataLakeSecurity_jv8.jar` cần được đặt cùng chỗ (HDFS/registry nội bộ) với `column-crypto-lib.jar`
+`DataLakeSecurity_jv8.jar` cần được đặt cùng chỗ (HDFS/registry nội bộ) với `key-prefix-lib.jar`
 — dùng lại đúng hạ tầng `hdfs://` đã dùng cho `column-crypto-lib` (xem
 `COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md` mục 2). **Cần xác nhận với đối tác/team pháp lý** việc đặt
 jar của họ lên hạ tầng nội bộ có nằm trong phạm vi họ đã cấp phép hay không, trước khi làm việc này.
@@ -344,7 +342,7 @@ nào áp dụng cho từng loại CDR nếu chưa có đủ danh sách.
 |---|---|---|
 | Ai thực thi mã hoá/giải mã | `aes_encrypt`/`aes_decrypt` built-in của Spark | Code JVM thật — `TransformDL.decrypt()` (đối tác) và `CdrCipherCore.encrypt()` (tự viết) |
 | Vì sao chọn cách này | Không có ràng buộc định dạng từ bên ngoài | **Bắt buộc** — phải khớp byte-for-byte với thuật toán đối tác, không thể tái tạo bằng built-in (vòng lặp cộng dồn key có độ dài động) |
-| Executor cần jar nào | Không cần jar nào | **3 jar**: `DataLakeSecurity_jv8.jar`, `column-crypto-lib.jar`, `cdr-crypto-udf.jar` — qua `spark.jars` |
+| Executor cần jar nào | Không cần jar nào | **3 jar**: `DataLakeSecurity_jv8.jar`, `key-prefix-lib.jar`, `cdr-crypto-udf.jar` — qua `spark.jars` |
 | Thuật toán mã hoá | AES-**256**-GCM (có xác thực, IV ngẫu nhiên) | AES-**128**-ECB/PKCS5 (không xác thực, không IV, **tất định**) |
 | Sinh key | `SHA-256(prefix ‖ keyField)` | Cộng ký tự tuần hoàn (Vigenère-style), **không băm** |
 | Catalyst tối ưu/codegen | Có — nút built-in tự sinh code | Không — `ScalaUDF` là hộp đen |
@@ -369,12 +367,30 @@ nào áp dụng cho từng loại CDR nếu chưa có đủ danh sách.
 ## 9. Thứ tự triển khai
 
 1. `mvn install:install-file` jar đối tác (mục 1.1) trên máy dev.
-2. Thêm module `cdr-crypto-udf` + profile `cdr-crypto` vào `pom.xml` gốc (mục 1).
+2. Thêm module `cdr-crypto-udf` vào `pom.xml` gốc (mục 1).
 3. Refactor `SparkConfSource` nhận `prefix` qua constructor (mục 3, ghi chú kỹ thuật) — thay đổi tương thích ngược trong `column-crypto-lib`.
 4. Viết `CdrCipherCore` + test JVM thuần, đối chiếu với `tools/datalake-security-test/EncryptDecryptTest.java` (mục 2, 4).
 5. Viết `CdrCryptoExtension` + test SQL (mục 3, 4).
-6. `mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package`, kiểm tra jar sinh ra.
+6. `mvn -pl cdr-crypto-udf -am clean package`, kiểm tra jar sinh ra.
 7. Xin xác nhận đối tác các điểm ở mục 8 trước khi đưa lên môi trường thật.
 8. Cấu hình `spark.jars` + `spark.sql.extensions` + `spark.cdrcrypto.*` trên sql-engine thử nghiệm (mục 5).
 9. Test qua query console (mục 6), đối chiếu cả hai chiều với hệ thống thật của đối tác.
 10. Viết hướng dẫn vận hành/xử lý sự cố riêng cho `cdr_encrypt`/`cdr_decrypt` (tương tự mục 6 của `COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`) sau khi đã chạy ổn định.
+
+## Cập nhật kiến trúc: hạ tầng lấy prefix tách thành `key-prefix-lib`
+
+Ghi chú bổ sung sau khi triển khai: phần lấy keyPrefix (`PrefixSource`, `VaultPrefixSource`, `PrefixSourceFactory`,
+`EnvConfigSource`, ...) đã được tách khỏi `column-crypto-lib` thành module riêng `key-prefix-lib` (package
+`vai.lakehouse.keyprefix`). `cdr-crypto-udf` chỉ phụ thuộc `key-prefix-lib`, **không** phụ thuộc `column-crypto-lib` — nên phần
+"3 jar" ở mục 5.2 là `DataLakeSecurity_jv8.jar` + `key-prefix-lib.jar` + `cdr-crypto-udf.jar`. `CdrCryptoExtension` đọc cấu hình
+theo thứ tự `spark.cdrcrypto.*` rồi tới biến môi trường chung (`VAULT_*`, `CRYPTO_PREFIX_SOURCE`, ...). Image `cdr-crypto`
+(Dockerfile target `cdr-crypto`) và manifest `k8s/spark-application-cdr.yaml` đóng gói/nạp đúng 3 jar này.
+
+## Cập nhật: hỗ trợ cả DataFrame API
+
+Ngoài SQL function `cdr_encrypt`/`cdr_decrypt`, module có API DataFrame `CdrCrypto` (đối ứng `ColumnCrypto` của `column-crypto-lib`):
+`CdrCrypto.encryptColumns(df, datasetName, keyField, columns)` / `decryptColumns(...)` (hoặc dựng `CdrCryptoConfig` qua
+`CdrCrypto.loadConfig`). Cả 2 đường dùng chung `CdrCrypto.transform` nên cho kết quả giống hệt nhau (có test đối chiếu
+byte-for-byte với SQL và với `CdrCipherCore`). Vì là UDF thật nên executor vẫn cần `DataLakeSecurity_jv8.jar` + `cdr-crypto-udf.jar`.
+`spark-app` gọi API này khi `CRYPTO_PROVIDER=cdr`; vì vậy `spark-app` compile phụ thuộc `cdr-crypto-udf` (scope `provided`, không đóng
+vào fat jar) và module này nằm trong build mặc định — build mọi lúc đều cần jar đối tác đã cài vào `~/.m2`.
