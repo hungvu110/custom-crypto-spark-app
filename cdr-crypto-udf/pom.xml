@@ -23,7 +23,7 @@
     Jar DataLakeSecurity_jv8.jar KHÔNG nằm trên Maven Central — cài vào local repo trước:
       mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake
         -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar
-    rồi build: mvn -pl cdr-crypto-udf -am clean package (hoặc build cả project ở thư mục gốc).
+    rồi build bằng profile "cdr-crypto": mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package.
   </description>
 
   <!--

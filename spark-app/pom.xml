@@ -21,26 +21,11 @@
 
   <dependencies>
     <!--
-      Lib crypto KHÔNG được đóng vào fat jar của app (không có dependency nào ở scope compile). Mã hoá là
-      plugin nạp lúc deploy (Dockerfile COPY jar + sparkConf spark.jars/spark.sql.extensions):
-        - cdr-crypto-udf + key-prefix-lib: "provided" — app biên dịch với API DataFrame `CdrCrypto`
-          (CRYPTO_PROVIDER=cdr) nhưng jar chỉ có mặt lúc chạy ở image target "cdr-crypto". Class chỉ được
-          nạp khi nhánh đó thật sự chạy, nên image "no-crypto"/"column-crypto" vẫn chạy bình thường.
-        - column-crypto-lib: chỉ "test" — app gọi hàm SQL column_encrypt theo TÊN (CRYPTO_PROVIDER=sql).
-        - datalake-security (jar đối tác): chỉ "test", để chạy thử đường cdr; không đóng gói, không phát tán.
+      KHÔNG có dependency nào tới lib crypto ở scope compile/provided: jar của app không nhúng và không
+      biên dịch với column-crypto-lib hay cdr-crypto-udf. Mã hoá là plugin nạp lúc deploy (Dockerfile COPY jar +
+      sparkConf spark.jars/spark.sql.extensions), app chỉ gọi hàm SQL theo tên cấu hình (xem CryptoStep).
+      2 lib dưới đây chỉ ở scope test để CryptoStepSpec chạy thử với extension thật.
     -->
-    <dependency>
-      <groupId>vai.lakehouse</groupId>
-      <artifactId>cdr-crypto-udf</artifactId>
-      <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>vai.lakehouse</groupId>
-      <artifactId>key-prefix-lib</artifactId>
-      <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
     <dependency>
       <groupId>vai.lakehouse</groupId>
       <artifactId>column-crypto-lib</artifactId>
@@ -48,9 +33,9 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>com.viettel.datalake</groupId>
-      <artifactId>datalake-security</artifactId>
-      <version>jv8</version>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>key-prefix-lib</artifactId>
+      <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>

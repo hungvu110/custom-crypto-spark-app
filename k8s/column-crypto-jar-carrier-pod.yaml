@@ -1,9 +1,12 @@
-# Pod TẠM (không phải Deployment/Job) chỉ để lấy jar column-crypto-lib ra khỏi image, dùng khi
+# Pod TẠM (không phải Deployment/Job) chỉ để lấy TẤT CẢ jar của project (key-prefix-lib, column-crypto-lib,
+# cdr-crypto-udf, DataLakeSecurity_jv8, jar của app và patch block token) ra khỏi image, dùng khi
 # không thể copy file jar thủ công vào môi trường prod. Image dựng từ Dockerfile.jar-carrier ở
 # root project — build/push từ máy có quyền push registry, KHÔNG cần build trực tiếp trên cluster.
 #
 # Quy trình:
-#   1. mvn -B -pl column-crypto-lib -am clean package
+#   1. mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake \
+#        -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar     # 1 lần
+#      mvn -B -Pcdr-crypto clean package -DskipTests                       # build đủ jar của mọi module
 #   2. docker build -f Dockerfile.jar-carrier -t <registry>/column-crypto-jar-carrier:v1 .
 #      docker push <registry>/column-crypto-jar-carrier:v1
 #   3. Sửa "image:" bên dưới cho khớp registry/tag vừa push, và "namespace:" cho khớp namespace
@@ -13,11 +16,13 @@
 #          -n vlp-tenantw1xjixm-wsytjjtr0-ingestion --timeout=60s
 #   4. Lấy jar ra máy có kubectl (từ đó tự đưa tiếp lên HDFS bằng `hdfs dfs -put`, hoặc dùng
 #      thẳng làm nguồn cho spark.jars nếu máy này đã có quyền hdfs):
-#        kubectl cp vlp-tenantw1xjixm-wsytjjtr0-ingestion/column-crypto-jar-carrier:/opt/artifacts/column-crypto-lib.jar \
-#          ./column-crypto-lib.jar
-#        kubectl cp vlp-tenantw1xjixm-wsytjjtr0-ingestion/column-crypto-jar-carrier:/opt/artifacts/key-prefix-lib.jar \
-#          ./key-prefix-lib.jar
-#      (cần CẢ 2 jar: spark.jars của sql-engine phải liệt kê cả key-prefix-lib.jar lẫn column-crypto-lib.jar.)
+#        kubectl cp vlp-tenantw1xjixm-wsytjjtr0-ingestion/column-crypto-jar-carrier:/opt/artifacts ./artifacts
+#      -> ra thư mục ./artifacts chứa đủ 6 jar, giữ nguyên tên gốc:
+#           key-prefix-lib-1.0-SNAPSHOT.jar, column-crypto-lib-1.0-SNAPSHOT.jar, cdr-crypto-udf-1.0-SNAPSHOT.jar,
+#           DataLakeSecurity_jv8.jar, sample-spark-application-privacy-1.0-SNAPSHOT.jar,
+#           sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar
+#      (spark.jars của sql-engine chỉ cần các jar theo bảng ở docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 1; key-prefix-lib
+#       luôn phải có cùng mọi lib crypto. `kubectl cp` cả thư mục cần `tar` trong container — alpine có sẵn qua busybox.)
 #   5. Dọn pod ngay sau khi lấy xong — đây là pod tạm, không nên để chạy lâu dài:
 #        kubectl delete -f k8s/column-crypto-jar-carrier-pod.yaml
 apiVersion: v1

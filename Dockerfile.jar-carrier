@@ -1,28 +1,51 @@
 # Dockerfile.jar-carrier
 #
-# Đóng gói jar column-crypto-lib (+ key-prefix-lib) vào MỘT image tối giản, dùng để mang jar vào môi trường prod
+# Đóng gói TẤT CẢ jar của project vào MỘT image tối giản, dùng để mang jar vào môi trường prod
 # khi không thể copy file thủ công vào cluster đích: build + push image này qua pipeline/máy
 # có quyền push registry, rồi chạy k8s/column-crypto-jar-carrier-pod.yaml TRÊN cluster đích và
 # `kubectl cp` jar ra khỏi pod — xem hướng dẫn đầy đủ ở comment trong file pod yaml đó.
 #
 # Image chỉ cần "đứng yên" để kubectl cp lấy jar ra, không cần JDK/Spark/Scala.
 #
-# Build (context = thư mục gốc project, cần thấy column-crypto-lib/target/*.jar):
-#   mvn -B -pl column-crypto-lib -am clean package
+# Image chứa (đều giữ NGUYÊN tên file gốc, khớp với các lệnh `hdfs dfs -put` và `spark.jars` trong
+# docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md):
+#   key-prefix-lib-1.0-SNAPSHOT.jar         hạ tầng lấy keyPrefix — cần cho mọi lib crypto
+#   column-crypto-lib-1.0-SNAPSHOT.jar      column_encrypt/column_decrypt
+#   cdr-crypto-udf-1.0-SNAPSHOT.jar         cdr_encrypt/cdr_decrypt
+#   DataLakeSecurity_jv8.jar                lib mã hoá CDR của đối tác (KHÔNG phải của mình, xem cảnh báo bên dưới)
+#   sample-spark-application-privacy-1.0-SNAPSHOT.jar                     fat jar của app (SparkApplication)
+#   sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar   patch block token Isilon (thin)
+#
+# CẢNH BÁO: DataLakeSecurity_jv8.jar là jar của đối tác. Đưa nó vào image rồi push lên registry là phát tán jar
+# đó — chỉ làm khi đã xác nhận với đối tác/pháp lý và registry đích là nội bộ có kiểm soát truy cập.
+#
+# Build (context = thư mục gốc project). GIẢ ĐỊNH đã build xong mọi jar và có DataLakeSecurity_jv8.jar ở thư mục gốc:
+#   mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake \
+#     -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar     # 1 lần, để build được cdr-crypto-udf
+#   mvn -B -Pcdr-crypto clean package -DskipTests                       # ra đủ jar của mọi module
 #   docker build -f Dockerfile.jar-carrier -t <registry>/column-crypto-jar-carrier:v1 .
 #   docker push <registry>/column-crypto-jar-carrier:v1
+# Thiếu jar nào thì `docker build` báo "not found" đúng tên file đó ở bước COPY.
 FROM alpine:3.20
 
 # uid=1000 tường minh (không phải uid mặc định của alpine) — trùng yêu cầu chạy image bằng
 # user 1000 của môi trường đích. "adduser -D": không cần mật khẩu, không cần shell login.
 RUN adduser -D -u 1000 -h /home/carrier carrier
 
-ARG JAR=column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar
-# key-prefix-lib: hạ tầng lấy keyPrefix, column-crypto-lib phụ thuộc vào nó nên phải mang theo cả 2 jar.
-ARG PREFIX_JAR=key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar
 RUN mkdir -p /opt/artifacts
-COPY ${JAR} /opt/artifacts/column-crypto-lib.jar
-COPY ${PREFIX_JAR} /opt/artifacts/key-prefix-lib.jar
+
+# --- Lib crypto + hạ tầng lấy keyPrefix ---
+COPY key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar             /opt/artifacts/
+COPY column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar       /opt/artifacts/
+COPY cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar             /opt/artifacts/
+
+# --- Jar của đối tác (nguyên trạng, không repackage) ---
+COPY DataLakeSecurity_jv8.jar                                          /opt/artifacts/
+
+# --- App + patch block token ---
+COPY spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar                    /opt/artifacts/
+COPY spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar  /opt/artifacts/
+
 RUN chown -R carrier:carrier /opt/artifacts
 
 # Chạy bằng uid 1000 — khớp yêu cầu runAsUser: 1000 của Pod (securityContext không cần override

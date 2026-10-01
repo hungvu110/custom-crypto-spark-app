@@ -5,15 +5,17 @@
 #   docker build --target cdr-crypto    -t <repo>:<tag> .   # + key-prefix-lib + cdr-crypto-udf + jar đối tác
 #
 # Jar của app KHÔNG nhúng lib crypto nào (xem spark-app/pom.xml). Lib crypto chỉ là các jar rời được
-# COPY vào /opt/app/ ở từng target, rồi manifest nạp chúng qua spark.jars + spark.sql.extensions
-# (xem k8s/spark-application-column.yaml, k8s/spark-application-cdr.yaml). Image nào chứa jar nào
-# thì manifest phải khớp; app chọn hàm SQL qua CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION.
+# COPY vào /opt/app/ ở từng target; COPY KHÔNG tự đưa jar lên classpath — manifest phải nạp chúng qua
+# spark.jars (+ spark.sql.extensions nếu gọi bằng SQL function), xem k8s/spark-application-column.yaml và
+# k8s/spark-application-cdr.yaml. Image nào chứa jar nào thì manifest phải khớp.
+# App gọi lib bằng hàm SQL theo tên qua CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION (column_* hoặc cdr_*).
+# Không có --target thì Docker build stage CUỐI (no-crypto). Không dùng --target base làm image chạy.
 #
 # Build jar trước khi build image (context Docker build = thư mục gốc project):
 #   mvn -B clean package                                         # -> spark-app + key-prefix-lib + column-crypto-lib
 #   mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake \
 #     -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar   # chỉ cho target cdr-crypto, làm 1 lần
-#   (mvn -B clean package ở trên đã build luôn cdr-crypto-udf; cần jar đối tác cài trước)
+#   mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package -DskipTests # chỉ cho target cdr-crypto
 #
 # Build base image chính thức apache/spark:3.5.1-scala2.12-java11-ubuntu
 # (Scala 2.12, Java 11 — khớp scala.version/hadoop.version trong pom.xml).

@@ -94,8 +94,9 @@ Thêm profile không kích hoạt mặc định trong `pom.xml` gốc:
 </profiles>
 ```
 
-Build: `mvn clean package` ở thư mục gốc (sau khi đã `install:install-file` ở mục 1.1) — module này nằm trong build
-mặc định vì `spark-app` phụ thuộc nó (gọi DataFrame API `CdrCrypto`).
+Build bình thường: `mvn clean package` — không đụng `cdr-crypto-udf`.
+Build kèm module đối tác (sau khi đã `install:install-file` ở mục 1.1):
+`mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package`.
 
 ## 2. `CdrCipherCore` — lõi crypto, không phụ thuộc Spark
 
@@ -298,7 +299,7 @@ spark.sql.extensions = <extension đang có>,vai.lakehouse.columncrypto.cdr.CdrC
 
 `DataLakeSecurity_jv8.jar` cần được đặt cùng chỗ (HDFS/registry nội bộ) với `key-prefix-lib.jar`
 — dùng lại đúng hạ tầng `hdfs://` đã dùng cho `column-crypto-lib` (xem
-`COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md` mục 2). **Cần xác nhận với đối tác/team pháp lý** việc đặt
+`COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md` mục 3, đã bổ sung phần nạp `cdr-crypto-udf`). **Cần xác nhận với đối tác/team pháp lý** việc đặt
 jar của họ lên hạ tầng nội bộ có nằm trong phạm vi họ đã cấp phép hay không, trước khi làm việc này.
 
 ### 5.3. Cấu hình Vault cho `cdr_encrypt`/`cdr_decrypt`
@@ -375,7 +376,7 @@ nào áp dụng cho từng loại CDR nếu chưa có đủ danh sách.
 7. Xin xác nhận đối tác các điểm ở mục 8 trước khi đưa lên môi trường thật.
 8. Cấu hình `spark.jars` + `spark.sql.extensions` + `spark.cdrcrypto.*` trên sql-engine thử nghiệm (mục 5).
 9. Test qua query console (mục 6), đối chiếu cả hai chiều với hệ thống thật của đối tác.
-10. Viết hướng dẫn vận hành/xử lý sự cố riêng cho `cdr_encrypt`/`cdr_decrypt` (tương tự mục 6 của `COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`) sau khi đã chạy ổn định.
+10. Viết hướng dẫn vận hành/xử lý sự cố riêng cho `cdr_encrypt`/`cdr_decrypt` (đã có ở mục 6.2 và 9 của `COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`) sau khi đã chạy ổn định.
 
 ## Cập nhật kiến trúc: hạ tầng lấy prefix tách thành `key-prefix-lib`
 
@@ -392,5 +393,5 @@ Ngoài SQL function `cdr_encrypt`/`cdr_decrypt`, module có API DataFrame `CdrCr
 `CdrCrypto.encryptColumns(df, datasetName, keyField, columns)` / `decryptColumns(...)` (hoặc dựng `CdrCryptoConfig` qua
 `CdrCrypto.loadConfig`). Cả 2 đường dùng chung `CdrCrypto.transform` nên cho kết quả giống hệt nhau (có test đối chiếu
 byte-for-byte với SQL và với `CdrCipherCore`). Vì là UDF thật nên executor vẫn cần `DataLakeSecurity_jv8.jar` + `cdr-crypto-udf.jar`.
-`spark-app` gọi API này khi `CRYPTO_PROVIDER=cdr`; vì vậy `spark-app` compile phụ thuộc `cdr-crypto-udf` (scope `provided`, không đóng
-vào fat jar) và module này nằm trong build mặc định — build mọi lúc đều cần jar đối tác đã cài vào `~/.m2`.
+`spark-app` KHÔNG dùng API này: nó chỉ gọi SQL function `cdr_encrypt`/`cdr_decrypt` theo tên (`CRYPTO_ENCRYPT_FUNCTION`), nên không phụ
+thuộc `cdr-crypto-udf` lúc biên dịch và build mặc định không cần jar đối tác. DataFrame API dành cho code khác dùng khi cần.

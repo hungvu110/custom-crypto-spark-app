@@ -19,7 +19,7 @@ spec:
       - name: DB_NAME
         value: "demo_db"
       - name: TABLE_NAME
-        value: "sample_table"
+        value: "users_cdr"
       - name: TABLE_TYPE
         value: "delta"
       - name: INSERT_MODE
@@ -27,14 +27,13 @@ spec:
       - name: ENABLE_HIVE_SUPPORT
         value: "true"
       # --- Mã hoá cột: BIẾN THỂ cdr-crypto (image target "cdr-crypto") ---
-      # App KHÔNG nhúng lib crypto (jar chỉ có mặt lúc chạy, nạp qua spark.jars ở sparkConf bên dưới) nhưng
-      # gọi thẳng DataFrame API của lib: CRYPTO_PROVIDER=cdr -> CdrCrypto.encryptColumns/decryptColumns
-      # (cdr-crypto-udf). Không đặt CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION khi dùng provider này.
-      # Muốn gọi bằng SQL function theo tên thay vì DataFrame API: bỏ CRYPTO_PROVIDER, đặt
-      # CRYPTO_ENCRYPT_FUNCTION=cdr_encrypt và CRYPTO_DECRYPT_FUNCTION=cdr_decrypt (cần CdrCryptoExtension ở
-      # spark.sql.extensions). Các biến CRYPTO_* này chỉ driver cần.
-      - name: CRYPTO_PROVIDER
-        value: "cdr"
+      # App KHÔNG nhúng lib crypto; nó gọi hàm SQL theo tên do extension CdrCryptoExtension đăng ký
+      # (nạp qua spark.jars + spark.sql.extensions ở sparkConf bên dưới). Cả 4 biến này chỉ driver cần.
+      # Để trống CẢ 2 tên hàm = không mã hoá.
+      - name: CRYPTO_ENCRYPT_FUNCTION
+        value: "cdr_encrypt"
+      - name: CRYPTO_DECRYPT_FUNCTION
+        value: "cdr_decrypt"
       # Các cột cần mã hoá (phân cách bằng dấu phẩy) và cột giữ plaintext dùng làm nguyên liệu sinh key theo dòng.
       - name: CRYPTO_ENCRYPTED_COLUMNS
         value: "name,city"
@@ -88,7 +87,7 @@ spec:
       - name: DB_NAME
         value: "demo_db"
       - name: TABLE_NAME
-        value: "sample_table"
+        value: "users_cdr"
       - name: TABLE_TYPE
         value: "delta"
       - name: INSERT_MODE
@@ -153,9 +152,9 @@ spec:
     # DATA_SOURCE_NOT_FOUND hoặc bảng không được quản lý đúng bởi Delta
     # catalog. delta-spark 3.2.0 đã được đóng gói sẵn trong fat jar (pom.xml).
     #
-    # vai.lakehouse.columncrypto.cdr.CdrCryptoExtension: đăng ký thêm SQL function cdr_encrypt/cdr_decrypt (UDF bọc
-    # lib mã hoá CDR của đối tác) — KHÔNG bắt buộc với CRYPTO_PROVIDER=cdr (app gọi DataFrame API), giữ lại để có thể
-    # dùng 2 hàm này trong SQL ad-hoc. NỐI BẰNG DẤU PHẨY, không ghi đè extension Delta ở trên.
+    # vai.lakehouse.columncrypto.cdr.CdrCryptoExtension: đăng ký cdr_encrypt/cdr_decrypt (UDF bọc lib mã hoá
+    # CDR của đối tác) — BẮT BUỘC vì app gọi 2 hàm này theo tên. NỐI BẰNG DẤU PHẨY, không ghi đè extension
+    # Delta ở trên.
     spark.sql.extensions: io.delta.sql.DeltaSparkSessionExtension,vai.lakehouse.columncrypto.cdr.CdrCryptoExtension
     spark.sql.catalog.spark_catalog: org.apache.spark.sql.delta.catalog.DeltaCatalog
 

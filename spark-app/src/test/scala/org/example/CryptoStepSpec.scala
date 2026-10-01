@@ -29,9 +29,6 @@ class CryptoStepSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
       .config("spark.sql.extensions", "vai.lakehouse.columncrypto.sql.ColumnCryptoExtension")
       .config("spark.columncrypto.source", "file")
       .config("spark.columncrypto.file.dir", prefixDir.toString)
-      // đường cdr (DataFrame API) tra keyPrefix qua spark.cdrcrypto.* — cùng thư mục file prefix ở trên
-      .config("spark.cdrcrypto.source", "file")
-      .config("spark.cdrcrypto.file.dir", prefixDir.toString)
       .getOrCreate()
   }
 
@@ -40,37 +37,26 @@ class CryptoStepSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
   }
 
   private val settings =
-    SqlFunctionCrypto("column_encrypt", "column_decrypt", Seq("name", "city"), "created_at")
-  private val cdrSettings = CdrDataFrameCrypto(Seq("name", "city"), "created_at")
+    CryptoSettings("column_encrypt", "column_decrypt", Seq("name", "city"), "created_at")
 
-  "parse" should "trả None khi provider sql mà cả 2 hàm đều rỗng (không mã hoá)" in {
-    CryptoStep.parse("", "", "  ", "name", "created_at") shouldBe None
-    CryptoStep.parse("sql", "", "", "name", "created_at") shouldBe None
+  "parse" should "trả None khi cả 2 hàm đều rỗng (không mã hoá)" in {
+    CryptoStep.parse("", "  ", "name", "created_at") shouldBe None
   }
 
-  it should "tách danh sách cột theo dấu phẩy, bỏ khoảng trắng (provider mặc định là sql)" in {
-    CryptoStep.parse("", "column_encrypt", "column_decrypt", " name , city ,", "created_at") shouldBe Some(settings)
-  }
-
-  it should "chọn DataFrame API của cdr khi CRYPTO_PROVIDER=cdr" in {
-    CryptoStep.parse("cdr", "", "", "name,city", "created_at") shouldBe Some(cdrSettings)
-    CryptoStep.parse(" CDR ", "", "", "name,city", "created_at") shouldBe Some(cdrSettings)
+  it should "tách danh sách cột theo dấu phẩy và bỏ khoảng trắng" in {
+    CryptoStep.parse("column_encrypt", "column_decrypt", " name , city ,", "created_at") shouldBe Some(settings)
   }
 
   it should "từ chối cấu hình dở dang hoặc sai" in {
     Seq(
-      ("sql", "column_encrypt", "", "name", "created_at"),
-      ("sql", "", "column_decrypt", "name", "created_at"),
-      ("sql", "column_encrypt; DROP", "column_decrypt", "name", "created_at"),
-      ("sql", "column_encrypt", "column_decrypt", " , ", "created_at"),
-      ("sql", "column_encrypt", "column_decrypt", "name", ""),
-      ("sql", "column_encrypt", "column_decrypt", "name,created_at", "created_at"),
-      ("khac", "", "", "name", "created_at"),
-      ("cdr", "cdr_encrypt", "cdr_decrypt", "name", "created_at"),
-      ("cdr", "", "", "", "created_at"),
-      ("cdr", "", "", "name", "")
-    ).foreach { case (prov, enc, dec, cols, key) =>
-      intercept[IllegalArgumentException](CryptoStep.parse(prov, enc, dec, cols, key))
+      ("column_encrypt", "", "name", "created_at"),
+      ("", "column_decrypt", "name", "created_at"),
+      ("column_encrypt; DROP", "column_decrypt", "name", "created_at"),
+      ("column_encrypt", "column_decrypt", " , ", "created_at"),
+      ("column_encrypt", "column_decrypt", "name", ""),
+      ("column_encrypt", "column_decrypt", "name,created_at", "created_at")
+    ).foreach { case (enc, dec, cols, key) =>
+      intercept[IllegalArgumentException](CryptoStep.parse(enc, dec, cols, key))
     }
   }
 
@@ -102,32 +88,7 @@ class CryptoStepSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     missingKey.getMessage should include("keyField")
   }
 
-  "encrypt/decrypt (provider cdr, DataFrame API)" should "mã hoá đúng cột cấu hình và giải mã lại đúng dữ liệu gốc" in {
-    val plain     = BusinessLogic.sampleDataFrame(spark)
-    val encrypted = CryptoStep.encrypt(plain, Table, cdrSettings)
-
-    val encRows   = encrypted.orderBy("id").collect()
-    val plainRows = plain.orderBy("id").collect()
-    encRows.zip(plainRows).foreach { case (e, p) =>
-      e.getAs[String]("name") should not be p.getAs[String]("name")
-      e.getAs[String]("city") should not be p.getAs[String]("city")
-      e.getAs[String]("created_at") shouldBe p.getAs[String]("created_at")
-    }
-
-    CryptoStep.decrypt(encrypted, Table, cdrSettings).orderBy("id").collect().map(_.toSeq) shouldBe
-      plainRows.map(_.toSeq)
-  }
-
-  it should "ném lỗi rõ ràng nếu cột hoặc keyField không có trong schema" in {
-    val plain = BusinessLogic.sampleDataFrame(spark)
-
-    intercept[IllegalArgumentException](
-      CryptoStep.encrypt(plain, Table, cdrSettings.copy(encryptedColumns = Seq("khong_co"))))
-    intercept[IllegalArgumentException](
-      CryptoStep.encrypt(plain, Table, cdrSettings.copy(keyField = "khong_co")))
-  }
-
-  "encrypt (provider sql)" should "báo lỗi phân tích khi hàm chưa được extension nào đăng ký" in {
+  "encrypt" should "báo lỗi phân tích khi hàm chưa được extension nào đăng ký" in {
     val plain = BusinessLogic.sampleDataFrame(spark)
 
     intercept[AnalysisException](

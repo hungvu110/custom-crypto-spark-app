@@ -22,13 +22,11 @@ import scala.util.Try
  *   APP_NAME, DB_NAME, TABLE_NAME, TABLE_TYPE (delta|iceberg|hive),
  *   INSERT_MODE (append|overwrite), ENABLE_HIVE_SUPPORT (true|false).
  *
- * Mã hoá cột là TUỲ CHỌN và là plugin: jar này không chứa lib crypto nào (chỉ biên dịch với API của lib, scope
- * provided). Bật bằng cách nạp jar lib (Dockerfile + spark.jars) rồi chọn cách gọi bằng CRYPTO_PROVIDER:
- *   - `sql` (mặc định): đăng ký extension (spark.sql.extensions) + CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION
- *     (tên hàm SQL, vd column_encrypt/column_decrypt); để trống cả 2 tên hàm = không mã hoá.
- *   - `cdr`: gọi thẳng DataFrame API `CdrCrypto` của cdr-crypto-udf (không cần đăng ký extension).
- * Cả 2 cách đều cần CRYPTO_ENCRYPTED_COLUMNS (phân cách bằng dấu phẩy) và CRYPTO_KEY_FIELD. Nguồn keyPrefix
- * (VAULT_*, CRYPTO_PREFIX_SOURCE, ...) do lib tự đọc từ biến môi trường, app không đụng tới.
+ * Mã hoá cột là TUỲ CHỌN và là plugin: jar này không chứa và không biên dịch với lib crypto nào. Bật bằng cách
+ * nạp jar lib (Dockerfile + spark.jars), đăng ký extension (spark.sql.extensions) rồi khai tên hàm SQL:
+ *   CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION (vd column_encrypt/column_decrypt hoặc cdr_encrypt/cdr_decrypt),
+ *   CRYPTO_ENCRYPTED_COLUMNS (phân cách bằng dấu phẩy) và CRYPTO_KEY_FIELD. Để trống cả 2 tên hàm = không mã hoá.
+ * Nguồn keyPrefix (VAULT_*, CRYPTO_PREFIX_SOURCE, ...) do lib tự đọc từ biến môi trường, app không đụng tới.
  */
 object SparkApp {
 
@@ -66,7 +64,6 @@ object SparkApp {
     enableHiveSupport = env("ENABLE_HIVE_SUPPORT", "true").toLowerCase == "true",
     // Mặc định KHÔNG mã hoá (cả 2 tên hàm rỗng). Sai/thiếu cấu hình ném IllegalArgumentException.
     crypto            = CryptoStep.parse(
-      env("CRYPTO_PROVIDER", ""),
       env("CRYPTO_ENCRYPT_FUNCTION", ""), env("CRYPTO_DECRYPT_FUNCTION", ""),
       env("CRYPTO_ENCRYPTED_COLUMNS", ""), env("CRYPTO_KEY_FIELD", "")),
     // Mặc định TẮT — bật DEBUG cho SASL/Token in ra hex dump rất dài, chỉ nên
@@ -231,7 +228,7 @@ object SparkApp {
         Log.kv("crypto",            c.description)
         Log.kv("encrypted columns", c.encryptedColumns.mkString(", "))
         Log.kv("key field",         c.keyField)
-      case None => Log.info("Column crypto: DISABLED (CRYPTO_PROVIDER/CRYPTO_ENCRYPT_FUNCTION not set)")
+      case None => Log.info("Column crypto: DISABLED (CRYPTO_ENCRYPT_FUNCTION not set)")
     }
 
     val writeStart = System.nanoTime()

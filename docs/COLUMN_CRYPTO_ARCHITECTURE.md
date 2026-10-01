@@ -96,7 +96,7 @@ biểu thức đó. Đây là lý do hướng này an toàn hơn so với việc
 (xem `VaultPrefixSource.scala` dòng 62–71): revoke một token dùng chung sẽ làm hỏng mọi
 ExternalSecret khác đang phụ thuộc token đó, nên lib tuyệt đối không đụng vào vòng đời của token
 tĩnh. Chi tiết cấu hình, lệnh tạo token riêng chỉ đọc, và cách truyền token qua K8s Secret nằm ở
-[COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md, mục 3.1](COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md#31-xác-thực-bằng-token-tĩnh-khi-vault-không-dùng-kubernetes-auth)
+[COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md, mục 4.4](COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md#44-xác-thực-bằng-token-tĩnh--cách-đang-áp-dụng-thực-tế)
 và README (mục "Xác thực bằng token Vault tĩnh").
 
 ### 1.6. Sơ đồ thành phần
