@@ -14,7 +14,8 @@ import org.scalatest.matchers.should.Matchers
  */
 class CryptoStepSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
-  private val Table = "sample_table"
+  // Tên key hai phần, đúng như SparkApp truyền vào hàm crypto (CryptoStep.keyName(DB_NAME, TABLE_NAME)).
+  private val Table = "demo_db.sample_table"
   private var spark: SparkSession = _
 
   override def beforeAll(): Unit = {
@@ -58,6 +59,11 @@ class CryptoStepSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     ).foreach { case (enc, dec, cols, key) =>
       intercept[IllegalArgumentException](CryptoStep.parse(enc, dec, cols, key))
     }
+  }
+
+  "keyName" should "ghép DB_NAME.TABLE_NAME thành tên key chữ thường" in {
+    CryptoStep.keyName("demo_db", "users_cdr") shouldBe "demo_db.users_cdr"
+    CryptoStep.keyName("Demo_DB", "Users_CDR") shouldBe "demo_db.users_cdr"
   }
 
   "encrypt/decrypt" should "mã hoá đúng cột cấu hình và giải mã lại đúng dữ liệu gốc" in {

@@ -112,6 +112,79 @@ class PrefixSourceFactorySpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  private val dakSettings = Seq(
+    Keys.DakAddr -> "https://dak.example", Keys.DakTokenUrl -> "https://kc.example/realms/t/protocol/openid-connect/token",
+    Keys.DakClientId -> "dak.w1.team-a", Keys.DakClientSecret -> "SECRET-VALUE-42")
+
+  "create với source=dak" should "dựng DakPrefixSource bọc cache" in {
+    PrefixSourceFactory.create(cfg((dakSettings :+ (Keys.Source -> "dak")): _*)) shouldBe a[CachedPrefixSource]
+    PrefixSourceFactory.create(cfg((dakSettings ++ Seq(Keys.Source -> " DAK ", Keys.CacheTtlSeconds -> "0")): _*)) shouldBe
+      a[DakPrefixSource]
+  }
+
+  it should "cho phép vault.* cùng có mặt (fallback thủ công chỉ cần đổi source)" in {
+    val withVault = dakSettings ++ vaultSettings :+ (Keys.VaultToken -> "tok")
+
+    PrefixSourceFactory.create(cfg((withVault ++ Seq(Keys.Source -> "dak", Keys.CacheTtlSeconds -> "0")): _*)) shouldBe
+      a[DakPrefixSource]
+    PrefixSourceFactory.create(cfg((withVault ++ Seq(Keys.Source -> "vault", Keys.CacheTtlSeconds -> "0")): _*)) shouldBe
+      a[VaultPrefixSource]
+  }
+
+  it should "báo tên vật lý của từng setting bắt buộc còn thiếu" in {
+    Seq(Keys.DakAddr, Keys.DakTokenUrl, Keys.DakClientId, Keys.DakClientSecret).foreach { missing =>
+      val settings = dakSettings.filterNot(_._1 == missing) :+ (Keys.Source -> "dak")
+      val ex = intercept[IllegalArgumentException](PrefixSourceFactory.create(cfg(settings: _*)))
+      ex.getMessage should include(s"TEST_$missing")
+    }
+  }
+
+  it should "từ chối http:// trừ khi bật dak.allowInsecureHttp, không lộ secret" in {
+    Seq(Keys.DakAddr -> "http://dak.example", Keys.DakTokenUrl -> "http://kc.example/token").foreach { insecure =>
+      val settings = dakSettings.filterNot(_._1 == insecure._1) ++ Seq(insecure, Keys.Source -> "dak")
+
+      val ex = intercept[IllegalArgumentException](PrefixSourceFactory.create(cfg(settings: _*)))
+      ex.getMessage should include(s"TEST_${insecure._1}")
+      ex.getMessage should include("https")
+      ex.getMessage should not include "SECRET-VALUE-42"
+
+      PrefixSourceFactory.create(cfg((settings :+ (Keys.DakAllowInsecureHttp -> "true")): _*)) shouldBe
+        a[CachedPrefixSource]
+    }
+  }
+
+  it should "từ chối URL không hợp lệ" in {
+    val settings = dakSettings.filterNot(_._1 == Keys.DakAddr) ++ Seq(Keys.DakAddr -> "dak.example", Keys.Source -> "dak")
+
+    val ex = intercept[IllegalArgumentException](PrefixSourceFactory.create(cfg(settings: _*)))
+    ex.getMessage should include("TEST_dak.addr")
+  }
+
+  it should "không cho ghép dak với nguồn khác vì fallback sẽ bỏ qua phân quyền" in {
+    Seq("dak,vault", "file,dak", "vault , dak").foreach { sources =>
+      val ex = intercept[IllegalArgumentException](
+        PrefixSourceFactory.create(cfg((dakSettings ++ vaultSettings :+ (Keys.Source -> sources)): _*)))
+      ex.getMessage should include("TEST_source")
+      ex.getMessage should include("dak")
+      ex.getMessage should include("bypass")
+    }
+  }
+
+  it should "lấy được keyPrefix qua Keycloak + DAK giả" in {
+    val server = new StubHttpServer
+    try {
+      server.stub("POST", "/token", StubHttpServer.tokenResponse("tok-1"))
+      server.stub("GET", "/api/v1/keys/demo_db/users_cdr", StubHttpServer.Response(200, """{"keyPrefix":"p1"}"""))
+      val source = PrefixSourceFactory.create(cfg(
+        Keys.Source -> "dak", Keys.DakAddr -> server.url, Keys.DakTokenUrl -> s"${server.url}/token",
+        Keys.DakClientId -> "c", Keys.DakClientSecret -> "s", Keys.DakAllowInsecureHttp -> "true"))
+
+      source.read("demo_db.users_cdr") shouldBe "p1"
+      source.read("demo_db.users_cdr") shouldBe "p1" // lần 2 lấy từ cache prefix
+      server.requestsTo("/api/v1/keys/demo_db/users_cdr") should have size 1
+    } finally server.close()
+  }
+
   "SparkConfSource" should "đọc key logic từ spark.columncrypto.* và bỏ qua giá trị rỗng" in {
     val conf = new SparkConf(false)
       .set("spark.columncrypto.source", " vault ")

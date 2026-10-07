@@ -331,14 +331,40 @@ giá trị `keyPrefix`.
 
 | Giá trị      | Hành vi                                                                                  |
 | ------------ | ---------------------------------------------------------------------------------------- |
+| `dak`        | **(đang triển khai)** lấy key qua DAK: token Keycloak `client_credentials` (`DAK_*`), tên key `'database.table'` |
 | `file`       | (mặc định) đọc `<CRYPTO_KEY_PREFIX_DIR>/<tên bảng>` — K8s Secret mount                   |
-| `vault`      | gọi Vault KV v2 bằng Kubernetes auth (`VAULT_*`)                                         |
+| `vault`      | gọi Vault KV v2 (`VAULT_*`); giữ lại làm **fallback thủ công** khi DAK sự cố             |
 | `file,vault` | thử `file` trước, không có/lỗi thì fallback sang `vault`; lỗi gộp lý do của cả hai nguồn |
+
+`dak` **không được ghép** với nguồn khác (`dak,vault` bị từ chối): fallback tự động chạy cả khi DAK trả 403, tức là
+bỏ qua phân quyền. Khi DAK sự cố, vận hành đổi `CRYPTO_PREFIX_SOURCE=vault` rồi chạy lại job (mục "Lấy keyPrefix từ DAK").
 
 Kết quả được cache trong bộ nhớ theo bảng, `CRYPTO_CACHE_TTL_SECONDS` (mặc định 300, `0` = tắt cache).
 Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncrypto.<key>` (hoặc `spark.cdrcrypto.<key>`) thay vì env
 (`source`, `file.dir`, `vault.addr`, `vault.role`, `vault.kvBasePath`, `vault.authMount`,
-`vault.kvMount`, `vault.keyField`, `vault.jwtPath`, `vault.authMethod`, `vault.token`, `cacheTtlSeconds`).
+`vault.kvMount`, `vault.keyField`, `vault.jwtPath`, `vault.authMethod`, `vault.token`, `cacheTtlSeconds`,
+`dak.addr`, `dak.tokenUrl`, `dak.clientId`, `dak.clientSecret`, `dak.allowInsecureHttp`).
+
+### Lấy keyPrefix từ DAK (`CRYPTO_PREFIX_SOURCE=dak`)
+
+`DakPrefixSource` (module `key-prefix-lib`) chạy trên driver: xin access token `client_credentials` tại `DAK_TOKEN_URL`
+(Keycloak, realm của tenant), cache token tới gần hết hạn, rồi gọi `GET <DAK_ADDR>/api/v1/keys/<database>/<table>`.
+DAK trả 401 thì xin token mới và thử lại đúng 1 lần; 403 và mọi lỗi khác báo ngay, kèm `requestId` để tra audit của DAK.
+
+| Biến                      | Bắt buộc | Ghi chú                                                                          |
+| ------------------------- | -------- | -------------------------------------------------------------------------------- |
+| `DAK_ADDR`                | Có       | `https://` (http chỉ khi `DAK_ALLOW_INSECURE_HTTP=true`, dùng cho test local)     |
+| `DAK_TOKEN_URL`           | Có       | `https://<keycloak>/realms/<realm của tenant>/protocol/openid-connect/token`     |
+| `DAK_CLIENT_ID`           | Có       | Client Keycloak của team, vận hành cấp                                           |
+| `DAK_CLIENT_SECRET`       | Có       | Lấy từ K8s Secret `spark-dak-client` (key `clientSecret`) qua `secretKeyRef`     |
+
+Tên key gửi lên DAK là **`database.table`**, chữ thường (`spark-app` tự ghép `DB_NAME.TABLE_NAME`; trên sql-engine là tham
+số đầu của hàm, vd `cdr_decrypt('demo_db.users_cdr', ...)`). Tên một phần (`'users_cdr'`) bị từ chối khi `source=dak`.
+
+**Fallback thủ công** khi DAK sự cố: đổi `CRYPTO_PREFIX_SOURCE=vault` rồi chạy lại job (cấu hình `VAULT_*` giữ sẵn trong
+manifest). Fallback đọc secret `<VAULT_KV_PATH>/<database>.<table>` ở Vault cũ và **bỏ qua** phân quyền, thời hạn quyền của
+DAK — chỉ dùng khi DAK sự cố và quay lại `dak` ngay khi DAK phục hồi. Thiết kế và quy trình: `docs/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md`,
+hợp đồng API: `docs/DAK_API_SPEC.md`.
 
 ### Lấy keyPrefix từ HashiCorp Vault (`CRYPTO_PREFIX_SOURCE=vault`)
 
@@ -501,12 +527,15 @@ mvn -B test -pl column-crypto-lib                             # chỉ test lib
 mvn -B test -pl spark-app -am                                 # test app (kèm test các lib)
 mvn -B test -pl column-crypto-lib \
     -DwildcardSuites=vai.lakehouse.columncrypto.sql           # chỉ 1 suite/package (tên đầy đủ)
+mvn -B -pl key-prefix-lib \
+    org.scoverage:scoverage-maven-plugin:2.0.5:report \
+    -Dscoverage.scalacPluginVersion=2.1.1                     # đo coverage key-prefix-lib (yêu cầu ≥ 80%)
 ```
 
 | Module              | Test                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key-prefix-lib`    | `PrefixFilesSpec` (đọc file prefix, path traversal), `VaultPrefixSourceSpec` (Vault giả bằng HTTP server cục bộ), `PrefixSourceSpec` (chain/cache), `PrefixSourceFactorySpec` (cấu hình nguồn), `EnvConfigSourceSpec` (ánh xạ env → cấu hình) |
-| `column-crypto-lib` | `ColumnCryptoSpec` (DataFrame API), `ColumnCryptoConfigSpec` (settings YAML), `ColumnCryptoExtensionSpec` (SQL function qua SparkSession local) |
+| `key-prefix-lib`    | `PrefixFilesSpec` (đọc file prefix, path traversal), `VaultPrefixSourceSpec` (Vault giả bằng HTTP server cục bộ), `KeycloakTokenProviderSpec` (xin/cache token, đồng thời, lỗi không lộ secret), `DakTableRefSpec` (tách `database.table`), `DakPrefixSourceSpec` (Keycloak + DAK giả: retry 401, mã lỗi, `requestId`), `PrefixSourceSpec` (chain/cache), `PrefixSourceFactorySpec` (cấu hình nguồn, cấm ghép `dak`), `EnvConfigSourceSpec` (ánh xạ env → cấu hình) |
+| `column-crypto-lib` | `ColumnCryptoSpec` (DataFrame API), `ColumnCryptoConfigSpec` (settings YAML), `ColumnCryptoExtensionSpec` (SQL function qua SparkSession local), `ColumnCryptoExtensionDakSpec` (SQL function với `source=dak`, Keycloak + DAK giả) |
 | `spark-app`         | `BusinessLogicSpec` (schema/DDL/sample-data thuần), `CryptoStepSpec` (parse cấu hình, roundtrip qua hàm SQL `column_encrypt` với extension thật ở scope test, lỗi khi hàm chưa nạp) |
 
 Test chạy trên `local[*]`, không cần cluster, Vault hay HDFS thật. Log có các dòng

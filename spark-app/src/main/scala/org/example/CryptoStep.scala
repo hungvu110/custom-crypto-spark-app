@@ -1,5 +1,7 @@
 package org.example
 
+import java.util.Locale
+
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.functions.{call_function, col, lit}
 
@@ -19,13 +21,21 @@ case class CryptoSettings(
 }
 
 /**
- * Hợp đồng với mọi hàm mã hoá được hỗ trợ: `fn(tableName, value, keyValue)` — 3 tham số, tham số đầu là
- * hằng chuỗi tên dataset (nơi extension tra keyPrefix), tham số 2 là cột cần xử lý, tham số 3 là giá trị
- * cột `keyField` (giữ nguyên plaintext) của chính dòng đó. `column_encrypt` và `cdr_encrypt` đều theo hợp đồng này.
+ * Hợp đồng với mọi hàm mã hoá được hỗ trợ: `fn(keyName, value, keyValue)` — 3 tham số, tham số đầu là
+ * hằng chuỗi tên key `'database.table'` (nơi extension tra keyPrefix, xem [[keyName]]), tham số 2 là cột cần xử lý,
+ * tham số 3 là giá trị cột `keyField` (giữ nguyên plaintext) của chính dòng đó. `column_encrypt` và `cdr_encrypt`
+ * đều theo hợp đồng này.
  */
 object CryptoStep {
 
   private val FunctionName = "^[A-Za-z_][A-Za-z0-9_]*$".r
+
+  /**
+   * Tên key tra keyPrefix: `DB_NAME.TABLE_NAME` chữ thường. Nguồn `dak` bắt buộc dạng hai phần; chữ thường để
+   * fallback thủ công về Vault (vốn không chuẩn hoá hoa thường) vẫn tìm đúng secret `.../<database>.<table>`.
+   */
+  def keyName(dbName: String, tableName: String): String =
+    s"${dbName.trim}.${tableName.trim}".toLowerCase(Locale.ROOT)
 
   /**
    * `None` nếu cả 2 hàm đều rỗng (không mã hoá). Ném `IllegalArgumentException` nếu cấu hình
@@ -64,18 +74,21 @@ object CryptoStep {
     require(missing.isEmpty, s"encryptedColumns not found in schema: ${missing.mkString(", ")}")
   }
 
-  private def applyFunction(df: DataFrame, fn: String, tableName: String, settings: CryptoSettings): DataFrame = {
+  private def applyFunction(df: DataFrame, fn: String, keyName: String, settings: CryptoSettings): DataFrame = {
     validate(df, settings)
     val keyCol = col(BusinessLogic.quoteIdent(settings.keyField))
     settings.encryptedColumns.foldLeft(df) { (acc, c) =>
-      acc.withColumn(c, call_function(fn, lit(tableName), col(BusinessLogic.quoteIdent(c)), keyCol))
+      acc.withColumn(c, call_function(fn, lit(keyName), col(BusinessLogic.quoteIdent(c)), keyCol))
     }
   }
 
-  /** Mã hoá các cột đã cấu hình. Ném `AnalysisException` nếu hàm chưa được extension nào đăng ký. */
-  def encrypt(df: DataFrame, tableName: String, settings: CryptoSettings): DataFrame =
-    applyFunction(df, settings.encryptFunction, tableName, settings)
+  /**
+   * Mã hoá các cột đã cấu hình bằng key `keyName` (dùng [[keyName]] để dựng). Ném `AnalysisException` nếu hàm
+   * chưa được extension nào đăng ký.
+   */
+  def encrypt(df: DataFrame, keyName: String, settings: CryptoSettings): DataFrame =
+    applyFunction(df, settings.encryptFunction, keyName, settings)
 
-  def decrypt(df: DataFrame, tableName: String, settings: CryptoSettings): DataFrame =
-    applyFunction(df, settings.decryptFunction, tableName, settings)
+  def decrypt(df: DataFrame, keyName: String, settings: CryptoSettings): DataFrame =
+    applyFunction(df, settings.decryptFunction, keyName, settings)
 }

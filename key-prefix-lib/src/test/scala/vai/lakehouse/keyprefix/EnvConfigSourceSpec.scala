@@ -33,6 +33,28 @@ class EnvConfigSourceSpec extends AnyFlatSpec with Matchers {
     env.get(Keys.VaultJwtPath) shouldBe Some("/tmp/jwt")
   }
 
+  it should "ánh xạ key logic của nguồn dak sang DAK_*" in {
+    val env = new EnvConfigSource(Map(
+      "DAK_ADDR"                -> "https://dak.example",
+      "DAK_TOKEN_URL"           -> "https://kc.example/realms/t/protocol/openid-connect/token",
+      "DAK_CLIENT_ID"           -> "dak.w1.team-a",
+      "DAK_CLIENT_SECRET"       -> "sec",
+      "DAK_ALLOW_INSECURE_HTTP" -> "true"))
+
+    env.get(Keys.DakAddr) shouldBe Some("https://dak.example")
+    env.get(Keys.DakTokenUrl) shouldBe Some("https://kc.example/realms/t/protocol/openid-connect/token")
+    env.get(Keys.DakClientId) shouldBe Some("dak.w1.team-a")
+    env.get(Keys.DakClientSecret) shouldBe Some("sec")
+    env.get(Keys.DakAllowInsecureHttp) shouldBe Some("true")
+  }
+
+  it should "báo thiếu đúng tên biến DAK_* khi CRYPTO_PREFIX_SOURCE=dak" in {
+    val ex = intercept[IllegalArgumentException](
+      PrefixSourceFactory.create(new EnvConfigSource(Map("CRYPTO_PREFIX_SOURCE" -> "dak"))))
+
+    ex.getMessage should include("DAK_ADDR")
+  }
+
   it should "coi biến rỗng hoặc chỉ có khoảng trắng như chưa đặt" in {
     new EnvConfigSource(Map("VAULT_ADDR" -> "  ")).get(Keys.VaultAddr) shouldBe None
   }

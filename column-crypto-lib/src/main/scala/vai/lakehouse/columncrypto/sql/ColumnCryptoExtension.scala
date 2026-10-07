@@ -12,9 +12,10 @@ import vai.lakehouse.keyprefix.{ChainedConfigSource, EnvConfigSource, PrefixSour
 /**
  * Đăng ký 2 SQL function để chạy mã hoá/giải mã ngay trên query console của sql-engine:
  * {{{
- * column_encrypt('<bảng>', <cột cần mã hoá>, <giá trị keyField>)
- * column_decrypt('<bảng>', <cột đã mã hoá>,  <giá trị keyField>)
+ * column_encrypt('<database>.<bảng>', <cột cần mã hoá>, <giá trị keyField>)
+ * column_decrypt('<database>.<bảng>', <cột đã mã hoá>,  <giá trị keyField>)
  * }}}
+ * Với nguồn `dak` tham số đầu bắt buộc có dạng `'database.table'`; nguồn `file`/`vault` dùng nguyên chuỗi làm tên key.
  * Bật bằng conf tĩnh (cần restart engine):
  * `spark.sql.extensions=vai.lakehouse.columncrypto.sql.ColumnCryptoExtension`
  * (nếu đã có extension khác, ví dụ Ranger, thì nối bằng dấu phẩy). Nguồn keyPrefix cấu hình theo
@@ -90,6 +91,6 @@ object ColumnCryptoExtension {
     case Literal(v, StringType) if v != null => v.toString
     case _ => throw new IllegalArgumentException(
       s"$function: the first argument must be a constant string with the table name, " +
-        s"e.g. $function('customers', <column>, <keyColumn>)")
+        s"e.g. $function('demo_db.customers', <column>, <keyColumn>)")
   }
 }

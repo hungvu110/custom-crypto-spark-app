@@ -1,0 +1,40 @@
+server:
+  port: ${PORT:8085}
+
+spring:
+  application:
+    name: dak-mock
+
+logging:
+  pattern:
+    level: "%5p [%X{requestId:-}]"
+
+dak:
+  # Lệch đồng hồ cho phép khi kiểm tra exp/iat của token.
+  clock-skew: 60s
+
+  # Registry realm: mỗi tenant một realm. Chỉ token có iss khớp CHÍNH XÁC issuer dưới đây mới được tin.
+  # GIẢ ĐỊNH — thay bằng realm thật.
+  realms:
+    - realm: tenant-a
+      tenant: tenant-a
+      issuer: https://keycloak.example/realms/tenant-a
+      jwks-uri: https://keycloak.example/realms/tenant-a/protocol/openid-connect/certs
+
+  # Client Keycloak của các team (do vận hành tạo theo docs/DAK_API_SPEC.md mục 2.3).
+  # (realm, client-id) -> workspace, team. enabled: false để khoá client.
+  clients:
+    - realm: tenant-a
+      client-id: dak.w1.team-a
+      workspace: w1
+      team: team-a
+
+  vault:
+    addr: ${VAULT_ADDR:http://vault.cyberspace.vn}
+    # Token Vault tĩnh, CHỈ đọc path key-prefix. Lấy từ biến môi trường, KHÔNG ghi vào file này.
+    token: ${VAULT_TOKEN:}
+    kv-mount: kv
+    # Cùng path của luồng column/cdr crypto cũ, tên key hai phần <database>.<table> (chữ thường).
+    # Có thể dùng thêm {tenant}, {workspace} nếu secret được tách theo namespace.
+    path-template: hla-datalake/datalake/spark-application/{database}.{table}
+    key-field: keyPrefix

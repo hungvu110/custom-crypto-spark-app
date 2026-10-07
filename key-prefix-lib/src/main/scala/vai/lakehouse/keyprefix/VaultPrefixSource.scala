@@ -2,12 +2,11 @@ package vai.lakehouse.keyprefix
 
 import java.io.IOException
 import java.net.URI
-import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import java.net.http.HttpRequest
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
-import java.time.Duration
 
-import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.fasterxml.jackson.databind.JsonNode
 import org.slf4j.LoggerFactory
 
 import scala.collection.JavaConverters._
@@ -48,11 +47,9 @@ class VaultPrefixSource(cfg: VaultConfig) extends PrefixSource {
 
   private val logger = LoggerFactory.getLogger(classOf[VaultPrefixSource])
 
-  private val ConnectTimeout = Duration.ofSeconds(5)
-  private val RequestTimeout = Duration.ofSeconds(10)
+  private val RequestTimeout = JsonHttp.RequestTimeout
 
-  private val mapper = new ObjectMapper()
-  private val client = HttpClient.newBuilder().connectTimeout(ConnectTimeout).build()
+  private val http = new JsonHttp()
 
   private def trimSlashes(s: String): String = s.replaceAll("^/+|/+$", "")
 
@@ -77,7 +74,7 @@ class VaultPrefixSource(cfg: VaultConfig) extends PrefixSource {
     }
 
   private def login(): String = {
-    val body = mapper.createObjectNode().put("role", cfg.role).put("jwt", readJwt()).toString
+    val body = http.mapper.createObjectNode().put("role", cfg.role).put("jwt", readJwt()).toString
     val request = HttpRequest.newBuilder(URI.create(s"$base/v1/auth/${trimSlashes(cfg.authMount)}/login"))
       .timeout(RequestTimeout)
       .header("Content-Type", "application/json")
@@ -123,20 +120,5 @@ class VaultPrefixSource(cfg: VaultConfig) extends PrefixSource {
       case NonFatal(e) => logger.warn(s"Could not revoke Vault token (it will expire by TTL): ${e.getMessage}")
     }
 
-  private def send(request: HttpRequest, what: String): JsonNode = {
-    val response =
-      try client.send(request, HttpResponse.BodyHandlers.ofString())
-      catch {
-        case e: IOException =>
-          throw new IllegalStateException(s"Vault $what failed: cannot reach ${cfg.addr} (${e.getClass.getSimpleName})", e)
-        case e: InterruptedException =>
-          Thread.currentThread().interrupt()
-          throw new IllegalStateException(s"Vault $what interrupted", e)
-      }
-    if (response.statusCode() / 100 != 2) {
-      throw new IllegalStateException(s"Vault $what failed: HTTP ${response.statusCode()}")
-    }
-    val body = response.body()
-    if (body == null || body.isEmpty) mapper.createObjectNode() else mapper.readTree(body)
-  }
+  private def send(request: HttpRequest, what: String): JsonNode = http.send(request, s"Vault $what", cfg.addr)
 }

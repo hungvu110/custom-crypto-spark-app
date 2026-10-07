@@ -5,7 +5,8 @@ console SQL, với **cả 2 loại lib crypto**:
 
 - `column_encrypt`/`column_decrypt` — AES-256-GCM, module `column-crypto-lib`.
 - `cdr_encrypt`/`cdr_decrypt` — thuật toán của đối tác (AES-128-ECB), module `cdr-crypto-udf`.
-- Cả hai lấy `keyPrefix` qua **hạ tầng dùng chung** `key-prefix-lib` (K8s Secret mount / HashiCorp Vault).
+- Cả hai lấy `keyPrefix` qua **hạ tầng dùng chung** `key-prefix-lib` (DAK / K8s Secret mount / HashiCorp Vault).
+  Cách đang triển khai là **DAK** (mục 4.6); Vault giữ lại làm fallback thủ công.
 
 Toàn bộ cấu hình đi qua **Spark conf** trên màn hình tạo engine — không cần sửa StatefulSet, biến môi
 trường hay mount thêm Secret.
@@ -130,7 +131,7 @@ Nhóm cấu hình dùng chung, áp dụng cho cách xác thực **token tĩnh** 
 
 | Key                    | Giá trị                                   | Ghi chú                                                                                                                                        |
 | ---------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<ns>source`           | `vault` (hoặc `file`, `file,vault`)       | Mặc định `file`                                                                                                                                |
+| `<ns>source`           | `dak` (mục 4.6), `vault`, `file`, `file,vault` | Mặc định `file`. `dak` không được ghép với nguồn khác. Bảng này mô tả nguồn `vault`, giữ làm fallback thủ công                             |
 | `<ns>vault.addr`       | `http://vault.cyberspace.vn`              | Bắt buộc khi dùng vault. Đang là HTTP: token/keyPrefix đi trên mạng không mã hoá — nên chuyển HTTPS                                            |
 | `<ns>vault.authMethod` | `token`                                   | Mặc định của lib là `kubernetes` nếu bỏ trống — **luôn đặt tường minh** `token`, vì Vault hiện tại xác thực bằng `tokenSecretRef`; xem mục 4.4 |
 | `<ns>vault.token`      | token Vault tĩnh (riêng, chỉ đọc)         | Bắt buộc. **Không dùng lại** token của ExternalSecrets (`datalake-vault-token`, có quyền ghi) — tạo token riêng chỉ đọc (mục 4.4)              |
@@ -202,6 +203,62 @@ Lưu ý khi dùng chế độ này:
 
 Nếu engine có Secret mount sẵn (hiếm), dùng `<ns>source=file` + `<ns>file.dir=<thư mục mount>` (mỗi bảng 1 file tên
 bảng, nội dung là prefix). `file,vault` thử file trước rồi fallback sang Vault.
+
+### 4.6. Nguồn DAK (`source=dak`) — cách đang triển khai
+
+Engine lấy key qua **DAK** bằng danh tính của team (client Keycloak riêng), thay cho token Vault dùng chung. Thiết kế:
+[DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md](DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md); hợp đồng API: [DAK_API_SPEC.md](DAK_API_SPEC.md).
+
+```properties
+# --- Nguồn đang dùng. Fallback thủ công: đổi thành vault rồi restart engine ---
+spark.columncrypto.source=dak
+
+# --- DAK (giá trị do vận hành cấp khi tạo client Keycloak cho team) ---
+spark.columncrypto.dak.addr=https://dak.<domain>
+spark.columncrypto.dak.tokenUrl=https://keycloak.<domain>/realms/<realm của tenant>/protocol/openid-connect/token
+spark.columncrypto.dak.clientId=<client_id của team>
+spark.columncrypto.dak.clientSecret=<client_secret của team>
+spark.columncrypto.cacheTtlSeconds=300
+
+# --- Vault cũ: giữ nguyên cho fallback thủ công, KHÔNG được đọc khi source=dak (mục 4.3) ---
+spark.columncrypto.vault.addr=http://vault.cyberspace.vn
+spark.columncrypto.vault.authMethod=token
+spark.columncrypto.vault.token=<token Vault chỉ đọc>
+spark.columncrypto.vault.kvBasePath=hla-datalake/datalake/spark-application
+
+# Dùng thêm cdr_*: lặp lại các khối trên với tiền tố spark.cdrcrypto. (cùng credential thì lib chỉ giữ 1 token)
+```
+
+| Key                       | Bắt buộc | Ghi chú                                                                                                   |
+| ------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
+| `<ns>dak.addr`            | Có       | Base URL của DAK, phải là `https://`                                                                      |
+| `<ns>dak.tokenUrl`        | Có       | Token endpoint của **realm của tenant** sở hữu engine, phải là `https://`                                 |
+| `<ns>dak.clientId`        | Có       | Client của team                                                                                           |
+| `<ns>dak.clientSecret`    | Có       | Spark che giá trị trên UI/`SET` (tên key khớp `spark.redaction.regex`)                                    |
+| `<ns>dak.allowInsecureHttp` | Không  | `true` cho phép `http://` — **chỉ** dùng khi test với server giả                                          |
+
+**Cú pháp với `source=dak`**: tham số đầu của hàm bắt buộc là **`'database.table'`**, được chuẩn hoá chữ thường:
+
+```sql
+SELECT id, cdr_decrypt('demo_db.users_cdr', name, created_at) AS name FROM demo_db.users_cdr;
+INSERT INTO demo_db.customers SELECT id, column_encrypt('demo_db.customers', name, id) FROM staging_customers;
+```
+
+Tên một phần (`'users_cdr'`) bị từ chối ngay ở bước analyze, không gọi DAK. Engine chỉ lấy được key của bảng trong
+**workspace của chính nó**, và chỉ những bảng team đã được cấp quyền (còn hạn).
+
+**Không** đặt `source=dak,vault` hay `file,dak`: lib từ chối, vì nguồn sau sẽ được dùng cả khi DAK trả 403, tức là bỏ qua
+phân quyền và thời hạn quyền.
+
+**Runbook fallback thủ công** (khi DAK hoặc Keycloak sự cố kéo dài):
+
+1. Xin phê duyệt chuyển fallback, ghi nhận lý do và thời điểm.
+2. Đổi `<ns>source=vault` trên màn hình cấu hình engine (với SparkApplication: `CRYPTO_PREFIX_SOURCE=vault`), restart engine
+   (hoặc chạy lại job).
+3. Kiểm tra một câu `cdr_decrypt`/`column_decrypt` trên bảng cũ. Fallback đọc secret `<kvBasePath>/<database>.<table>` ở Vault
+   cũ: chỉ có cho các bảng đã có trước cutover; bảng tạo sau cutover chỉ có key ở DAK.
+4. Khi DAK phục hồi, đổi lại `<ns>source=dak` và restart. Trong thời gian fallback, phân quyền và thời hạn quyền của DAK
+   **không** có hiệu lực.
 
 ## 5. Chuẩn bị secret Vault theo bảng
 
@@ -412,6 +469,16 @@ Lưu ý:
 | `has no string field 'keyPrefix'`                                                             | Secret tồn tại nhưng tên field khác `vault.keyField` (mặc định `keyPrefix`) — đổi tên field trong secret hoặc set lại `vault.keyField`              |
 | `Cannot read service account token`                                                           | Chỉ xảy ra ở chế độ `kubernetes` (pod tắt automount ServiceAccount token); chế độ `token` không đọc file này                                        |
 | `first argument must be a constant string`                                                    | Tham số đầu phải là literal `'tên_bảng'`, không phải cột hay biểu thức                                                                              |
+| `With source=dak the table must be '<database>.<table>'`                                      | Đang dùng `source=dak` mà tham số đầu là tên một phần (`'users_cdr'`) hoặc có ký tự lạ — viết lại thành `'demo_db.users_cdr'`                       |
+| `'dak' cannot be combined with other sources`                                                 | Cấu hình `source=dak,vault` / `file,dak` — đặt `source=dak`; fallback về Vault phải đổi thủ công                                                    |
+| `Invalid <ns>dak.addr: must be an absolute https:// URL` (hoặc `dak.tokenUrl`)                | Sai URL hoặc dùng `http://`. `http://` chỉ được phép khi đặt `<ns>dak.allowInsecureHttp=true` (test local)                                          |
+| `Keycloak token request failed: HTTP 401 (invalid_client)`                                    | Sai `dak.clientId`/`dak.clientSecret`, hoặc `dak.tokenUrl` trỏ nhầm realm (client không tồn tại ở realm đó)                                         |
+| `Keycloak token request failed: HTTP 400 (unauthorized_client)`                               | Client của team chưa bật Service Accounts — báo vận hành sửa client theo checklist                                                                  |
+| `Keycloak token request failed: cannot reach ...`                                             | Không kết nối được Keycloak: kiểm tra mạng/DNS, truststore nếu Keycloak dùng CA nội bộ                                                              |
+| `DAK denied key for '...' (HTTP 403 access_denied, requestId=...)`                            | Team chưa được cấp quyền, **quyền đã hết hạn**, hoặc bảng chưa đăng ký trong workspace. Gửi `requestId` cho admin DAK để tra nguyên nhân             |
+| `DAK key request ... failed (HTTP 403 key_disabled, ...)`                                     | Key của bảng đang bị khoá trên DAK                                                                                                                  |
+| `DAK rejected the access token ... (HTTP 401 ...)`                                            | Client chưa được đăng ký hoặc đã bị khoá trên DAK, hoặc realm chưa có trong registry của DAK                                                        |
+| `DAK key request ... failed: cannot reach ...` / `HTTP 503`                                   | DAK hoặc Vault phía DAK không phản hồi. Sự cố kéo dài: fallback thủ công (mục 4.6)                                                                  |
 | `Tag mismatch` (`AES_CRYPTO_ERROR`) — `column_decrypt`                                        | Sai bảng (sai prefix), sai cột `keyField`, giải mã cột chưa được mã hoá, hoặc cột mã hoá bằng `cdr_*`                                               |
 | `CDR partner decrypt failed` — `cdr_decrypt`                                                  | Sai bảng (sai prefix), sai `keyField`, hoặc dữ liệu không phải do thuật toán CDR mã hoá                                                             |
 | `Input length must be multiple of 16 when decrypting`                                         | `cdr_decrypt` gặp giá trị không phải ciphertext ECB, thường do bảng lẫn dữ liệu mã hoá bằng `column_*` hoặc cột chưa mã hoá                         |

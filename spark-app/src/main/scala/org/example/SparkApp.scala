@@ -26,7 +26,8 @@ import scala.util.Try
  * nạp jar lib (Dockerfile + spark.jars), đăng ký extension (spark.sql.extensions) rồi khai tên hàm SQL:
  *   CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION (vd column_encrypt/column_decrypt hoặc cdr_encrypt/cdr_decrypt),
  *   CRYPTO_ENCRYPTED_COLUMNS (phân cách bằng dấu phẩy) và CRYPTO_KEY_FIELD. Để trống cả 2 tên hàm = không mã hoá.
- * Nguồn keyPrefix (VAULT_*, CRYPTO_PREFIX_SOURCE, ...) do lib tự đọc từ biến môi trường, app không đụng tới.
+ * Tên key tra keyPrefix là `DB_NAME.TABLE_NAME` chữ thường (CryptoStep.keyName). Nguồn keyPrefix
+ * (CRYPTO_PREFIX_SOURCE, DAK_*, VAULT_*, ...) do lib tự đọc từ biến môi trường, app không đụng tới.
  */
 object SparkApp {
 
@@ -183,7 +184,8 @@ object SparkApp {
     // Dựng DataFrame đã mã hoá TRƯỚC mọi thao tác ghi: Spark resolve hàm SQL của extension ngay ở đây
     // (extension tra keyPrefix và che nó khỏi plan/UI/event log), nên hàm chưa nạp / prefix hỏng thì fail sớm.
     val sampleDf    = BusinessLogic.sampleDataFrame(spark)
-    val encryptedDf = cfg.crypto.fold(sampleDf)(c => CryptoStep.encrypt(sampleDf, cfg.tableName, c))
+    val cryptoKey   = CryptoStep.keyName(cfg.dbName, cfg.tableName)
+    val encryptedDf = cfg.crypto.fold(sampleDf)(c => CryptoStep.encrypt(sampleDf, cryptoKey, c))
 
     val warehouseDir    = spark.conf.getOption("spark.sql.warehouse.dir").getOrElse("")
     val fullTableQuoted = BusinessLogic.qualifiedTable(cfg.dbName, cfg.tableName)
@@ -226,6 +228,7 @@ object SparkApp {
     cfg.crypto match {
       case Some(c) =>
         Log.kv("crypto",            c.description)
+        Log.kv("crypto key name",   cryptoKey)
         Log.kv("encrypted columns", c.encryptedColumns.mkString(", "))
         Log.kv("key field",         c.keyField)
       case None => Log.info("Column crypto: DISABLED (CRYPTO_ENCRYPT_FUNCTION not set)")
@@ -252,7 +255,7 @@ object SparkApp {
 
     cfg.crypto.foreach { c =>
       Log.section("QUERY RESULT — AFTER DECRYPT")
-      CryptoStep.decrypt(resultDf, cfg.tableName, c).show(truncate = false)
+      CryptoStep.decrypt(resultDf, cryptoKey, c).show(truncate = false)
     }
   }
 

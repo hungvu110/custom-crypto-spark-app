@@ -2,7 +2,7 @@ package vai.lakehouse.keyprefix
 
 /**
  * Đọc cấu hình lấy keyPrefix từ biến môi trường của tiến trình (SparkApplication driver/executor).
- * Mọi lib crypto (`column-crypto-lib`, `cdr-crypto-udf`) dùng chung bộ biến `VAULT_*`/`CRYPTO_*` này:
+ * Mọi lib crypto (`column-crypto-lib`, `cdr-crypto-udf`) dùng chung bộ biến `VAULT_*`/`DAK_*`/`CRYPTO_*` này:
  * extension do Spark tự khởi tạo qua `spark.sql.extensions` (constructor không tham số) nên không
  * ai truyền cấu hình vào được, nhưng biến môi trường là cấp OS nên đọc trực tiếp được.
  *
@@ -23,7 +23,12 @@ class EnvConfigSource(env: Map[String, String] = sys.env) extends ConfigSource {
     Keys.VaultKvBasePath -> "VAULT_KV_PATH",
     Keys.VaultKeyField   -> "VAULT_KEY_FIELD",
     Keys.VaultJwtPath    -> "VAULT_JWT_PATH",
-    Keys.CacheTtlSeconds -> "CRYPTO_CACHE_TTL_SECONDS"
+    Keys.CacheTtlSeconds -> "CRYPTO_CACHE_TTL_SECONDS",
+    Keys.DakAddr              -> "DAK_ADDR",
+    Keys.DakTokenUrl          -> "DAK_TOKEN_URL",
+    Keys.DakClientId          -> "DAK_CLIENT_ID",
+    Keys.DakClientSecret      -> "DAK_CLIENT_SECRET",
+    Keys.DakAllowInsecureHttp -> "DAK_ALLOW_INSECURE_HTTP"
   )
 
   override def describe(key: String): String = names.getOrElse(key, key)

@@ -1,5 +1,7 @@
 package vai.lakehouse.keyprefix
 
+import java.net.URI
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 import org.apache.spark.SparkConf
@@ -44,8 +46,14 @@ class ChainedConfigSource(sources: Seq[ConfigSource]) extends ConfigSource {
 /**
  * Dựng `PrefixSource` từ cấu hình. Các key logic:
  * {{{
- * source            file | vault | file,vault   (mặc định file; nhiều nguồn = thử lần lượt, fallback)
+ * source            file | vault | file,vault | dak   (mặc định file; nhiều nguồn = thử lần lượt, fallback;
+ *                   dak KHÔNG được ghép với nguồn khác)
  * file.dir          thư mục chứa file <tên bảng> (K8s Secret mount)
+ * dak.addr          (bắt buộc khi dùng dak) base URL của DAK, https://
+ * dak.tokenUrl      (bắt buộc khi dùng dak) token endpoint Keycloak của realm của tenant, https://
+ * dak.clientId      (bắt buộc khi dùng dak) client Keycloak của team
+ * dak.clientSecret  (bắt buộc khi dùng dak)
+ * dak.allowInsecureHttp  mặc định false; true cho phép http:// (chỉ dùng khi test local)
  * vault.addr        (bắt buộc khi dùng vault)
  * vault.authMethod  kubernetes | token   (mặc định kubernetes)
  * vault.token       (bắt buộc khi authMethod=token) token Vault tĩnh; KHÔNG bị login/revoke
@@ -73,11 +81,17 @@ object PrefixSourceFactory {
     val VaultKeyField   = "vault.keyField"
     val VaultJwtPath    = "vault.jwtPath"
     val CacheTtlSeconds = "cacheTtlSeconds"
+    val DakAddr              = "dak.addr"
+    val DakTokenUrl          = "dak.tokenUrl"
+    val DakClientId          = "dak.clientId"
+    val DakClientSecret      = "dak.clientSecret"
+    val DakAllowInsecureHttp = "dak.allowInsecureHttp"
   }
 
   val FileSource  = "file"
   val VaultSource = "vault"
-  private val SupportedSources = Seq(FileSource, VaultSource)
+  val DakSource   = "dak"
+  private val SupportedSources = Seq(FileSource, VaultSource, DakSource)
 
   val KubernetesAuth = "kubernetes"
   val TokenAuth      = "token"
@@ -103,12 +117,43 @@ object PrefixSourceFactory {
     require(names.nonEmpty && invalid.isEmpty,
       s"Invalid ${cfg.describe(Keys.Source)}: must be a comma-separated list of ${SupportedSources.mkString(", ")}" +
         (if (invalid.nonEmpty) s" (got: ${invalid.mkString(", ")})" else ""))
+    // ChainedPrefixSource chuyển nguồn khi gặp BẤT KỲ lỗi nào, kể cả 403 của DAK -> nguồn sau sẽ trả key
+    // mà DAK vừa từ chối. Fallback về Vault chỉ được làm thủ công (đổi source rồi restart).
+    require(!(names.contains(DakSource) && names.size > 1),
+      s"Invalid ${cfg.describe(Keys.Source)}: '$DakSource' cannot be combined with other sources " +
+        s"(got: ${names.mkString(",")}). A fallback source is used on any DAK error, including 403, " +
+        s"which would bypass DAK permissions. Use '$DakSource' alone; if DAK is down, switch " +
+        s"${cfg.describe(Keys.Source)} manually and restart.")
     names
   }
 
   private def build(name: String, cfg: ConfigSource): PrefixSource = name match {
     case VaultSource => new VaultPrefixSource(vaultConfig(cfg))
+    case DakSource   => dakSource(cfg)
     case _           => new FilePrefixSource(cfg.get(Keys.FileDir).getOrElse(DefaultFileDir))
+  }
+
+  private def dakSource(cfg: ConfigSource): PrefixSource = {
+    val allowHttp = cfg.get(Keys.DakAllowInsecureHttp).exists(_.equalsIgnoreCase("true"))
+    val dak = DakConfig(
+      addr         = httpsUrl(cfg, Keys.DakAddr, allowHttp),
+      tokenUrl     = httpsUrl(cfg, Keys.DakTokenUrl, allowHttp),
+      clientId     = required(cfg, Keys.DakClientId),
+      clientSecret = required(cfg, Keys.DakClientSecret))
+    val hint = Seq(Keys.DakTokenUrl, Keys.DakClientId, Keys.DakClientSecret).map(cfg.describe).mkString(", ")
+    new DakPrefixSource(dak, KeycloakTokenProvider.shared(dak.tokenUrl, dak.clientId, dak.clientSecret, hint))
+  }
+
+  /** URL tuyệt đối có host; bắt buộc https:// trừ khi bật allowInsecureHttp. Không in lại giá trị (URL có thể chứa user:pass). */
+  private def httpsUrl(cfg: ConfigSource, key: String, allowHttp: Boolean): String = {
+    val raw = required(cfg, key)
+    val uri = Try(URI.create(raw)).toOption.filter(u => Option(u.getHost).exists(_.nonEmpty))
+    val scheme = uri.flatMap(u => Option(u.getScheme)).map(_.toLowerCase(Locale.ROOT))
+    val accepted = scheme.contains("https") || (allowHttp && scheme.contains("http"))
+    require(accepted,
+      s"Invalid ${cfg.describe(key)}: must be an absolute https:// URL " +
+        s"(http:// is accepted only with ${cfg.describe(Keys.DakAllowInsecureHttp)}=true, for local testing)")
+    raw
   }
 
   private def vaultConfig(cfg: ConfigSource): VaultConfig = {

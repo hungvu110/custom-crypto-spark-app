@@ -80,6 +80,6 @@ object CdrCryptoExtension {
     case Literal(v, StringType) if v != null => v.toString
     case _ => throw new IllegalArgumentException(
       s"$function: the first argument must be a constant string with the table/dataset name, " +
-        s"e.g. $function('sub_rel_product', <column>, <fieldColumn>)")
+        s"e.g. $function('demo_db.sub_rel_product', <column>, <fieldColumn>)")
   }
 }
