@@ -222,7 +222,60 @@ sinh trong test. 16 kịch bản: 200 và chuẩn hoá chữ thường; 400 trư
 ngoài (và xác nhận mock không gọi tới đó); 403 khi Vault không có secret; 500 khi secret rỗng; 503 khi Vault từ chối token và khi
 JWKS không tải được; thay `X-Request-Id` không hợp lệ.
 
-## 9. Lưu ý khi mở bằng IDE
+## 9. Deploy lên Kubernetes
+
+Hai file: [`Dockerfile`](Dockerfile) và [`k8s/dak-mock.yaml`](k8s/dak-mock.yaml) (ConfigMap + Deployment + Service).
+
+### 9.1. Build và push image
+
+```bash
+docker build -t hub.vtcc.vn:8989/dak-mock:0.1.0 dak-mock      # build context là thư mục dak-mock
+docker push hub.vtcc.vn:8989/dak-mock:0.1.0
+```
+
+Image build 2 bước (Maven + JDK 17 → chỉ copy jar sang JRE 17), chạy bằng **user 1000:1000**, jar thuộc root (chỉ đọc).
+`.dockerignore` loại `target/` và `.env` khỏi build context nên secret không lọt vào image. Bước build cần tải dependency
+từ Maven Central; nếu cụm build chỉ đi qua mirror nội bộ thì thêm `settings.xml` vào bước build.
+
+### 9.2. Tạo Secret và deploy
+
+```bash
+NS=<namespace>
+read -rs -p "Vault token (chỉ đọc): " T; echo
+kubectl create secret generic dak-mock-vault-token -n "$NS" --from-literal=token="$T"; unset T
+
+# Sửa ConfigMap dak-mock-config trong k8s/dak-mock.yaml: realm, issuer, jwks-uri, clients, vault.addr
+kubectl apply -n "$NS" -f dak-mock/k8s/dak-mock.yaml
+kubectl rollout status -n "$NS" deploy/dak-mock
+kubectl logs -n "$NS" deploy/dak-mock | grep "Started DakMockApplication"
+```
+
+Sửa ConfigMap sau khi đã deploy thì phải `kubectl rollout restart -n "$NS" deploy/dak-mock` để pod nạp lại.
+
+### 9.3. Cấu hình trong manifest
+
+| Mục | Giá trị | Ghi chú |
+| --- | --- | --- |
+| `resources` | requests `250m` / `512Mi`, limits `1` CPU / `2Gi` | JVM tự lấy 75% memory limit làm heap (`MaxRAMPercentage=75` trong image) |
+| Pod `securityContext` | `runAsNonRoot`, `runAsUser/runAsGroup/fsGroup: 1000`, `seccompProfile: RuntimeDefault` | |
+| Container `securityContext` | `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `runAsNonRoot`, `runAsUser: 1000`, `readOnlyRootFilesystem: true` | Root filesystem chỉ đọc; `/tmp` là `emptyDir` (Tomcat ghi file tạm) |
+| `automountServiceAccountToken` | `false` | Mock không gọi Kubernetes API |
+| Probe | `tcpSocket` cổng `http` (startup/readiness/liveness) | Mock không có endpoint health riêng |
+| Cấu hình | ConfigMap mount ở `/config`, nạp qua `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/` | Danh sách `realms`/`clients` trong ConfigMap **thay thế** toàn bộ danh sách mặc định trong jar |
+| Token Vault | Secret `dak-mock-vault-token`, key `token` → env `VAULT_TOKEN` | Không nằm trong manifest |
+
+Pod phải gọi được `jwks-uri` của Keycloak và `vault.addr`. Nếu namespace có NetworkPolicy chặn egress thì mở 2 đích này.
+
+### 9.4. Gọi từ Spark
+
+| Bên gọi ở đâu | `dak.addr` / `DAK_ADDR` |
+| --- | --- |
+| Cùng namespace | `http://dak-mock:8085` |
+| Namespace khác | `http://dak-mock.<namespace>.svc.cluster.local:8085` |
+
+Mock chạy HTTP nên bên gọi phải đặt `spark.<ns>.dak.allowInsecureHttp=true` (SparkApplication: `DAK_ALLOW_INSECURE_HTTP=true`).
+
+## 10. Lưu ý khi mở bằng IDE
 
 `dak-mock` là project Maven riêng (Java 17). Nếu VSCode/IntelliJ đang mở thư mục gốc như project Spark (Java 11), IDE sẽ báo
 lỗi cú pháp giả ở các `record`. Import `dak-mock/pom.xml` như một project riêng để IDE dùng đúng JDK.

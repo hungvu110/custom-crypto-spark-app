@@ -1,0 +1,11 @@
+# Chỉ cần pom.xml và src/ để build image. Loại mọi thứ khác khỏi build context,
+# đặc biệt file chứa secret (.env) để không bao giờ lọt vào layer của image.
+target/
+.env
+*.env
+*.sh
+k8s/
+README.md
+.idea/
+.vscode/
+*.iml
