@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# mvnw — wrapper chạy Maven qua Nexus nội bộ (tương đương sbtw bên crawler-streaming-app).
+#
+# Máy chỉ cần Java 11/17 (không cần cài Maven): lần đầu script tải bản Maven trong
+# .mvn/wrapper/maven-wrapper.properties từ Nexus, các lần sau dùng lại. Repo để resolve
+# dependency/plugin do ~/.m2/settings.xml quyết định (mirror Nexus — xem internal-repo/settings.xml).
+#
+#   ./mvnw -B clean package
+#
+# Biến môi trường tuỳ chọn:
+#   MAVEN_USER_HOME  (mặc định ~/.m2) — nơi giữ bản Maven đã tải: $MAVEN_USER_HOME/wrapper/nexus/
+#   MAVEN_OPTS       tham số JVM thêm cho Maven, vd "-Xmx2g"
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROPS="${ROOT}/.mvn/wrapper/maven-wrapper.properties"
+
+if [[ ! -f "$PROPS" ]]; then
+  echo "mvnw: không thấy ${PROPS}" >&2
+  exit 1
+fi
+
+URL="$(sed -n 's/^[[:space:]]*distributionUrl[[:space:]]*=[[:space:]]*//p' "$PROPS" | tr -d '[:space:]')"
+ARCHIVE="$(basename "$URL")"
+if [[ "$ARCHIVE" != *-bin.tar.gz ]]; then
+  echo "mvnw: distributionUrl phải trỏ tới apache-maven-<version>-bin.tar.gz, đang là: '${URL}'" >&2
+  exit 1
+fi
+
+DIST="${ARCHIVE%-bin.tar.gz}"   # vd apache-maven-3.9.9 — cũng là tên thư mục gốc trong archive
+MAVEN_HOME_DIR="${MAVEN_USER_HOME:-${HOME}/.m2}/wrapper/nexus/${DIST}"
+MVN="${MAVEN_HOME_DIR}/bin/mvn"
+
+if [[ ! -x "$MVN" ]]; then
+  echo "mvnw: tải ${DIST} từ ${URL}" >&2
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  curl -fSL --retry 3 -o "${TMP}/${ARCHIVE}" "$URL"
+  tar -xzf "${TMP}/${ARCHIVE}" -C "$TMP"
+  mkdir -p "$(dirname "$MAVEN_HOME_DIR")"
+  rm -rf "$MAVEN_HOME_DIR"
+  mv "${TMP}/${DIST}" "$MAVEN_HOME_DIR"
+  rm -rf "$TMP"
+  trap - EXIT
+fi
+
+# Không cd vào ROOT: giống mvn thật, Maven tìm project từ thư mục hiện tại
+# (Metals chạy lệnh từ gốc workspace).
+exec "$MVN" "$@"

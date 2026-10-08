@@ -1,0 +1,39 @@
+{
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/.bloop/**": true
+  },
+
+  // Mặc định Metals tải Coursier native (cs) từ github.com/coursier/launchers bằng curl -> trong mạng nội bộ
+  // treo mãi ở 0 byte và extension không khởi động (lỗi "command 'metals.build-import' not found").
+  // true = bỏ bước đó, dùng coursier-fallback.jar có sẵn trong extension (chạy bằng Java local).
+  // ĐIỀU KIỆN: máy PHẢI có sẵn JDK >= 17 (metals.javaVersion mặc định 17) — ở chế độ này Metals
+  // không tự tải được Java.
+  "metals.forceCoursierJar": true,
+
+  // coursier-fallback.jar chỉ là bootstrap: nó tải coursier-cli từ https://repo1.maven.org/maven2 (cứng),
+  // KHÔNG theo customRepositories. Mirror này khiến Metals ghi .metals/mirror.properties
+  //   metals.from=https://repo1.maven.org/maven2  ->  metals.to=<Nexus>
+  // và truyền qua COURSIER_MIRRORS -> mọi URL Maven Central được đổi sang Nexus.
+  // Không để dấu "/" ở cuối (URL được nối theo prefix của from).
+  "metals.coursierMirror": "http://10.30.154.118:8888/repository/maven-public",
+
+  // Mọi thứ Coursier tải tiếp theo (Metals server, Bloop, mtags) lấy từ Nexus nội bộ.
+  // Lưu ý: Coursier chỉ lo phần của Metals — dependency của project do Maven tải (~/.m2/settings.xml).
+  "metals.customRepositories": [
+    "http://10.30.154.118:8888/repository/maven-public/"
+  ],
+
+  // JDK chạy Metals server và Bloop (BẮT BUỘC >= 17) — Metals chỉ tự tìm qua JAVA_HOME và `java` trên PATH,
+  // không quét /usr/lib/jvm. Máy có Java 11 mặc định -> cài thêm JDK 17 và trỏ tới đây
+  // (Java mặc định của hệ thống vẫn giữ 11 cho mvn, khớp runtime trong image; project target Java 11).
+  // Đường dẫn dưới là của gói apt openjdk-17-jdk-headless; sửa nếu cài JDK ở chỗ khác.
+  "metals.javaHome": "/usr/lib/jvm/java-17-openjdk-amd64",
+
+  // Import build (project Maven): Metals chạy `<mavenScript> ch.epfl.scala:bloop-maven-plugin:...:bloopInstall`.
+  // Nếu bỏ trống, Metals dùng Maven wrapper NHÚNG trong extension -> tải apache-maven từ
+  // repo.maven.apache.org -> trong mạng nội bộ import fail, mọi file báo "no build target found".
+  // Trỏ vào ./mvnw của project (tải Maven từ Nexus) hoặc vào mvn đã cài sẵn (vd "/usr/bin/mvn").
+  // BẮT BUỘC path tuyệt đối — sửa theo vị trí project trên máy.
+  "metals.mavenScript": "/home/hungvt/projects/custom-crypto-spark-app/mvnw"
+}

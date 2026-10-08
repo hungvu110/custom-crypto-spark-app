@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Maven settings cho máy công ty: mọi thứ Maven tải (dependency, plugin, kể cả bloop-maven-plugin
+  mà Metals gọi khi Import build) đều đi qua Nexus nội bộ thay vì Maven Central.
+
+  Áp dụng: copy thành ~/.m2/settings.xml (xem internal-repo/README.md). Nếu máy đã có
+  ~/.m2/settings.xml theo hướng dẫn nội bộ thì chỉ cần gộp khối <mirrors> bên dưới vào file đó.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0
+                              https://maven.apache.org/xsd/settings-1.2.0.xsd">
+
+  <mirrors>
+    <!--
+      mirrorOf=* : thay MỌI repository (central, repo khai báo trong pom của dependency...) bằng Nexus.
+      Nexus chạy HTTP: Maven >= 3.8.1 chặn repo http:// qua mirror "maven-default-http-blocker"
+      (external:http:*) trong settings toàn cục. Mirror ở settings người dùng được xét trước nên
+      "*" thắng, repo không bị chặn. Nếu vẫn thấy lỗi "Blocked mirror for repositories" nghĩa là file
+      này chưa được nạp (sai đường dẫn hoặc sai XML).
+    -->
+    <!-- id/url/mirrorOf giống hệt tài liệu "Cách sử dụng Local Repository" của công ty. -->
+    <mirror>
+      <id>internal-mirror</id>
+      <name>Nexus nội bộ</name>
+      <mirrorOf>*</mirrorOf>
+      <url>http://10.30.154.118:8888/repository/maven-public/</url>
+    </mirror>
+  </mirrors>
+
+  <!--
+    Credential — chỉ bỏ comment khi cần. KHÔNG để placeholder khi Nexus cho đọc ẩn danh: Maven gửi
+    user/password sai thì Nexus trả 401 dù repo cho phép ẩn danh.
+      - id "internal-mirror" : Nexus bắt đăng nhập mới cho đọc maven-public (id trùng id mirror).
+      - id "maven-releases" / "maven-snapshots" : chỉ cần khi `mvn deploy` (id trùng
+        <distributionManagement> trong tài liệu công ty — xem README).
+    Không commit file đã điền mật khẩu thật.
+  -->
+  <!--
+  <servers>
+    <server>
+      <id>internal-mirror</id>
+      <username>NEXUS_USERNAME</username>
+      <password>NEXUS_PASSWORD</password>
+    </server>
+    <server>
+      <id>maven-releases</id>
+      <username>NEXUS_USERNAME</username>
+      <password>NEXUS_PASSWORD</password>
+    </server>
+    <server>
+      <id>maven-snapshots</id>
+      <username>NEXUS_USERNAME</username>
+      <password>NEXUS_PASSWORD</password>
+    </server>
+  </servers>
+  -->
+</settings>

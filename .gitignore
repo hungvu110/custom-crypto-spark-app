@@ -4,6 +4,8 @@ target/
 # IDE / tooling
 .metals/
 .vscode/
+# Ngoại lệ: settings mẫu cho máy công ty (Nexus nội bộ) — xem internal-repo/README.md
+!internal-repo/.vscode/
 .bloop/
 .bsp/
 *.iml
