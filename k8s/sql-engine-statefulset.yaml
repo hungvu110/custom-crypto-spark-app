@@ -1,0 +1,306 @@
+# StatefulSet sql-engine (engine sqlxidle9p) — tái hiện từ STS đang chạy, KÈM phần bổ sung để driver gọi được
+# Keycloak nội bộ https://sso-lakehouse.cyberspace.vn (source=dak). Các chỗ bổ sung đánh dấu "[DAK]".
+#
+# Phần bị thu gọn trong ảnh chụp (env value, probes, ports, resources, persistentVolumeClaimRetentionPolicy,
+# template labels) được đánh dấu "GIẢ ĐỊNH" — đối chiếu với `kubectl get sts sql-engine-en-sqlxidle9p -o yaml`
+# trước khi apply, ưu tiên giá trị trong cluster.
+#
+# Chuẩn bị trước, cùng namespace (docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.7):
+#   - ConfigMap keycloak-ca, key ca.pem (cert của sso-lakehouse, PEM)
+#   - Secret spark-dak-client, key clientSecret (secret của client team-de-ws8) — dùng chung với SparkApplication
+#
+# STS do nền tảng (UI tạo engine) quản lý: cập nhật engine từ UI có thể ghi đè các mục [DAK]. Phối hợp team nền tảng
+# để đưa vào template engine, hoặc áp lại sau mỗi lần cập nhật.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: sql_engine_en_sqlxidle9p
+    version: 3.5.1
+  name: sql-engine-en-sqlxidle9p
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+spec:
+  # GIẢ ĐỊNH — bị thu gọn trong ảnh.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 0
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: sql_engine_en_sqlxidle9p
+  serviceName: sql-engine-en-sqlxidle9p
+  template:
+    metadata:
+      # GIẢ ĐỊNH — bị thu gọn trong ảnh; tối thiểu phải có nhãn khớp selector.
+      labels:
+        app: sql_engine_en_sqlxidle9p
+      namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+    spec:
+      # [DAK] Pod phân giải được tên Keycloak nội bộ, không phụ thuộc DNS của cluster.
+      hostAliases:
+        - ip: "10.221.148.42"
+          hostnames:
+            - sso-lakehouse.cyberspace.vn
+      # [DAK] Truststore = cacerts của JDK (vẫn tin CA công khai) + mọi cert trong ConfigMap keycloak-ca.
+      # Dùng chính image engine (có bash, awk, keytool, JAVA_HOME); chạy user 185 theo securityContext của pod.
+      initContainers:
+        - name: build-truststore
+          image: registry.cyberspace.vn/vlp/sql-engine:3.5.1-v1.7-nonroot-5
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-ec"]
+          args:
+            - |
+              cp "$JAVA_HOME/lib/security/cacerts" /opt/truststore/truststore.p12
+              awk '/BEGIN CERTIFICATE/ { n++ } n > 0 { print > ("/opt/truststore/ca-" n ".pem") }' /ca/ca.pem
+              ls /opt/truststore/ca-*.pem > /dev/null   # ca.pem không có cert nào -> init lỗi, pod không chạy
+              for f in /opt/truststore/ca-*.pem; do
+                keytool -importcert -noprompt -alias "internal-$(basename "$f" .pem)" -file "$f" \
+                  -keystore /opt/truststore/truststore.p12 -storetype PKCS12 -storepass changeit
+              done
+              rm -f /opt/truststore/ca-*.pem
+          env:
+            # Không để cờ JVM của container chính lọt vào keytool.
+            - name: JAVA_TOOL_OPTIONS
+              value: ""
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+          volumeMounts:
+            - name: keycloak-ca
+              mountPath: /ca
+              readOnly: true
+            - name: truststore
+              mountPath: /opt/truststore
+      containers:
+        - args:
+            - /opt/spark/conf/entrypoint.sh
+          command:
+            - /bin/bash
+            - '-c'
+          env:
+            # GIẢ ĐỊNH — 5 biến dưới bị thu gọn trong ảnh, chép value/valueFrom từ STS gốc.
+            - name: SPARK_DRIVER_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SPARK_DRIVER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SPARK_NO_DAEMONIZE
+              value: "true"
+            - name: TEAM_USER
+              value: teamtscauiy
+            - name: TZ
+              value: Asia/Ho_Chi_Minh
+            # [DAK] JVM của driver (Thrift Server, client mode) tin CA nội bộ. Đặt ở biến môi trường để không phụ thuộc
+            # cách entrypoint.sh khởi động JVM. Nếu image đã đặt sẵn JAVA_TOOL_OPTIONS, phải nối giá trị cũ vào đây.
+            # Cách thay thế: nối 3 cờ này vào spark.driver.extraJavaOptions (guide mục 4.7) và bỏ biến này.
+            - name: JAVA_TOOL_OPTIONS
+              value: >-
+                -Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12
+                -Djavax.net.ssl.trustStoreType=PKCS12
+                -Djavax.net.ssl.trustStorePassword=changeit
+            # [DAK] client secret của team lấy từ Secret thay vì ghi vào Spark conf (ConfigMap). Lib đọc
+            # spark.cdrcrypto.dak.clientSecret trước, không có mới đọc DAK_CLIENT_SECRET -> XOÁ key đó khỏi Spark conf.
+            - name: DAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: spark-dak-client
+                  key: clientSecret
+          image: registry.cyberspace.vn/vlp/sql-engine:3.5.1-v1.7-nonroot-5
+          imagePullPolicy: Always
+          name: engine-server
+          # GIẢ ĐỊNH — livenessProbe, ports, readinessProbe, resources bị thu gọn trong ảnh: chép nguyên từ STS gốc
+          # vào đây (không có chúng thì STS vẫn hợp lệ nhưng mất probe/giới hạn tài nguyên).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /opt/spark/template/executor-pod-template.yaml.template
+              name: executor-pod-template
+              subPath: executor-pod-template.yaml.template
+            - mountPath: /opt/spark/template/spark-properties.conf.template
+              name: spark-properties
+              subPath: spark-properties.conf.template
+            - mountPath: /opt/spark/template/hive-site.xml.template
+              name: hive-site
+              subPath: hive-site.xml.template
+            - mountPath: /opt/spark/template/core-site.xml.template
+              name: core-site
+              subPath: core-site.xml.template
+            - mountPath: /opt/spark/template/hdfs-site.xml.template
+              name: hdfs-site
+              subPath: hdfs-site.xml.template
+            - mountPath: /opt/spark/template/engine-properties.conf.template
+              name: engine-properties
+              subPath: engine-properties.conf.template
+            - mountPath: /opt/spark/template/log4j2.properties.template
+              name: log4j2
+              subPath: log4j2.properties.template
+            - mountPath: /opt/spark/template/ranger-spark-security.xml.template
+              name: ranger-configuration
+              subPath: ranger-spark-security.xml.template
+            - mountPath: /opt/spark/template/ranger-spark-audit.xml.template
+              name: ranger-audit-conf
+              subPath: ranger-spark-audit.xml.template
+            - mountPath: /opt/spark/template/metrics.properties.template
+              name: metrics-jmx
+              subPath: metrics.properties.template
+            - mountPath: /opt/spark/conf/prometheus-config.yaml
+              name: jmx-exporter-config
+              subPath: config.yaml
+            - mountPath: /opt/spark/logs
+              name: logs
+            - mountPath: /opt/spark/conf/entrypoint.sh
+              name: entrypoint
+              subPath: entrypoint.sh
+            - mountPath: /etc/krb5.conf
+              name: krb5-conf
+              subPath: krb5.conf
+            - mountPath: /etc/security/keytabs/presto.keytab
+              name: keytabs
+              subPath: presto.keytab
+            # [DAK] truststore do initContainer dựng.
+            - mountPath: /opt/truststore
+              name: truststore
+              readOnly: true
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+        - name: vlp-registry
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 185
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 185
+        runAsUser: 185
+      serviceAccount: spark
+      serviceAccountName: spark
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: executor-pod-template.yaml.template
+                path: executor-pod-template.yaml.template
+            name: en-sqlxidle9p-executor-pod-template
+          name: executor-pod-template
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: spark-properties.conf.template
+                path: spark-properties.conf.template
+            name: en-sqlxidle9p-spark-properties
+          name: spark-properties
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: hive-site.xml.template
+                path: hive-site.xml.template
+            name: en-sqlxidle9p-hive-site
+          name: hive-site
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: core-site.xml
+                path: core-site.xml.template
+            name: teamtscauiy-hadoop-conf
+          name: core-site
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: hdfs-site.xml
+                path: hdfs-site.xml.template
+            name: teamtscauiy-hadoop-conf
+          name: hdfs-site
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: log4j2.properties.template
+                path: log4j2.properties.template
+            name: en-sqlxidle9p-log4j2
+          name: log4j2
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: ranger-spark-security.xml.template
+                path: ranger-spark-security.xml.template
+            name: en-sqlxidle9p-ranger-configuration
+          name: ranger-configuration
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: ranger-spark-audit.xml.template
+                path: ranger-spark-audit.xml.template
+            name: en-sqlxidle9p-ranger-audit-conf
+          name: ranger-audit-conf
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: krb5.conf
+                path: krb5.conf
+            name: teamtscauiy-krb5-conf
+          name: krb5-conf
+        - name: keytabs
+          secret:
+            defaultMode: 420
+            secretName: teamtscauiy-keytab
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: engine-properties.conf.template
+                path: engine-properties.conf.template
+            name: en-sqlxidle9p-engine-properties
+          name: engine-properties
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: metrics.properties.template
+                path: metrics.properties.template
+            name: en-sqlxidle9p-metrics-jmx
+          name: metrics-jmx
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: config.yaml
+                path: config.yaml
+            name: en-sqlxidle9p-jmx-exporter-config
+          name: jmx-exporter-config
+        - name: logs
+          persistentVolumeClaim:
+            claimName: en-sqlxidle9p-logs
+        - configMap:
+            defaultMode: 493
+            name: en-sqlxidle9p-entrypoint
+          name: entrypoint
+        # [DAK] cert của sso-lakehouse (PEM, key ca.pem) và truststore dựng lúc pod khởi động.
+        - configMap:
+            defaultMode: 420
+            name: keycloak-ca
+          name: keycloak-ca
+        - emptyDir:
+            sizeLimit: 16Mi
+          name: truststore
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+      partition: 0
+    type: RollingUpdate

@@ -11,27 +11,27 @@ Hợp đồng API đầy đủ: [docs/DAK_API_SPEC.md](../docs/DAK_API_SPEC.md).
 
 ## 1. Môi trường triển khai
 
-| Thành phần | Giá trị |
-| --- | --- |
-| Keycloak | `https://sso-lakehouse.cyberspace.vn` (IP `10.221.148.42`, cert do CA nội bộ cấp — mục 8) |
-| Realm (tenant) | `vlp-tenantw1xjixm` |
-| Issuer | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm` |
-| JWKS | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs` |
-| Token endpoint (bên gọi dùng) | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token` |
-| Namespace | `vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy` (workspace `wsw7vtwvi`, team `teamtscauiy`; cùng namespace với sql-engine và SparkApplication) |
-| Service | `dak-mock:8085` (HTTP, ClusterIP) |
-| Vault | `http://vault.cyberspace.vn`, KV v2 mount `kv` |
+| Thành phần                    | Giá trị                                                                                                                                  |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Keycloak                      | `https://sso-lakehouse.cyberspace.vn` (IP `10.221.148.42`, cert do CA nội bộ cấp — mục 8)                                                |
+| Realm (tenant)                | `vlp-tenantw1xjixm`                                                                                                                      |
+| Issuer                        | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm`                                                                           |
+| JWKS                          | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs`                                             |
+| Token endpoint (bên gọi dùng) | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token`                                             |
+| Namespace                     | `vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy` (workspace `wsw7vtwvi`, team `teamtscauiy`; cùng namespace với sql-engine và SparkApplication) |
+| Service                       | `dak-mock:8085` (HTTP, ClusterIP)                                                                                                        |
+| Vault                         | `http://vault.cyberspace.vn`, KV v2 mount `kv`                                                                                           |
 
 Tất cả chạy trong cluster: build image → push registry nội bộ → `kubectl apply`. Không có bước chạy local.
 
 ## 2. Mock làm gì và không làm gì
 
-| Có                                                                                   | Không (cố ý bỏ qua)                                                        |
-| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| Xác minh access token bằng **JWKS của realm Keycloak** (RS256, `iss`, `exp`, `typ`, `azp`) | **Phân quyền**: grant theo bảng, thời hạn quyền, phiếu duyệt         |
-| Ánh xạ `(realm, client_id)` → (tenant, workspace, team) từ ConfigMap                | Chức năng quản trị (tạo client, tạo/nạp key, cấp quyền, khoá key)          |
-| Đọc `keyPrefix` từ **Vault KV v2 bằng token tĩnh**, cùng path với luồng column/cdr cũ | Database: mock không có DB, mọi cấu hình nằm trong ConfigMap              |
-| Mã lỗi, body lỗi, `X-Request-Id`, `Cache-Control: no-store` đúng spec                | Đọc đúng `vault_version` đã lưu (mock đọc version mới nhất), rate limit, kiểm `aud` |
+| Có                                                                                         | Không (cố ý bỏ qua)                                                                 |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Xác minh access token bằng **JWKS của realm Keycloak** (RS256, `iss`, `exp`, `typ`, `azp`) | **Phân quyền**: grant theo bảng, thời hạn quyền, phiếu duyệt                        |
+| Ánh xạ `(realm, client_id)` → (tenant, workspace, team) từ ConfigMap                       | Chức năng quản trị (tạo client, tạo/nạp key, cấp quyền, khoá key)                   |
+| Đọc `keyPrefix` từ **Vault KV v2 bằng token tĩnh**, cùng path với luồng column/cdr cũ      | Database: mock không có DB, mọi cấu hình nằm trong ConfigMap                        |
+| Mã lỗi, body lỗi, `X-Request-Id`, `Cache-Control: no-store` đúng spec                      | Đọc đúng `vault_version` đã lưu (mock đọc version mới nhất), rate limit, kiểm `aud` |
 
 Vì không có phân quyền: **mọi team có token hợp lệ đều lấy được mọi key có trong Vault**. Chỉ dùng cho môi trường test.
 
@@ -95,7 +95,7 @@ dak:
       jwks-uri: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs
   clients:
     - realm: vlp-tenantw1xjixm
-      client-id: <client-id-cua-team>      # PHẢI SỬA: client vận hành tạo cho team
+      client-id: <client-id-cua-team> # PHẢI SỬA: client vận hành tạo cho team
       workspace: wsw7vtwvi
       team: teamtscauiy
       # enabled: false                     # khoá client -> token của client này bị 401
@@ -172,13 +172,13 @@ kubectl logs -n "$NS" deploy/dak-mock | grep "Started DakMockApplication"
 
 Sửa ConfigMap sau khi đã deploy: `kubectl apply` lại rồi `kubectl rollout restart -n "$NS" deploy/dak-mock`.
 
-| Mục trong manifest | Giá trị |
-| --- | --- |
-| `resources` | requests `250m`/`512Mi`, limits `1` CPU/`2Gi`; JVM lấy 75% memory limit làm heap |
-| Pod `securityContext` | `runAsNonRoot`, `runAsUser/runAsGroup/fsGroup: 1000`, `seccompProfile: RuntimeDefault` |
-| Container `securityContext` | `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `runAsNonRoot`, `runAsUser: 1000`, `readOnlyRootFilesystem: true` (`/tmp` là emptyDir) |
-| `automountServiceAccountToken` | `false` |
-| Probe | `tcpSocket` cổng `http` |
+| Mục trong manifest             | Giá trị                                                                                                                                               |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `resources`                    | requests `250m`/`512Mi`, limits `1` CPU/`2Gi`; JVM lấy 75% memory limit làm heap                                                                      |
+| Pod `securityContext`          | `runAsNonRoot`, `runAsUser/runAsGroup/fsGroup: 1000`, `seccompProfile: RuntimeDefault`                                                                |
+| Container `securityContext`    | `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `runAsNonRoot`, `runAsUser: 1000`, `readOnlyRootFilesystem: true` (`/tmp` là emptyDir) |
+| `automountServiceAccountToken` | `false`                                                                                                                                               |
+| Probe                          | `tcpSocket` cổng `http`                                                                                                                               |
 
 Pod phải gọi được `sso-lakehouse.cyberspace.vn` (JWKS) và `vault.cyberspace.vn`. Nếu namespace có NetworkPolicy chặn egress
 thì mở 2 đích này.
@@ -212,14 +212,14 @@ curl -s -i http://dak-mock:8085/api/v1/keys/demo_db/users_cdr -H "Authorization:
 
 Pod tạm tự xoá khi thoát (`--rm`).
 
-| Tình huống                                    | Response                                                                    |
-| --------------------------------------------- | --------------------------------------------------------------------------- |
-| Token hợp lệ, Vault có secret                 | `200 {"database":"demo_db","table":"users_cdr","keyPrefix":"...","keyVersion":1}` |
-| Tên bảng sai (`demo-db`)                      | `400 invalid_table`                                                         |
-| Thiếu token, hết hạn, sai chữ ký, `iss` không khớp ConfigMap, client chưa khai/bị khoá | `401 invalid_token`                    |
-| Vault không có secret cho bảng                | `403 access_denied`                                                         |
-| Secret không có field `keyPrefix` hoặc rỗng   | `500 internal_error`                                                        |
-| Vault từ chối token / không phản hồi, hoặc không tải được JWKS | `503 upstream_unavailable`                                 |
+| Tình huống                                                                             | Response                                                                          |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Token hợp lệ, Vault có secret                                                          | `200 {"database":"demo_db","table":"users_cdr","keyPrefix":"...","keyVersion":1}` |
+| Tên bảng sai (`demo-db`)                                                               | `400 invalid_table`                                                               |
+| Thiếu token, hết hạn, sai chữ ký, `iss` không khớp ConfigMap, client chưa khai/bị khoá | `401 invalid_token`                                                               |
+| Vault không có secret cho bảng                                                         | `403 access_denied`                                                               |
+| Secret không có field `keyPrefix` hoặc rỗng                                            | `500 internal_error`                                                              |
+| Vault từ chối token / không phản hồi, hoặc không tải được JWKS                         | `503 upstream_unavailable`                                                        |
 
 Lý do chi tiết chỉ nằm trong log, kèm `requestId`:
 
@@ -230,22 +230,22 @@ kubectl logs -n "$NS" deploy/dak-mock | grep KEY_FETCH          # dòng audit, k
 
 Lỗi hay gặp:
 
-| Log | Nguyên nhân |
-| --- | --- |
-| `401 invalid_token: issuer is not in the realm registry` | `issuer` trong ConfigMap không khớp `iss` của token (mục 4.1) |
-| `401 invalid_token: client ... is not registered or is disabled` | `client-id` của team chưa khai trong ConfigMap |
-| `503 upstream_unavailable: cannot load signing keys ... PKIX path building failed` | JVM không tin cert của `sso-lakehouse` — xem mục 8 |
-| `503 upstream_unavailable: Vault rejected the DAK token` | Token Vault sai, hết hạn hoặc thiếu quyền đọc path |
+| Log                                                                                | Nguyên nhân                                                   |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `401 invalid_token: issuer is not in the realm registry`                           | `issuer` trong ConfigMap không khớp `iss` của token (mục 4.1) |
+| `401 invalid_token: client ... is not registered or is disabled`                   | `client-id` của team chưa khai trong ConfigMap                |
+| `503 upstream_unavailable: cannot load signing keys ... PKIX path building failed` | JVM không tin cert của `sso-lakehouse` — xem mục 8            |
+| `503 upstream_unavailable: Vault rejected the DAK token`                           | Token Vault sai, hết hạn hoặc thiếu quyền đọc path            |
 
 ## 8. Keycloak nội bộ: hostAliases và CA nội bộ
 
 `sso-lakehouse.cyberspace.vn` dùng cert do **CA nội bộ** cấp, nên JVM trong image không tin sẵn. Deployment đã cấu hình:
 
-| Mục | Cách làm |
-| --- | --- |
-| `hostAliases` | Ghim `sso-lakehouse.cyberspace.vn` → `10.221.148.42`, không phụ thuộc DNS của cluster |
+| Mục                              | Cách làm                                                                                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `hostAliases`                    | Ghim `sso-lakehouse.cyberspace.vn` → `10.221.148.42`, không phụ thuộc DNS của cluster                                                    |
 | initContainer `build-truststore` | Dựng `/opt/truststore/truststore.p12` = `cacerts` của JDK (vẫn tin CA công khai) + mọi cert trong ConfigMap `keycloak-ca` (key `ca.pem`) |
-| `JAVA_TOOL_OPTIONS` | Thêm `-Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12` (và type, password) cho JVM của mock |
+| `JAVA_TOOL_OPTIONS`              | Thêm `-Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12` (và type, password) cho JVM của mock                                    |
 
 Việc của bạn: tạo ConfigMap `keycloak-ca` **trước khi** apply (dùng chung cho dak-mock, SparkApplication và sql-engine cùng
 namespace):
@@ -286,7 +286,7 @@ SparkApplication: [k8s/spark-application-cdr.yaml](../k8s/spark-application-cdr.
 - name: DAK_TOKEN_URL
   value: "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"
 - name: DAK_CLIENT_ID
-  value: "<client_id của team>"            # PHẢI SỬA, trùng client-id trong ConfigMap của mock
+  value: "<client_id của team>" # PHẢI SỬA, trùng client-id trong ConfigMap của mock
 # DAK_CLIENT_SECRET lấy từ Secret spark-dak-client (key clientSecret)
 ```
 
