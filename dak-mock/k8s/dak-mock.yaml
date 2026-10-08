@@ -1,38 +1,45 @@
 # dak-mock trên Kubernetes: ConfigMap (cấu hình không bí mật) + Deployment + Service.
+# Namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy (cùng namespace với sql-engine và SparkApplication của team).
 #
 # Token Vault (NHẠY CẢM) KHÔNG nằm trong file này. Tạo Secret trước, cùng namespace:
 #   read -rs -p "Vault token (chỉ đọc): " T; echo
-#   kubectl create secret generic dak-mock-vault-token -n <namespace> --from-literal=token="$T"; unset T
+#   kubectl create secret generic dak-mock-vault-token \
+#     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$T"; unset T
 #
-# Rồi:  kubectl apply -n <namespace> -f dak-mock/k8s/dak-mock.yaml
+# Rồi:  kubectl apply -f dak-mock/k8s/dak-mock.yaml
 #
 # Bên gọi trong cùng namespace dùng http://dak-mock:8085, namespace khác dùng
-# http://dak-mock.<namespace>.svc.cluster.local:8085 (mock chạy HTTP -> bên gọi phải đặt dak.allowInsecureHttp=true).
+# http://dak-mock.vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy.svc.cluster.local:8085
+# (mock chạy HTTP -> bên gọi phải đặt dak.allowInsecureHttp=true).
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: dak-mock-config
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
   labels:
     app.kubernetes.io/name: dak-mock
 data:
   # Ghi đè application.yml trong jar (nạp qua SPRING_CONFIG_ADDITIONAL_LOCATION). Danh sách realms/clients ở đây
-  # THAY THẾ toàn bộ danh sách mặc định. GIẢ ĐỊNH — thay bằng realm/client thật.
+  # THAY THẾ toàn bộ danh sách mặc định.
   application.yml: |
     dak:
       clock-skew: 60s
       realms:
-        - realm: vlp
-          tenant: vlp
-          # Phải khớp CHÍNH XÁC claim iss của token (lấy từ .well-known/openid-configuration của realm).
-          issuer: https://keycloak.example/realms/vlp
-          # Pod phải gọi được địa chỉ này (tải JWKS để verify chữ ký).
-          jwks-uri: https://keycloak.example/realms/vlp/protocol/openid-connect/certs
+        # Tenant hiện tại. issuer phải khớp CHÍNH XÁC claim iss của token — kiểm bằng
+        # .well-known/openid-configuration của realm từ trong cluster (README mục 4.1).
+        - realm: vlp-tenantw1xjixm
+          tenant: vlp-tenantw1xjixm
+          issuer: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm
+          jwks-uri: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs
       clients:
-        - realm: vlp
-          client-id: sa-vlp-datalake-analytics
-          workspace: analytics
-          team: analytics
+        # Team teamtscauiy, workspace wsw7vtwvi (theo namespace vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy).
+        # GIẢ ĐỊNH — thay client-id bằng client vận hành tạo cho team trong realm vlp-tenantw1xjixm
+        # (docs/DAK_API_SPEC.md mục 2.3). Thêm 1 phần tử cho mỗi client.
+        - realm: vlp-tenantw1xjixm
+          client-id: <client-id-cua-team>
+          workspace: wsw7vtwvi
+          team: teamtscauiy
       vault:
         addr: http://vault.cyberspace.vn
         kv-mount: kv
@@ -43,6 +50,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: dak-mock
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
   labels:
     app.kubernetes.io/name: dak-mock
 spec:
@@ -85,6 +93,15 @@ spec:
                 secretKeyRef:
                   name: dak-mock-vault-token
                   key: token
+            # CHỈ bật khi cert của sso-lakehouse.cyberspace.vn do CA nội bộ cấp (log báo "PKIX path building
+            # failed" và API trả 503). Truststore PKCS12 lấy từ Secret dak-mock-truststore (README mục 8).
+            # Biến này THAY THẾ JAVA_TOOL_OPTIONS của image nên phải giữ lại các cờ cũ.
+            # - name: JAVA_TOOL_OPTIONS
+            #   value: >-
+            #     -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Djava.io.tmpdir=/tmp
+            #     -Djavax.net.ssl.trustStore=/etc/dak-mock/truststore/truststore.p12
+            #     -Djavax.net.ssl.trustStoreType=PKCS12
+            #     -Djavax.net.ssl.trustStorePassword=changeit
           resources:
             requests:
               cpu: 250m
@@ -107,6 +124,10 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            # Bật cùng JAVA_TOOL_OPTIONS ở trên khi cần CA nội bộ.
+            # - name: truststore
+            #   mountPath: /etc/dak-mock/truststore
+            #   readOnly: true
           # Mock không có endpoint health riêng: kiểm tra cổng HTTP đã mở.
           startupProbe:
             tcpSocket:
@@ -129,11 +150,15 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        # - name: truststore
+        #   secret:
+        #     secretName: dak-mock-truststore
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: dak-mock
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
   labels:
     app.kubernetes.io/name: dak-mock
 spec:

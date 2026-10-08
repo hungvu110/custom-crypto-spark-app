@@ -14,20 +14,21 @@ dak:
   clock-skew: 60s
 
   # Registry realm: mỗi tenant một realm. Chỉ token có iss khớp CHÍNH XÁC issuer dưới đây mới được tin.
-  # GIẢ ĐỊNH — thay bằng realm thật.
+  # Trên k8s, ConfigMap dak-mock-config (dak-mock/k8s/dak-mock.yaml) ghi đè toàn bộ phần này.
   realms:
-    - realm: tenant-a
-      tenant: tenant-a
-      issuer: https://keycloak.example/realms/tenant-a
-      jwks-uri: https://keycloak.example/realms/tenant-a/protocol/openid-connect/certs
+    - realm: vlp-tenantw1xjixm
+      tenant: vlp-tenantw1xjixm
+      issuer: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm
+      jwks-uri: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs
 
   # Client Keycloak của các team (do vận hành tạo theo docs/DAK_API_SPEC.md mục 2.3).
   # (realm, client-id) -> workspace, team. enabled: false để khoá client.
   clients:
-    - realm: tenant-a
-      client-id: dak.w1.team-a
-      workspace: w1
-      team: team-a
+    # GIẢ ĐỊNH — client-id của team teamtscauiy trong realm vlp-tenantw1xjixm, workspace wsw7vtwvi.
+    - realm: vlp-tenantw1xjixm
+      client-id: <client-id-cua-team>
+      workspace: wsw7vtwvi
+      team: teamtscauiy
 
   vault:
     addr: ${VAULT_ADDR:http://vault.cyberspace.vn}

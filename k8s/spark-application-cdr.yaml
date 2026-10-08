@@ -2,7 +2,7 @@ apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: vlp-test-job-hungvt
-  namespace: vlp-tenantw1xjixm-wsytjjtr0-ingestion
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
 spec:
   # App không dùng arguments dòng lệnh — toàn bộ cấu hình đọc qua biến môi
   # trường (khai báo ở cả driver lẫn executor bên dưới, xem README mục 5).
@@ -48,11 +48,16 @@ spec:
       #    KHÔNG đặt "dak,vault": lib từ chối, vì fallback tự động sẽ bỏ qua phân quyền của DAK.
       - name: CRYPTO_PREFIX_SOURCE
         value: "dak"
-      # GIẢ ĐỊNH — thay bằng giá trị vận hành cấp khi tạo client Keycloak cho team.
+      # Đang trỏ tới dak-mock (Service "dak-mock" cùng namespace, HTTP). Khi có DAK thật: đổi DAK_ADDR sang
+      # https://<dak> và XOÁ DAK_ALLOW_INSECURE_HTTP.
       - name: DAK_ADDR
-        value: "https://dak.<domain>"
+        value: "http://dak-mock:8085"
+      - name: DAK_ALLOW_INSECURE_HTTP
+        value: "true"
+      # Token endpoint của realm tenant hiện tại.
       - name: DAK_TOKEN_URL
-        value: "https://keycloak.<domain>/realms/<realm của tenant>/protocol/openid-connect/token"
+        value: "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"
+      # GIẢ ĐỊNH — thay bằng client vận hành tạo cho team trong realm vlp-tenantw1xjixm.
       - name: DAK_CLIENT_ID
         value: "<client_id của team>"
       - name: DAK_CLIENT_SECRET
@@ -116,7 +121,7 @@ spec:
   # cùng namespace với driver (secretKeyRef không đọc được Secret ở namespace khác):
   #   read -rs -p "DAK client secret: " S; echo
   #   kubectl create secret generic spark-dak-client \
-  #     -n vlp-tenantw1xjixm-wsytjjtr0-ingestion --from-literal=clientSecret="$S"; unset S
+  #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=clientSecret="$S"; unset S
   # Thiếu Secret thì pod driver không khởi động được (CreateContainerConfigError).
   #
   # Secret "spark-vault-token" (token Vault, NHẠY CẢM) CHỈ cần cho fallback thủ công (CRYPTO_PREFIX_SOURCE=vault).
@@ -124,7 +129,7 @@ spec:
   # bằng token Vault tĩnh"):
   #   read -rs -p "Vault token: " T; echo
   #   kubectl create secret generic spark-vault-token \
-  #     -n vlp-tenantw1xjixm-wsytjjtr0-ingestion --from-literal=token="$T"; unset T
+  #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$T"; unset T
   # (ConfigMap "column-crypto-settings" KHÔNG còn cần: cột mã hoá khai bằng env CRYPTO_ENCRYPTED_COLUMNS/CRYPTO_KEY_FIELD.)
 
   hadoopConfigMap: hdfs-hadoop-hkh
