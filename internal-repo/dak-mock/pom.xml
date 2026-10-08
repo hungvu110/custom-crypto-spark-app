@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Project ĐỘC LẬP, không nằm trong reactor Maven của các module Spark (pom gốc build Java 11,
+    Spring Boot 3 cần Java 17). Build/chạy riêng: mvn -f dak-mock/pom.xml test | spring-boot:run
+  -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.4.5</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>vai.lakehouse</groupId>
+  <artifactId>dak-mock</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <name>dak-mock</name>
+  <description>
+    Mock DAK chỉ cho use case lấy key: GET /api/v1/keys/{database}/{table} theo docs/DAK_API_SPEC.md.
+    Xác minh token bằng JWKS của realm Keycloak, đọc keyPrefix từ Vault KV v2 bằng token tĩnh.
+    KHÔNG có phân quyền (grant, thời hạn quyền) và chức năng quản trị.
+  </description>
+
+  <properties>
+    <java.version>17</java.version>
+    <mockwebserver.version>4.12.0</mockwebserver.version>
+  </properties>
+
+  <!--
+    Nexus nội bộ — theo tài liệu "Cách sử dụng Local Repository" của công ty.
+    Lưu ý: Nexus chạy HTTP, Maven >= 3.8.1 CHẶN repo http:// khai báo trong pom ("Blocked mirror for
+    repositories") trừ khi settings.xml có mirror mirrorOf=* trỏ về Nexus. Hai khối dưới không thay thế
+    được mirror đó: máy dev cần ~/.m2/settings.xml, build Docker cần settings.xml đi kèm (xem Dockerfile).
+  -->
+  <repositories>
+    <repository>
+      <id>maven-public</id>
+      <url>http://10.30.154.118:8888/repository/maven-public/</url>
+    </repository>
+  </repositories>
+
+  <pluginRepositories>
+    <pluginRepository>
+      <id>maven-public</id>
+      <url>http://10.30.154.118:8888/repository/maven-public/</url>
+    </pluginRepository>
+  </pluginRepositories>
+
+  <!--
+    Chỉ dùng khi `mvn deploy`: version -SNAPSHOT -> maven-snapshots, còn lại -> maven-releases.
+    Credential đặt trong ~/.m2/settings.xml, <server> có id TRÙNG id dưới đây.
+  -->
+  <distributionManagement>
+    <snapshotRepository>
+      <id>maven-snapshots</id>
+      <url>http://10.30.154.118:8888/repository/maven-snapshots/</url>
+    </snapshotRepository>
+    <repository>
+      <id>maven-releases</id>
+      <url>http://10.30.154.118:8888/repository/maven-releases/</url>
+    </repository>
+  </distributionManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- Chỉ dùng NimbusJwtDecoder (verify JWT bằng JWKS), không dùng filter chain của Spring Security. -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-oauth2-jose</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-configuration-processor</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.squareup.okhttp3</groupId>
+      <artifactId>mockwebserver</artifactId>
+      <version>${mockwebserver.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

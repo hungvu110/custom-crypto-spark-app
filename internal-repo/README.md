@@ -14,6 +14,8 @@ Bản tương đương cho sbt nằm ở `crawler-streaming-app/internal-repo`.
 | `mvnw` + `.mvn/wrapper/maven-wrapper.properties` | `./mvnw`, `./.mvn/wrapper/` | Tải bản Maven 3.9.9 từ Nexus. Dùng khi máy chưa cài Maven, hoặc Maven quá cũ | `sbtw` |
 | `.vscode/settings.json` | `./.vscode/settings.json` | Metals tải server/Bloop qua Nexus và import build bằng `./mvnw` | `.vscode/settings.json` |
 | (trong `settings.xml`, phần `<servers>`) | `~/.m2/settings.xml` | Credential khi Nexus bắt đăng nhập, hoặc khi `mvn deploy` | `credentials.example` |
+| `dak-mock/pom.xml` | `./dak-mock/pom.xml` | Pom của mock DAK, thêm `<repositories>`, `<pluginRepositories>`, `<distributionManagement>` theo tài liệu công ty | `build.sbt` (`publishTo`) |
+| `dak-mock/Dockerfile` | `./dak-mock/Dockerfile` | Maven trong container dùng `settings.xml` có mirror; base image đổi được qua `--build-arg` | (crawler: `SPARK_BASE_IMAGE`) |
 
 Đối chiếu với tài liệu công ty "Cách sử dụng Local Repository":
 
@@ -122,6 +124,36 @@ Sau đó trong VS Code:
    ```bash
    grep -n -i "maven\|mvn\|bloop\|ERROR" .metals/metals.log | grep -v "no build target\|empty definition" | tail -60
    ```
+
+## Mock DAK (`dak-mock`): build riêng
+
+`dak-mock` là project Maven độc lập (parent `spring-boot-starter-parent`, Java 17). Nó **không** nằm trong
+danh sách module của `pom.xml` gốc, nên `./mvnw clean package` ở gốc không build nó.
+
+```bash
+cp internal-repo/dak-mock/pom.xml    dak-mock/pom.xml
+cp internal-repo/dak-mock/Dockerfile dak-mock/Dockerfile
+cp internal-repo/settings.xml        dak-mock/settings.xml   # chỉ cần cho docker build; KHÔNG điền mật khẩu
+
+# Build jar (cần JDK 17; ~/.m2/settings.xml ở Bước 1 lo mirror)
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./mvnw -B -f dak-mock/pom.xml clean package
+
+# Build image (Maven chạy trong container nên cần dak-mock/settings.xml)
+docker build -t hub.vtcc.vn:8989/dak-mock:0.1.0 dak-mock
+# máy build không pull được Docker Hub:
+#   --build-arg MAVEN_IMAGE=<registry>/maven:3.9-eclipse-temurin-17 \
+#   --build-arg RUNTIME_IMAGE=<registry>/eclipse-temurin:17-jre-jammy
+```
+
+Vì sao vẫn cần mirror dù pom đã có `<repositories>`: Nexus chạy HTTP, và Maven ≥ 3.8.1 chặn repo `http://`
+khai báo trong pom (lỗi "Blocked mirror for repositories"). Chỉ mirror `mirrorOf *` trong settings mới
+mở được đường này. Ngoài ra Maven Central (khai báo sẵn trong Maven) vẫn còn, và Maven sẽ thử nó khi
+Nexus không có artifact. Image `maven:3.9` không có `~/.m2/settings.xml`, nên Dockerfile copy
+`settings.xml` vào và chạy `mvn -s settings.xml`.
+
+Muốn deploy jar `dak-mock` lên Nexus: bỏ comment server `maven-snapshots`/`maven-releases` trong
+`~/.m2/settings.xml`, rồi chạy `./mvnw -B -f dak-mock/pom.xml -DskipTests deploy`. Pom đã có
+`<distributionManagement>` nên không cần `-DaltDeploymentRepository`.
 
 ## Publish lên Nexus (tuỳ chọn)
 
