@@ -13,7 +13,7 @@ Hợp đồng API đầy đủ: [docs/DAK_API_SPEC.md](../docs/DAK_API_SPEC.md).
 
 | Thành phần | Giá trị |
 | --- | --- |
-| Keycloak | `https://sso-lakehouse.cyberspace.vn` |
+| Keycloak | `https://sso-lakehouse.cyberspace.vn` (IP `10.221.148.42`, cert do CA nội bộ cấp — mục 8) |
 | Realm (tenant) | `vlp-tenantw1xjixm` |
 | Issuer | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm` |
 | JWKS | `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs` |
@@ -237,20 +237,37 @@ Lỗi hay gặp:
 | `503 upstream_unavailable: cannot load signing keys ... PKIX path building failed` | JVM không tin cert của `sso-lakehouse` — xem mục 8 |
 | `503 upstream_unavailable: Vault rejected the DAK token` | Token Vault sai, hết hạn hoặc thiếu quyền đọc path |
 
-## 8. Cert nội bộ (chỉ khi cần)
+## 8. Keycloak nội bộ: hostAliases và CA nội bộ
 
-Nếu `sso-lakehouse.cyberspace.vn` dùng cert do CA nội bộ cấp, JVM trong image không tin nên không tải được JWKS (503,
-log "PKIX path building failed"). Tạo truststore gồm CA mặc định của JDK **và** CA nội bộ, đưa vào Secret:
+`sso-lakehouse.cyberspace.vn` dùng cert do **CA nội bộ** cấp, nên JVM trong image không tin sẵn. Deployment đã cấu hình:
+
+| Mục | Cách làm |
+| --- | --- |
+| `hostAliases` | Ghim `sso-lakehouse.cyberspace.vn` → `10.221.148.42`, không phụ thuộc DNS của cluster |
+| initContainer `build-truststore` | Dựng `/opt/truststore/truststore.p12` = `cacerts` của JDK (vẫn tin CA công khai) + mọi cert trong ConfigMap `keycloak-ca` (key `ca.pem`) |
+| `JAVA_TOOL_OPTIONS` | Thêm `-Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12` (và type, password) cho JVM của mock |
+
+Việc của bạn: tạo ConfigMap `keycloak-ca` **trước khi** apply (dùng chung cho dak-mock, SparkApplication và sql-engine cùng
+namespace):
 
 ```bash
-# internal-ca.pem: CA nội bộ (lấy từ team hạ tầng). Bắt đầu từ cacerts của JDK để vẫn tin các CA công khai.
-cp "$JAVA_HOME/lib/security/cacerts" truststore.p12
-keytool -importcert -noprompt -alias internal-ca -file internal-ca.pem \
-  -keystore truststore.p12 -storetype PKCS12 -storepass changeit
-kubectl create secret generic dak-mock-truststore -n "$NS" --from-file=truststore.p12
+# internal-ca.pem: CA nội bộ dạng PEM, lấy từ team hạ tầng. Có thể chứa nhiều cert (root + intermediate).
+kubectl create configmap keycloak-ca -n "$NS" --from-file=ca.pem=internal-ca.pem
 ```
 
-Rồi bỏ comment 3 khối `truststore` / `JAVA_TOOL_OPTIONS` trong `k8s/dak-mock.yaml`, apply và restart.
+Nên dùng CA (root/intermediate) chứ không dùng cert của chính server: cert server đổi khi gia hạn, CA thì không.
+
+Kiểm tra:
+
+```bash
+kubectl logs -n "$NS" deploy/dak-mock -c build-truststore      # phải có "Certificate was added to keystore"
+```
+
+Thiếu ConfigMap thì pod đứng ở `Init`/`ContainerCreating`; `ca.pem` không có cert nào thì initContainer lỗi. Đổi CA: sửa ConfigMap
+rồi `kubectl rollout restart -n "$NS" deploy/dak-mock`.
+
+Spark (sql-engine, SparkApplication) cũng gọi Keycloak để xin token nên cần cùng cấu hình này cho **driver** — xem
+[docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.7](../docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md).
 
 ## 9. Nối với Spark
 

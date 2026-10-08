@@ -6,6 +6,9 @@
 #   kubectl create secret generic dak-mock-vault-token \
 #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$T"; unset T
 #
+# CA nội bộ của Keycloak (PEM, có thể nhiều cert — root + intermediate), cùng namespace:
+#   kubectl create configmap keycloak-ca -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-file=ca.pem=<file CA>
+#
 # Rồi:  kubectl apply -f dak-mock/k8s/dak-mock.yaml
 #
 # Bên gọi trong cùng namespace dùng http://dak-mock:8085, namespace khác dùng
@@ -68,6 +71,11 @@ spec:
     spec:
       # Mock không gọi Kubernetes API: không cần mount token của ServiceAccount.
       automountServiceAccountToken: false
+      # Keycloak nội bộ: ghim IP cho chắc, không phụ thuộc DNS của cluster.
+      hostAliases:
+        - ip: "10.221.148.42"
+          hostnames:
+            - sso-lakehouse.cyberspace.vn
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -75,6 +83,47 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        # Cert của sso-lakehouse do CA nội bộ cấp: dựng truststore = cacerts của JDK (vẫn tin CA công khai)
+        # + mọi cert trong ConfigMap keycloak-ca (key ca.pem, có thể chứa nhiều cert). Ghi ra emptyDir.
+        - name: build-truststore
+          image: hub.vtcc.vn:8989/dak-mock:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-ec"]
+          args:
+            - |
+              cp "$JAVA_HOME/lib/security/cacerts" /opt/truststore/truststore.p12
+              awk '/BEGIN CERTIFICATE/ { n++ } n > 0 { print > ("/opt/truststore/ca-" n ".pem") }' /ca/ca.pem
+              ls /opt/truststore/ca-*.pem > /dev/null   # ca.pem không có cert nào -> init lỗi, pod không chạy
+              for f in /opt/truststore/ca-*.pem; do
+                keytool -importcert -noprompt -alias "internal-$(basename "$f" .pem)" -file "$f" \
+                  -keystore /opt/truststore/truststore.p12 -storetype PKCS12 -storepass changeit
+              done
+              rm -f /opt/truststore/ca-*.pem
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: ""
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: keycloak-ca
+              mountPath: /ca
+              readOnly: true
+            - name: truststore
+              mountPath: /opt/truststore
       containers:
         - name: dak-mock
           # GIẢ ĐỊNH — theo convention registry hiện có; build bằng dak-mock/Dockerfile.
@@ -93,15 +142,14 @@ spec:
                 secretKeyRef:
                   name: dak-mock-vault-token
                   key: token
-            # CHỈ bật khi cert của sso-lakehouse.cyberspace.vn do CA nội bộ cấp (log báo "PKIX path building
-            # failed" và API trả 503). Truststore PKCS12 lấy từ Secret dak-mock-truststore (README mục 8).
+            # Tin CA nội bộ của sso-lakehouse qua truststore do initContainer dựng.
             # Biến này THAY THẾ JAVA_TOOL_OPTIONS của image nên phải giữ lại các cờ cũ.
-            # - name: JAVA_TOOL_OPTIONS
-            #   value: >-
-            #     -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Djava.io.tmpdir=/tmp
-            #     -Djavax.net.ssl.trustStore=/etc/dak-mock/truststore/truststore.p12
-            #     -Djavax.net.ssl.trustStoreType=PKCS12
-            #     -Djavax.net.ssl.trustStorePassword=changeit
+            - name: JAVA_TOOL_OPTIONS
+              value: >-
+                -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Djava.io.tmpdir=/tmp
+                -Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12
+                -Djavax.net.ssl.trustStoreType=PKCS12
+                -Djavax.net.ssl.trustStorePassword=changeit
           resources:
             requests:
               cpu: 250m
@@ -124,10 +172,9 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            # Bật cùng JAVA_TOOL_OPTIONS ở trên khi cần CA nội bộ.
-            # - name: truststore
-            #   mountPath: /etc/dak-mock/truststore
-            #   readOnly: true
+            - name: truststore
+              mountPath: /opt/truststore
+              readOnly: true
           # Mock không có endpoint health riêng: kiểm tra cổng HTTP đã mở.
           startupProbe:
             tcpSocket:
@@ -150,9 +197,13 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
-        # - name: truststore
-        #   secret:
-        #     secretName: dak-mock-truststore
+        # CA nội bộ (PEM). Tạo trước: kubectl create configmap keycloak-ca --from-file=ca.pem=<file CA> (README mục 8).
+        - name: keycloak-ca
+          configMap:
+            name: keycloak-ca
+        - name: truststore
+          emptyDir:
+            sizeLimit: 16Mi
 ---
 apiVersion: v1
 kind: Service

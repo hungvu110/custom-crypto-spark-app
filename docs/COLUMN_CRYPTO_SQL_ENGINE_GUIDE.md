@@ -260,6 +260,98 @@ phân quyền và thời hạn quyền.
 4. Khi DAK phục hồi, đổi lại `<ns>source=dak` và restart. Trong thời gian fallback, phân quyền và thời hạn quyền của DAK
    **không** có hiệu lực.
 
+### 4.7. Gọi được Keycloak nội bộ từ sql-engine (hostAliases + CA nội bộ)
+
+Với `source=dak`, **driver** của sql-engine (chính pod của StatefulSet, Thrift Server chạy client mode) gọi
+`https://sso-lakehouse.cyberspace.vn/.../token` để xin token. Keycloak dùng **cert do CA nội bộ cấp**, nên JVM của driver phải
+tin CA đó, và pod phải phân giải được tên `sso-lakehouse.cyberspace.vn` (ghim IP `10.221.148.42`). Executor không gọi Keycloak
+nên không cần gì.
+
+Cần 3 thứ: **ConfigMap CA**, **sửa StatefulSet** (hostAliases + initContainer dựng truststore + mount), và **Spark conf**
+`spark.driver.extraJavaOptions`.
+
+**1. ConfigMap chứa CA nội bộ** (một lần cho mỗi namespace; dak-mock và SparkApplication cùng namespace dùng chung):
+
+```bash
+NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+# internal-ca.pem: CA nội bộ dạng PEM (lấy từ team hạ tầng; có thể chứa nhiều cert, vd root + intermediate)
+kubectl create configmap keycloak-ca -n "$NS" --from-file=ca.pem=internal-ca.pem
+```
+
+**2. Bổ sung vào pod template của StatefulSet sql-engine** (`spec.template.spec`):
+
+```yaml
+spec:
+  template:
+    spec:
+      hostAliases:
+        - ip: "10.221.148.42"
+          hostnames:
+            - sso-lakehouse.cyberspace.vn
+      initContainers:
+        # Truststore = cacerts của JDK (vẫn tin CA công khai) + mọi cert trong ca.pem.
+        - name: build-truststore
+          image: <image của container sql-engine>     # cần bash, awk, keytool và biến JAVA_HOME (image Spark có sẵn)
+          command: ["bash", "-ec"]
+          args:
+            - |
+              cp "$JAVA_HOME/lib/security/cacerts" /opt/truststore/truststore.p12
+              awk '/BEGIN CERTIFICATE/ { n++ } n > 0 { print > ("/opt/truststore/ca-" n ".pem") }' /ca/ca.pem
+              ls /opt/truststore/ca-*.pem > /dev/null
+              for f in /opt/truststore/ca-*.pem; do
+                keytool -importcert -noprompt -alias "internal-$(basename "$f" .pem)" -file "$f" \
+                  -keystore /opt/truststore/truststore.p12 -storetype PKCS12 -storepass changeit
+              done
+              rm -f /opt/truststore/ca-*.pem
+          volumeMounts:
+            - name: keycloak-ca
+              mountPath: /ca
+              readOnly: true
+            - name: truststore
+              mountPath: /opt/truststore
+      containers:
+        - name: <container sql-engine>                # thêm vào container đang có, không tạo container mới
+          volumeMounts:
+            - name: truststore
+              mountPath: /opt/truststore
+              readOnly: true
+      volumes:
+        - name: keycloak-ca
+          configMap:
+            name: keycloak-ca
+        - name: truststore
+          emptyDir:
+            sizeLimit: 16Mi
+```
+
+Nếu namespace áp Pod Security "restricted", thêm `securityContext` cho initContainer giống container chính
+(`runAsNonRoot`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`).
+
+**3. Spark conf trên màn hình engine** — **nối thêm** vào giá trị `spark.driver.extraJavaOptions` đang có, không ghi đè:
+
+```properties
+spark.driver.extraJavaOptions=<giá trị đang có> -Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit
+```
+
+Nếu cách khởi động engine không truyền `spark.driver.extraJavaOptions` vào JVM của Thrift Server, đặt các cờ trên vào biến
+môi trường `JAVA_TOOL_OPTIONS` của container sql-engine thay thế.
+
+Lưu ý:
+
+- `javax.net.ssl.trustStore` áp dụng cho **mọi** kết nối TLS của driver. Truststore dựng từ `cacerts` cộng CA nội bộ nên các
+  dịch vụ dùng CA công khai không bị ảnh hưởng. Nếu driver đang dùng một truststore riêng khác, phải nhập CA nội bộ vào chính
+  truststore đó thay vì đổi sang file mới.
+- StatefulSet do nền tảng (UI tạo engine) quản lý thì sửa tay có thể bị ghi đè khi engine được cập nhật từ UI — phối hợp với
+  team nền tảng để đưa các mục trên vào template của engine, hoặc áp lại sau mỗi lần cập nhật.
+- Kiểm tra: `kubectl logs <pod> -c build-truststore -n "$NS"` phải có `Certificate was added to keystore`. Lỗi
+  `UnknownHostException: sso-lakehouse.cyberspace.vn` là thiếu `hostAliases`; `PKIX path building failed` là JVM chưa nhận
+  truststore (kiểm `spark.driver.extraJavaOptions`).
+
+SparkApplication: [k8s/spark-application-cdr.yaml](../k8s/spark-application-cdr.yaml) và
+[k8s/spark-application-column.yaml](../k8s/spark-application-column.yaml) đã có sẵn cùng cấu hình ở `spec.driver`
+(`hostAliases`, `initContainers`, `volumeMounts`), `spec.volumes` và `spark.driver.extraJavaOptions`. Spark Operator cần bật
+mutating webhook thì các trường này mới được áp vào pod driver.
+
 ## 5. Chuẩn bị secret Vault theo bảng
 
 `keyPrefix` được tra theo **tên bảng — tham số đầu của hàm** (`column_encrypt('customers', ...)`,

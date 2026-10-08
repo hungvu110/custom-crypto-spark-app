@@ -7,6 +7,37 @@ spec:
   # App không dùng arguments dòng lệnh — toàn bộ cấu hình đọc qua biến môi
   # trường (khai báo ở cả driver lẫn executor bên dưới, xem README mục 5).
   driver:
+    # --- Gọi Keycloak nội bộ (DAK_TOKEN_URL): CHỈ driver cần, executor không gọi Keycloak/DAK ---
+    # hostAliases/initContainers/volumeMounts cần mutating webhook của Spark Operator đang bật.
+    hostAliases:
+      - ip: "10.221.148.42"
+        hostnames:
+          - sso-lakehouse.cyberspace.vn
+    # Dựng truststore = cacerts của JDK + CA nội bộ (ConfigMap keycloak-ca, key ca.pem). Dùng chính image của app.
+    initContainers:
+      - name: build-truststore
+        image: hub.vtcc.vn:8989/sample-spark-application-privacy:v1-column-crypto
+        command: ["bash", "-ec"]
+        args:
+          - |
+            cp "$JAVA_HOME/lib/security/cacerts" /opt/truststore/truststore.p12
+            awk '/BEGIN CERTIFICATE/ { n++ } n > 0 { print > ("/opt/truststore/ca-" n ".pem") }' /ca/ca.pem
+            ls /opt/truststore/ca-*.pem > /dev/null
+            for f in /opt/truststore/ca-*.pem; do
+              keytool -importcert -noprompt -alias "internal-$(basename "$f" .pem)" -file "$f" \
+                -keystore /opt/truststore/truststore.p12 -storetype PKCS12 -storepass changeit
+            done
+            rm -f /opt/truststore/ca-*.pem
+        volumeMounts:
+          - name: keycloak-ca
+            mountPath: /ca
+            readOnly: true
+          - name: truststore
+            mountPath: /opt/truststore
+    volumeMounts:
+      - name: truststore
+        mountPath: /opt/truststore
+        readOnly: true
     coreLimit: 1000m
     cores: 1
     labels:
@@ -132,6 +163,16 @@ spec:
   #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$T"; unset T
   # (ConfigMap "column-crypto-settings" KHÔNG còn cần: cột mã hoá khai bằng env CRYPTO_ENCRYPTED_COLUMNS/CRYPTO_KEY_FIELD.)
 
+  # CA nội bộ của Keycloak (tạo trước: kubectl create configmap keycloak-ca --from-file=ca.pem=<file CA>)
+  # và truststore do initContainer của driver dựng.
+  volumes:
+    - name: keycloak-ca
+      configMap:
+        name: keycloak-ca
+    - name: truststore
+      emptyDir:
+        sizeLimit: 16Mi
+
   hadoopConfigMap: hdfs-hadoop-hkh
   # Image build từ Dockerfile ở root project, target "column-crypto":
   #   docker build --target column-crypto -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1-column-crypto .
@@ -223,7 +264,8 @@ spec:
     # Vì vậy phải trỏ tường minh tới bản đặt ở /opt/app (Dockerfile COPY sẵn),
     # là path KHÔNG bị ConfigMap mount đè. Thiếu 2 dòng này thì mọi chỉnh sửa
     # trong log4j2.properties đều VÔ TÁC DỤNG khi chạy trên cluster.
-    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    # trustStore: driver tin CA nội bộ của Keycloak (truststore = cacerts JDK + CA nội bộ, nên vẫn tin CA công khai).
+    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties -Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
     spark.executor.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
 
   sparkVersion: 3.5.1
