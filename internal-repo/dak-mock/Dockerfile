@@ -1,6 +1,10 @@
-# syntax=docker/dockerfile:1
+# Image cho dak-mock — bản build qua Nexus nội bộ.
 #
-# Image cho dak-mock — bản build qua Nexus nội bộ. Build từ thư mục dak-mock (build context = dak-mock/):
+# KHÔNG thêm dòng "# syntax=docker/dockerfile:1" ở đầu file (bản gốc có): đó là chỉ thị BuildKit, bắt
+# docker tải image frontend docker/dockerfile:1 từ Docker Hub -> timeout trong mạng nội bộ
+# ("failed to resolve source metadata for docker.io/docker/dockerfile:1"). File này không dùng tính năng
+# cần frontend đó (RUN --mount, heredoc), frontend có sẵn trong docker là đủ.
+# Build từ thư mục dak-mock (build context = dak-mock/):
 #   cp internal-repo/settings.xml dak-mock/settings.xml      # mirror Nexus cho Maven trong container
 #   docker build -t hub.vtcc.vn:8989/dak-mock:0.1.0 dak-mock
 #
