@@ -29,15 +29,29 @@ spec:
                 -keystore /opt/truststore/truststore.p12 -storetype PKCS12 -storepass changeit
             done
             rm -f /opt/truststore/ca-*.pem
+        # BẮT BUỘC: ResourceQuota của namespace (default-lqzq7) từ chối mọi container thiếu limits.cpu/limits.memory.
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
         volumeMounts:
           - name: keycloak-ca
             mountPath: /ca
             readOnly: true
           - name: truststore
             mountPath: /opt/truststore
+    # Webhook của Spark Operator CHỈ đưa vào pod những volume được mount ở container chính (driver.volumeMounts),
+    # không xét initContainers. Thiếu mount keycloak-ca ở đây thì pod bị API server từ chối:
+    # "spec.initContainers[0].volumeMounts[0].name: Not found: keycloak-ca". Driver không dùng tới /opt/keycloak-ca.
     volumeMounts:
       - name: truststore
         mountPath: /opt/truststore
+        readOnly: true
+      - name: keycloak-ca
+        mountPath: /opt/keycloak-ca
         readOnly: true
     coreLimit: 1000m
     cores: 1
@@ -82,7 +96,8 @@ spec:
       #    tenant) bằng DAK_CLIENT_ID/DAK_CLIENT_SECRET, rồi gọi DAK: GET /api/v1/keys/<DB_NAME>/<TABLE_NAME>.
       #    Tên key là DB_NAME.TABLE_NAME chữ thường (app tự ghép). Secret lấy từ K8s Secret "spark-dak-client"
       #    (key "clientSecret") — tạo TRƯỚC khi apply, xem chú thích ở cuối file.
-      #    FALLBACK THỦ CÔNG khi DAK sự cố: đổi thành "vault" rồi chạy lại job (VAULT_* giữ sẵn bên dưới).
+      #    CHỈ dùng DAK: manifest không còn VAULT_* nên job không đọc được Vault cũ. Fallback thủ công khi DAK sự
+      #    cố = đổi thành "vault" VÀ thêm lại khối VAULT_* (docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.6).
       #    KHÔNG đặt "dak,vault": lib từ chối, vì fallback tự động sẽ bỏ qua phân quyền của DAK.
       - name: CRYPTO_PREFIX_SOURCE
         value: "dak"
@@ -95,37 +110,14 @@ spec:
       # Token endpoint của realm tenant hiện tại.
       - name: DAK_TOKEN_URL
         value: "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"
-      # GIẢ ĐỊNH — thay bằng client vận hành tạo cho team trong realm vlp-tenantw1xjixm.
+      # Client của team trong realm vlp-tenantw1xjixm; phải khớp client-id trong ConfigMap dak-mock-config.
       - name: DAK_CLIENT_ID
-        value: "<client_id của team>"
+        value: "team-de-ws8"
       - name: DAK_CLIENT_SECRET
         valueFrom:
           secretKeyRef:
             name: spark-dak-client
             key: clientSecret
-      # --- Vault cũ: CHỈ được đọc khi fallback thủ công (CRYPTO_PREFIX_SOURCE=vault) ---
-      #    Đọc <VAULT_KV_MOUNT>/data/<VAULT_KV_PATH>/<DB_NAME>.<TABLE_NAME> (tên key hai phần, chữ thường),
-      #    field VAULT_KEY_FIELD (mặc định "keyPrefix"), bằng token tĩnh từ K8s Secret "spark-vault-token".
-      # Địa chỉ Vault lấy từ ClusterSecretStore datalake-vault. Đang là HTTP: token và keyPrefix
-      # đi trên mạng không mã hoá (app sẽ log cảnh báo); nên chuyển sang HTTPS khi có thể.
-      - name: VAULT_ADDR
-        value: "http://vault.cyberspace.vn"
-      # Xác thực bằng token tĩnh: app KHÔNG login, KHÔNG revoke token, không cần VAULT_ROLE.
-      - name: VAULT_AUTH_METHOD
-        value: "token"
-      # Giá trị token thô (đã decode base64), được K8s tự đọc từ Secret rồi đưa vào env của driver.
-      # optional: job chạy source=dak không cần Secret này; fallback về vault thì Secret phải có.
-      - name: VAULT_TOKEN
-        valueFrom:
-          secretKeyRef:
-            name: spark-vault-token
-            key: token
-            optional: true
-      - name: VAULT_KV_MOUNT
-        value: "kv"
-      # GIẢ ĐỊNH — thay bằng path thật chứa keyPrefix; mỗi bảng là 1 secret con: <VAULT_KV_PATH>/<DB_NAME>.<TABLE_NAME>.
-      - name: VAULT_KV_PATH
-        value: "hla-datalake/datalake/spark-application"
       # Mặc định "false" — bật "true" CHỈ khi cần trace lỗi wire encryption
       # (in ra hex dump SASL wrap/unwrap rất dài, xem SPARK_HDFS_WIRE_ENCRYPTION_TASK.md mục 14.2).
       - name: HDFS_SASL_DEBUG
@@ -166,13 +158,7 @@ spec:
   #   kubectl create secret generic spark-dak-client \
   #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=clientSecret="$S"; unset S
   # Thiếu Secret thì pod driver không khởi động được (CreateContainerConfigError).
-  #
-  # Secret "spark-vault-token" (token Vault, NHẠY CẢM) CHỈ cần cho fallback thủ công (CRYPTO_PREFIX_SOURCE=vault).
-  # Dùng token RIÊNG chỉ đọc path key-prefix, không dùng lại token của ExternalSecrets (README mục "Xác thực
-  # bằng token Vault tĩnh"):
-  #   read -rs -p "Vault token: " T; echo
-  #   kubectl create secret generic spark-vault-token \
-  #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$T"; unset T
+  # Job KHÔNG cần token Vault (Secret "spark-vault-token"): keyPrefix chỉ lấy qua DAK.
   # (ConfigMap "column-crypto-settings" KHÔNG còn cần: cột mã hoá khai bằng env CRYPTO_ENCRYPTED_COLUMNS/CRYPTO_KEY_FIELD.)
 
   # CA nội bộ của Keycloak (tạo trước: kubectl create configmap keycloak-ca --from-file=ca.pem=<file CA>)

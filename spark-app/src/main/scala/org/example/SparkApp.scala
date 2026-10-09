@@ -31,8 +31,6 @@ import scala.util.Try
  */
 object SparkApp {
 
-  private val NAMENODE = "hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020"
-
   private val VALID_TABLE_TYPES  = Set("delta", "iceberg", "hive")
   private val VALID_INSERT_MODES = Set("append", "overwrite")
 
@@ -124,7 +122,7 @@ object SparkApp {
 
     // Server defaults: đây mới là thứ QUYẾT ĐỊNH client có mã hoá hay không.
     try {
-      val fs = FileSystem.get(new java.net.URI(NAMENODE), hadoopConf)
+      val fs = FileSystem.get(hadoopConf) // namenode = fs.defaultFS ở trên
       val defaults = fs.getServerDefaults(new Path("/"))
       Log.kv("server encryptDataTransfer", defaults.getEncryptDataTransfer)
       if (defaults.getEncryptDataTransfer) {
@@ -301,9 +299,10 @@ object SparkApp {
     Log.kv("HDFS_SASL_DEBUG",     cfg.hdfsSaslDebug)
 
     Log.section("2. SPARK SESSION")
+    // fs.defaultFS lấy từ core-site.xml của hadoopConfigMap (HADOOP_CONF_DIR), KHÔNG hard-code ở đây:
+    // spark.hadoop.* set trong code sẽ ghi đè core-site.xml, đổi cụm HDFS phải build lại image.
     val builder = SparkSession.builder()
       .appName(cfg.appName)
-      .config("spark.hadoop.fs.defaultFS", NAMENODE)
     val spark =
       if (cfg.enableHiveSupport) builder.enableHiveSupport().getOrCreate()
       else builder.getOrCreate()
