@@ -1,7 +1,8 @@
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
-  name: vlp-test-job-hungvt
+  # Tên riêng cho từng biến thể: trùng tên với spark-application-column.yaml thì apply file này sẽ ghi đè file kia.
+  name: vlp-test-job-hungvt-cdr
   namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
 spec:
   # App không dùng arguments dòng lệnh — toàn bộ cấu hình đọc qua biến môi
@@ -42,9 +43,15 @@ spec:
     cores: 1
     labels:
       version: 3.5.1
+      app: vlp-test-job-hungvt-cdr
     memory: 1g
     serviceAccount: spark-application-sa
     env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      # Giới hạn số malloc arena của glibc -> chặn RSS native phình theo số thread (chống OOMKilled 137).
+      - name: MALLOC_ARENA_MAX
+        value: "2"
       - name: APP_NAME
         value: "SampleSparkApplicationPrivacy"
       - name: DB_NAME
@@ -130,9 +137,14 @@ spec:
     instances: 1
     labels:
       version: 3.5.1
+      app: vlp-test-job-hungvt-cdr
     memory: 1g
     serviceAccount: spark-application-sa
     env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
       - name: APP_NAME
         value: "SampleSparkApplicationPrivacy"
       - name: DB_NAME
@@ -173,7 +185,9 @@ spec:
       emptyDir:
         sizeLimit: 16Mi
 
-  hadoopConfigMap: hdfs-hadoop-hkh
+  # ConfigMap core-site.xml + hdfs-site.xml của cụm datalakehla (cùng namespace). Operator mount vào /etc/hadoop/conf
+  # và set HADOOP_CONF_DIR cho driver + executor — giống crawler-streaming-app.
+  hadoopConfigMap: teamtscauiy-hadoop-conf
   # Image build từ Dockerfile ở root project, target "cdr-crypto" (cần jar đối tác DataLakeSecurity_jv8.jar ở gốc project):
   #   docker build --target cdr-crypto -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1-cdr-crypto .
   # Đây là tên/tag GIẢ ĐỊNH theo đúng convention cũ
@@ -194,10 +208,12 @@ spec:
     type: Never
 
   sparkConf:
-    # --- Kerberos ---
-    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020
-    spark.kerberos.keytab: /etc/security/keytabs/k8s.keytab
-    spark.kerberos.principal: k8s@VAILAKEHOUSE.VIETTEL.COM
+    # --- Kerberos (vùng storage datalakehla) ---
+    # keytab/krb5.conf là path TRÊN pod Spark Operator (nơi chạy spark-submit): spark-submit đọc file rồi tự đưa
+    # vào driver qua Secret/ConfigMap -> không mount, không bake vào image.
+    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020
+    spark.kerberos.keytab: /etc/security/keytabs/presto.keytab
+    spark.kerberos.principal: presto@VAILAKEHOUSE.VIETTEL.COM
     spark.kubernetes.kerberos.krb5.path: /etc/krb5.conf
     spark.security.credentials.hadoopfs.enabled: "true"
 
@@ -232,14 +248,23 @@ spec:
     # đối tác. cdr_encrypt là UDF thật nên EXECUTOR cũng cần đủ 3 jar (spark.jars áp dụng cho cả executor).
     spark.jars: local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/cdr-crypto-udf-1.0-SNAPSHOT.jar,local:///opt/app/DataLakeSecurity_jv8.jar
 
+    # --- Warehouse: database mới (CREATE DATABASE không LOCATION) nằm ở <warehouse>/<db>.db ---
+    # Cùng giá trị WAREHOUSE_PATH của crawler-streaming-app. Database đã có trong metastore giữ nguyên location cũ.
+    spark.sql.warehouse.dir: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse
+
     # --- Spark ---
-    spark.eventLog.enabled: "false"
     spark.jars.ivy: /tmp
     spark.scheduler.mode: FAIR
     spark.serializer: org.apache.spark.serializer.KryoSerializer
     spark.sql.adaptive.coalescePartitions.enabled: "true"
     spark.sql.adaptive.enabled: "true"
     spark.sql.sources.ignoreDataLocality.enabled: "true"
+
+    # --- Event log (Spark History Server vùng datalakehla) ---
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/spark_history
+    spark.eventLog.rolling.enabled: "true"
+    spark.eventLog.rolling.maxFileSize: 128m
 
     # --- Debug (verify mục 14.2 của SPARK_HDFS_WIRE_ENCRYPTION_TASK.md) ---
     # Bỏ -Dlog4j.configuration=file:/opt/app/conf/config.properties của bản gốc:
