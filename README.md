@@ -117,10 +117,11 @@ token đúng chuẩn Apache. Khi đó chỉ cần gỡ package `vai.lakehouse.hd
 | **Dockerfile** | Multi-stage trên base `apache/spark:3.5.1-scala2.12-java11-ubuntu`; 3 target: `no-crypto` (mặc định), `column-crypto`, `cdr-crypto` — mỗi target COPY (hoặc không) các jar lib crypto rời, xem mục 7 |
 | **k8s/spark-application-column.yaml** | Manifest `SparkApplication` biến thể **column-crypto** (nạp `key-prefix-lib` + `column-crypto-lib`, dùng `column_encrypt`/`column_decrypt`) |
 | **k8s/spark-application-cdr.yaml** | Manifest `SparkApplication` biến thể **cdr-crypto** (nạp `key-prefix-lib` + `cdr-crypto-udf` + jar đối tác, dùng `cdr_encrypt`/`cdr_decrypt`) |
+| **Stress test HDFS** `hdfs-load-stress-test` (`vai.lakehouse.stress.*`) | Job Spark sinh dữ liệu tổng hợp và ghi vào HDFS HKH theo tải cấu hình được (mặc định 100 GiB/ngày), chỉ kèm patch block token (shade jar `block-token-patch` của `spark-app`), không có lib crypto. Có Dockerfile + manifest riêng — xem `hdfs-load-stress-test/README.md` và `docs/hdfs-load-stress-test/PLAN.md` |
 | **docs/**                                                                | Tài liệu kỹ thuật chi tiết (mục 10)                                                                                                                                                                                                                                       |
 
-`mvn package` (mặc định, không profile) build `key-prefix-lib` + `column-crypto-lib` + `spark-app`, sinh ra **4
-artifact**. Jar của `spark-app` KHÔNG nhúng và không biên dịch với lib crypto nào — các lib là jar rời, nạp lúc deploy
+`mvn package` (mặc định, không profile) build `key-prefix-lib` + `column-crypto-lib` + `spark-app` (**4 artifact** ở bảng
+dưới) và `hdfs-load-stress-test` (fat jar `hdfs-load-stress-test/target/hdfs-load-stress-test.jar`, xem README của module). Jar của `spark-app` KHÔNG nhúng và không biên dịch với lib crypto nào — các lib là jar rời, nạp lúc deploy
 qua Dockerfile (COPY) + `sparkConf` (`spark.jars`, `spark.sql.extensions`). `cdr-crypto-udf` (module bài toán 3) KHÔNG
 build mặc định — cần jar đối tác cài cục bộ trước và bật profile `cdr-crypto` (xem mục 6.5):
 
@@ -153,7 +154,12 @@ build mặc định — cần jar đối tác cài cục bộ trước và bật
 │   ├── SPARK_HDFS_WIRE_ENCRYPTION_TASK.md       # bài toán 1: root cause + thiết kế patch
 │   ├── HDFS_BLOCK_TOKEN_PATCH_FLOW.md           # bài toán 1: diagram + ảnh hưởng hiệu năng
 │   ├── HDFS_PATCH_AT_SCALE.md                   # bài toán 1: phân phối patch cho nhiều app
+│   ├── hdfs-load-stress-test/PLAN.md            # plan stress test nạp 100 GiB/ngày vào HDFS HKH
 │   └── spark-history-server-hdfs-hkh-kerberos.md
+├── hdfs-load-stress-test/          # STRESS TEST HDFS: job sinh tải ghi vào HDFS HKH (chỉ patch block token, không crypto)
+│   ├── Dockerfile                  # build context = thư mục này
+│   ├── k8s/                        # hdfs-stress-sustained.yaml (100 GiB/ngày, 24h), hdfs-stress-burst.yaml
+│   └── src/main/scala/vai/lakehouse/stress/   # HdfsLoadStressApp, StressRunner, StressConfig, ...
 ├── key-prefix-lib/                 # HẠ TẦNG DÙNG CHUNG: lấy keyPrefix (jar thuần, Spark provided, không có thuật toán mã hoá)
 │   └── src/
 │       ├── main/scala/vai/lakehouse/keyprefix/

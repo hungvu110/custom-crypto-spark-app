@@ -1,0 +1,138 @@
+# Kịch bản S2 (docs/hdfs-load-stress-test/PLAN.md mục 4): tải danh định 100 GiB/ngày, mỗi 5 phút 1 batch (~355.6 MiB, 3 file), chạy 24h.
+# Môi trường giống crawler-streaming-app (namespace teamk6gy0b5, cụm HDFS datalakehkh, principal k8s).
+#
+#   kubectl apply  -f hdfs-load-stress-test/k8s/hdfs-stress-sustained.yaml
+#   kubectl logs -f hdfs-stress-sustained-driver -n vlp-tenantw1xjixm-wsbmkimit-teamk6gy0b5 | grep -E 'STRESS_|BLOCK_TOKEN'
+#
+# Pod chết giữa chừng -> Spark Operator restart (OnFailure) -> app resume từ batch dở, giữ nguyên RUN_ID.
+# Chạy lần mới: ĐỔI RUN_ID (cùng RUN_ID = tiếp tục lần cũ).
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: hdfs-stress-sustained
+  namespace: vlp-tenantw1xjixm-wsbmkimit-teamk6gy0b5
+spec:
+  type: Scala
+  mode: cluster
+  sparkVersion: 3.5.1
+
+  # GIẢ ĐỊNH — đổi theo registry/tag đã push (hdfs-load-stress-test/README.md mục 2).
+  image: hub.vtcc.vn:8989/hungvt0110/hdfs-load-stress-test:v0.1
+  imagePullPolicy: Always
+  # Fat jar: app + patch lenient block token. KHÔNG có lib crypto, KHÔNG cần spec.deps.jars.
+  mainApplicationFile: local:///opt/app/hdfs-load-stress-test.jar
+  mainClass: vai.lakehouse.stress.HdfsLoadStressApp
+
+  restartPolicy:
+    type: OnFailure
+    onFailureRetries: 3
+    onFailureRetryInterval: 60
+    onSubmissionFailureRetries: 3
+    onSubmissionFailureRetryInterval: 60
+
+  # core-site.xml + hdfs-site.xml của cụm datalakehkh (ConfigMap cùng namespace, giống crawler-streaming-app).
+  hadoopConfigMap: teamk6gy0b5-hadoop-conf
+
+  driver:
+    cores: 1
+    coreLimit: 1000m
+    memory: 2048m
+    memoryOverhead: 512m
+    labels:
+      version: 3.5.1
+      app: hdfs-stress-sustained
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+      - name: APP_NAME
+        value: HdfsStressSustained
+      - name: MODE
+        value: sustained
+      # Tên lần chạy = thư mục con dưới OUTPUT_PATH. Đổi cho mỗi lần test mới.
+      - name: RUN_ID
+        value: sustained-20261010
+      # GIẢ ĐỊNH — thư mục test riêng, cần xác nhận quyền ghi của principal k8s và quota (docs/hdfs-load-stress-test/PLAN.md mục 11).
+      # URI đầy đủ để không phụ thuộc fs.defaultFS trong hadoopConfigMap.
+      - name: OUTPUT_PATH
+        value: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020/prod6/stress_test/hdfs_load
+      - name: STRESS_GIB_PER_DAY
+        value: "100"
+      - name: BATCH_INTERVAL_SECONDS
+        value: "300"
+      - name: DURATION_HOURS
+        value: "24"
+      # Mỗi dòng ~1 KB payload không nén được; file ~128 MiB.
+      - name: PAYLOAD_BYTES
+        value: "1024"
+      - name: TARGET_FILE_MIB
+        value: "128"
+      - name: COMPRESSION
+        value: snappy
+      # true: đọc lại mỗi batch (kiểm cả chiều đọc qua block token + wire encryption), tốn thêm I/O đọc.
+      - name: VERIFY_READ
+        value: "true"
+      # 0 = giữ hết (100 GiB sau 24h). Đặt N > 0 để chỉ giữ N batch mới nhất nếu quota hạn chế.
+      - name: RETAIN_BATCHES
+        value: "0"
+      - name: REQUIRE_BLOCK_TOKEN_PATCH
+        value: "true"
+
+  executor:
+    instances: 2
+    cores: 2
+    coreLimit: 2000m
+    memory: 3072m
+    memoryOverhead: 1024m
+    labels:
+      version: 3.5.1
+      app: hdfs-stress-sustained
+    serviceAccount: spark-application-sa
+    # Cấu hình test chỉ driver đọc; executor chỉ cần env hệ thống.
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+
+  sparkConf:
+    # ------ Kerberos (vùng storage datalakehkh) — giống crawler-streaming-app ------
+    # keytab/krb5.conf là path TRÊN pod Spark Operator (nơi chạy spark-submit). Có keytab nên Spark tự login lại
+    # và lấy delegation token mới trong suốt 24h chạy.
+    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020
+    spark.kerberos.principal: k8s@VAILAKEHOUSE.VIETTEL.COM
+    spark.kerberos.keytab: /etc/security/keytabs/k8s.keytab
+    spark.kubernetes.kerberos.krb5.path: /etc/krb5.conf
+    spark.security.credentials.hadoopfs.enabled: "true"
+
+    # ------ HDFS security: GIỮ wire encryption (privacy) ------
+    spark.hadoop.hadoop.security.authentication: kerberos
+    spark.hadoop.hadoop.security.authorization: "true"
+    spark.hadoop.fs.permissions.umask-mode: "002"
+
+    # ------ BẮT BUỘC false: true đảo thứ tự classpath, patch block token qua ServiceLoader mất tác dụng ------
+    spark.driver.userClassPathFirst: "false"
+    spark.executor.userClassPathFirst: "false"
+    # Patch block token: app TỰ thêm vai.lakehouse.hdfs.BlockTokenFixPlugin vào spark.plugins và kiểm tra trên
+    # driver + executor trước khi ghi (log BLOCK_TOKEN_PATCH). Chỉ khai spark.plugins ở đây nếu cần plugin KHÁC.
+
+    # ------ log4j2: file trong image (/opt/app) ------
+    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    spark.executor.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+
+    # ------ Spark ------
+    spark.jars.ivy: /tmp
+    spark.serializer: org.apache.spark.serializer.KryoSerializer
+    spark.sql.sources.ignoreDataLocality.enabled: "true"
+    spark.dynamicAllocation.enabled: "false"
+    spark.task.maxFailures: "4"
+    # Row group Parquet = kích thước file mục tiêu (128 MiB).
+    spark.hadoop.parquet.block.size: "134217728"
+
+    # ------ Event log (Spark History Server vùng datalakehkh) ------
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020/prod6/spark_history
+    spark.eventLog.rolling.enabled: "true"
+    spark.eventLog.rolling.maxFileSize: 128m

@@ -19,6 +19,8 @@
       - spark-app         : Spark 3.5.1 sample app đọc/ghi HDFS (Dell Isilon OneFS) với wire
                             encryption bật, kèm patch block token. KHÔNG nhúng lib crypto nào: mã hoá
                             là plugin nạp qua spark.jars + spark.sql.extensions.
+      - hdfs-load-stress-test : Spark job stress test nạp dữ liệu vào HDFS HKH, chỉ kèm patch block token của
+                            spark-app (không có lib crypto) — xem docs/hdfs-load-stress-test/PLAN.md.
       - cdr-crypto-udf    : (profile "cdr-crypto") mã hoá CDR của đối tác (DataLakeSecurity_jv8.jar) qua cả
                             SQL function và DataFrame API — xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
   </description>
@@ -27,6 +29,7 @@
     <module>key-prefix-lib</module>
     <module>column-crypto-lib</module>
     <module>spark-app</module>
+    <module>hdfs-load-stress-test</module>
   </modules>
 
   <!--

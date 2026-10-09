@@ -1,0 +1,126 @@
+# Kịch bản S0 (smoke, đặt TOTAL_GIB=1) và S1 (burst, docs/hdfs-load-stress-test/PLAN.md mục 4): ghi TOTAL_GIB nhanh nhất có thể,
+# mỗi batch BATCH_GIB, để đo năng lực ghi tối đa so với tải danh định 100 GiB/ngày (~1.19 MiB/s).
+# Môi trường giống crawler-streaming-app (namespace teamk6gy0b5, cụm HDFS datalakehkh, principal k8s).
+#
+#   kubectl apply  -f hdfs-load-stress-test/k8s/hdfs-stress-burst.yaml
+#   kubectl logs -f hdfs-stress-burst-driver -n vlp-tenantw1xjixm-wsbmkimit-teamk6gy0b5 | grep -E 'STRESS_|BLOCK_TOKEN'
+#
+# Chạy lần mới: ĐỔI RUN_ID và xoá SparkApplication cũ (kubectl delete sparkapplication hdfs-stress-burst -n ...).
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: hdfs-stress-burst
+  namespace: vlp-tenantw1xjixm-wsbmkimit-teamk6gy0b5
+spec:
+  type: Scala
+  mode: cluster
+  sparkVersion: 3.5.1
+
+  # GIẢ ĐỊNH — đổi theo registry/tag đã push (hdfs-load-stress-test/README.md mục 2).
+  image: hub.vtcc.vn:8989/hungvt0110/hdfs-load-stress-test:v0.1
+  imagePullPolicy: Always
+  mainApplicationFile: local:///opt/app/hdfs-load-stress-test.jar
+  mainClass: vai.lakehouse.stress.HdfsLoadStressApp
+
+  # Burst là phép đo: lỗi thì xem log rồi chạy lại có chủ đích, không tự restart.
+  restartPolicy:
+    type: Never
+  # Giữ SparkApplication + pod 1 ngày sau khi xong để đọc log.
+  timeToLiveSeconds: 86400
+
+  hadoopConfigMap: teamk6gy0b5-hadoop-conf
+
+  driver:
+    cores: 1
+    coreLimit: 1000m
+    memory: 2048m
+    memoryOverhead: 512m
+    labels:
+      version: 3.5.1
+      app: hdfs-stress-burst
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+      - name: APP_NAME
+        value: HdfsStressBurst
+      - name: MODE
+        value: burst
+      - name: RUN_ID
+        value: burst-20261010-01
+      # GIẢ ĐỊNH — thư mục test riêng, cần xác nhận quyền ghi của principal k8s và quota (docs/hdfs-load-stress-test/PLAN.md mục 11).
+      - name: OUTPUT_PATH
+        value: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020/prod6/stress_test/hdfs_load
+      # Smoke test (S0): đặt "1". Burst (S1): "100" = dữ liệu 1 ngày.
+      - name: TOTAL_GIB
+        value: "100"
+      # 5 GiB/batch -> 40 file 128 MiB/batch, 20 batch cho 100 GiB.
+      - name: BATCH_GIB
+        value: "5"
+      - name: PAYLOAD_BYTES
+        value: "1024"
+      - name: TARGET_FILE_MIB
+        value: "128"
+      - name: COMPRESSION
+        value: snappy
+      # Đo riêng tốc độ ghi; bật "true" ở một lần chạy khác để đo cả chiều đọc.
+      - name: VERIFY_READ
+        value: "false"
+      - name: RETAIN_BATCHES
+        value: "0"
+      - name: REQUIRE_BLOCK_TOKEN_PATCH
+        value: "true"
+
+  # GIẢ ĐỊNH — 16 core song song; tổng request (~4 x 5.5 GiB + driver) phải vừa ResourceQuota của namespace.
+  executor:
+    instances: 4
+    cores: 4
+    coreLimit: 4000m
+    memory: 4096m
+    memoryOverhead: 1536m
+    labels:
+      version: 3.5.1
+      app: hdfs-stress-burst
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+
+  sparkConf:
+    # ------ Kerberos (vùng storage datalakehkh) — giống crawler-streaming-app ------
+    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020
+    spark.kerberos.principal: k8s@VAILAKEHOUSE.VIETTEL.COM
+    spark.kerberos.keytab: /etc/security/keytabs/k8s.keytab
+    spark.kubernetes.kerberos.krb5.path: /etc/krb5.conf
+    spark.security.credentials.hadoopfs.enabled: "true"
+
+    # ------ HDFS security: GIỮ wire encryption (privacy) ------
+    spark.hadoop.hadoop.security.authentication: kerberos
+    spark.hadoop.hadoop.security.authorization: "true"
+    spark.hadoop.fs.permissions.umask-mode: "002"
+
+    # ------ BẮT BUỘC false (patch block token qua ServiceLoader) ------
+    spark.driver.userClassPathFirst: "false"
+    spark.executor.userClassPathFirst: "false"
+
+    # ------ log4j2 ------
+    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    spark.executor.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+
+    # ------ Spark ------
+    spark.jars.ivy: /tmp
+    spark.serializer: org.apache.spark.serializer.KryoSerializer
+    spark.sql.sources.ignoreDataLocality.enabled: "true"
+    spark.dynamicAllocation.enabled: "false"
+    spark.task.maxFailures: "4"
+    spark.hadoop.parquet.block.size: "134217728"
+
+    # ------ Event log (Spark History Server vùng datalakehkh) ------
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020/prod6/spark_history
+    spark.eventLog.rolling.enabled: "true"
+    spark.eventLog.rolling.maxFileSize: 128m

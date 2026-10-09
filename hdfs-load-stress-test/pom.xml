@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>vai.lakehouse</groupId>
+    <artifactId>sample-spark-application-privacy-parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hdfs-load-stress-test</artifactId>
+  <name>hdfs-load-stress-test</name>
+  <description>
+    Spark job stress test nạp dữ liệu vào HDFS Isilon HKH (100 GiB/ngày), có patch lenient block token, không có lib
+    crypto. Plan: docs/hdfs-load-stress-test/PLAN.md; build/chạy: README.md cùng thư mục.
+  </description>
+
+  <dependencies>
+    <!--
+      Patch lenient block token (vai.lakehouse.hdfs.* + META-INF/services/...TokenIdentifier) = jar classifier
+      "block-token-patch" của module spark-app, shade vào fat jar. Build bằng -am thì Maven tự build spark-app trước.
+      Loại MỌI dependency bắc cầu: pom của spark-app kéo delta-spark... mà app này không cần.
+    -->
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>sample-spark-application-privacy</artifactId>
+      <version>${project.version}</version>
+      <classifier>block-token-patch</classifier>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- BlockTokenIdentifier (class cha của patch) — runtime có sẵn trong image Spark. -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-hdfs-client</artifactId>
+      <version>${hadoop.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-common</artifactId>
+      <version>${hadoop.version}</version>
+      <scope>provided</scope>
+      <exclusions>
+        <!-- commons-text 1.4 của hadoop-common đè bản 1.10.0 của Spark -> NoSuchMethodError trong test. -->
+        <exclusion>
+          <groupId>org.apache.commons</groupId>
+          <artifactId>commons-text</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- Tên jar cố định: Dockerfile và mainApplicationFile trong k8s/*.yaml trỏ đúng tên này. -->
+    <finalName>hdfs-load-stress-test</finalName>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <!-- BẮT BUỘC: giữ META-INF/services của patch, thiếu thì ServiceLoader không thấy LenientBlockTokenIdentifier. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>vai.lakehouse.stress.HdfsLoadStressApp</mainClass>
+                </transformer>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <!-- KHÔNG relocate org.apache.hadoop.*: patch phải kế thừa đúng BlockTokenIdentifier của runtime. -->
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
