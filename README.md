@@ -209,17 +209,26 @@ có default; validate lúc khởi động, sai giá trị sẽ `exit(2)` — cù
 | Biến                                                                      | Mặc định                                                                               | Giá trị hợp lệ               | Mô tả                                                                                                                        |
 | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `APP_NAME`                                                                | `SampleSparkApplicationPrivacy`                                                        | chuỗi bất kỳ                 | Tên hiển thị trên Spark UI                                                                                                   |
-| `DB_NAME`                                                                 | `demo_db`                                                                              | chuỗi bất kỳ                 | Database/schema sẽ được tạo                                                                                                  |
-| `TABLE_NAME`                                                              | `sample_table`                                                                         | chuỗi bất kỳ                 | Bảng sẽ được tạo                                                                                                             |
+| `DB_NAME`                                                                 | `demo_db`                                                                              | chuỗi bất kỳ; khi bật mã hoá với `CRYPTO_PREFIX_SOURCE=dak`: chỉ `[A-Za-z0-9_]`, 1–128 ký tự | Database/schema sẽ được tạo. Cùng `TABLE_NAME` tạo thành tên key `database.table` (chữ thường) để tra keyPrefix |
+| `TABLE_NAME`                                                              | `sample_table`                                                                         | như `DB_NAME`                | Bảng sẽ được tạo                                                                                                             |
 | `TABLE_TYPE`                                                              | `delta`                                                                                | `delta` / `iceberg` / `hive` | `hive` → `STORED AS PARQUET`; còn lại → `USING <type>`                                                                       |
 | `INSERT_MODE`                                                             | `append`                                                                               | `append` / `overwrite`       | Chế độ ghi dữ liệu mẫu                                                                                                       |
 | `ENABLE_HIVE_SUPPORT`                                                     | `true`                                                                                 | `true` / `false`             | Bật `enableHiveSupport()` cho SparkSession                                                                                   |
 | `CRYPTO_ENCRYPT_FUNCTION`, `CRYPTO_DECRYPT_FUNCTION` | (rỗng = KHÔNG mã hoá) | tên hàm SQL, vd `column_encrypt`/`column_decrypt` hoặc `cdr_encrypt`/`cdr_decrypt` | Hàm do extension (nạp qua `spark.sql.extensions`) đăng ký; phải đặt CẢ 2 hoặc để trống CẢ 2. App không nhúng lib crypto, chỉ gọi hàm theo tên — xem mục "Mã hoá cột" |
 | `CRYPTO_ENCRYPTED_COLUMNS` | (bắt buộc khi bật mã hoá) | danh sách cột, phân cách bằng dấu phẩy | Các cột bị mã hoá, vd `name,city` |
 | `CRYPTO_KEY_FIELD` | (bắt buộc khi bật mã hoá) | tên cột | Cột KHÔNG mã hoá, giá trị của nó (theo từng dòng) dùng làm nguyên liệu sinh key; không được nằm trong `CRYPTO_ENCRYPTED_COLUMNS` |
-| `CRYPTO_PREFIX_SOURCE` | `file` | `file` / `vault` / `file,vault` | **Do extension đọc, không phải app**: nguồn keyPrefix — thư mục file (K8s Secret) hoặc HashiCorp Vault. Dùng chung cho `column_*` lẫn `cdr_*` — xem mục "Mã hoá cột" |
-| `CRYPTO_KEY_PREFIX_DIR` | `conf/key-prefix` (đọc đĩa rồi classpath; jar app không còn bản mẫu — luôn đặt tường minh) | đường dẫn thư mục | Chỉ khi `file`: thư mục chứa keyPrefix, mỗi bảng 1 file `<tên bảng>` (nhạy cảm, mount K8s Secret `key-prefix`) |
-| `VAULT_ADDR`, `VAULT_ROLE`, `VAULT_KV_PATH`                               | (bắt buộc khi `vault`)                                                                 | chuỗi                        | Địa chỉ Vault, tên role Kubernetes auth, đường dẫn KV chứa prefix (không gồm tên bảng)                                       |
+| `CRYPTO_PREFIX_SOURCE` | `file` | `dak` / `file` / `vault` / `file,vault`. **`dak` không được ghép** với nguồn khác (`dak,vault` bị từ chối) | **Do extension đọc, không phải app**: nguồn keyPrefix — DAK (manifest mẫu đang dùng), thư mục file (K8s Secret) hoặc HashiCorp Vault. Dùng chung cho `column_*` lẫn `cdr_*` — xem mục "Chọn nguồn keyPrefix" |
+| `CRYPTO_CACHE_TTL_SECONDS` | `300` | số nguyên ≥ 0 (`0` = tắt cache) | Thời gian cache keyPrefix theo bảng trên driver; áp dụng cho mọi nguồn |
+| `DAK_ADDR` | (bắt buộc khi `dak`) | URL `https://…`; `http://` chỉ khi `DAK_ALLOW_INSECURE_HTTP=true` | Base URL của DAK, vd `http://dak-mock:8085` (dak-mock cùng namespace). Lib gọi `GET <DAK_ADDR>/api/v1/keys/<database>/<table>` |
+| `DAK_TOKEN_URL` | (bắt buộc khi `dak`) | URL `https://…` (`http://` như trên) | Token endpoint Keycloak của **realm của tenant**, vd `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token` |
+| `DAK_CLIENT_ID` | (bắt buộc khi `dak`) | chuỗi | Client Keycloak của team (`client_credentials`), vd `team-de-ws8` |
+| `DAK_CLIENT_SECRET` | (bắt buộc khi `dak`) | chuỗi | **Nhạy cảm**: lấy từ K8s Secret `spark-dak-client` (key `clientSecret`) qua `secretKeyRef`, không ghi thẳng vào manifest |
+| `DAK_ALLOW_INSECURE_HTTP` | `false` | `true` / `false` | `true` cho phép `DAK_ADDR`/`DAK_TOKEN_URL` dùng `http://` — **chỉ** khi test với dak-mock; DAK thật phải bỏ biến này |
+| `CRYPTO_KEY_PREFIX_DIR` | `conf/key-prefix` (đọc đĩa rồi classpath; jar app không còn bản mẫu — luôn đặt tường minh) | đường dẫn thư mục | Chỉ khi `file`: thư mục chứa keyPrefix, mỗi bảng 1 file `<database>.<table>` (nhạy cảm, mount K8s Secret `key-prefix`) |
+| `VAULT_ADDR`, `VAULT_KV_PATH`                                             | (bắt buộc khi `vault`)                                                                 | chuỗi                        | Địa chỉ Vault, đường dẫn KV chứa prefix (không gồm tên key; secret con là `<VAULT_KV_PATH>/<database>.<table>`)              |
+| `VAULT_AUTH_METHOD`                                                       | `kubernetes`                                                                           | `kubernetes` / `token`       | Cách đăng nhập Vault                                                                                                         |
+| `VAULT_ROLE`                                                              | (bắt buộc khi `kubernetes`)                                                            | chuỗi                        | Tên role Kubernetes auth                                                                                                     |
+| `VAULT_TOKEN`                                                             | (bắt buộc khi `token`)                                                                 | chuỗi                        | Token Vault tĩnh, nhạy cảm — lấy qua `secretKeyRef`                                                                          |
 | `VAULT_KV_MOUNT`, `VAULT_AUTH_MOUNT`, `VAULT_KEY_FIELD`, `VAULT_JWT_PATH` | `kv`, `kubernetes`, `keyPrefix`, `/var/run/secrets/kubernetes.io/serviceaccount/token` | chuỗi                        | Mount KV v2, mount auth, tên field chứa prefix trong secret, file JWT của service account                                    |
 | `HDFS_SASL_DEBUG`                                                         | `false`                                                                                | `true` / `false`             | Bật DEBUG cho 2 logger SASL/Token của Hadoop — in ra hex dump wrap/unwrap rất dài, chỉ bật khi cần trace lỗi wire encryption |
 
@@ -299,7 +308,7 @@ kind: Secret
 metadata:
   name: key-prefix
 stringData:
-  sample_table: "sample_table_dev_prefix" # -> file /etc/key-prefix/sample_table
+  demo_db.sample_table: "sample_table_dev_prefix" # -> file /etc/key-prefix/demo_db.sample_table (tên key = DB_NAME.TABLE_NAME)
 ```
 
 Ký tự xuống dòng ở cuối file được bỏ khi đọc. Tên bảng chỉ được gồm `[A-Za-z0-9_.-]` và không
@@ -310,7 +319,7 @@ giá trị `keyPrefix`.
   (config), nhưng giá trị của nó vốn công khai với bất kỳ ai đọc được bảng, nên toàn bộ độ an
   toàn của cơ chế này quy về việc giữ kín `keyPrefix`. Không commit giá trị thật của `keyPrefix` vào git.
 
-  Manifest mẫu lấy `keyPrefix` từ Vault (`CRYPTO_PREFIX_SOURCE=vault`, chỉ driver cần). Cột mã hoá khai
+  Manifest mẫu lấy `keyPrefix` qua DAK (`CRYPTO_PREFIX_SOURCE=dak`, chỉ driver cần; không còn env `VAULT_*`). Cột mã hoá khai
   thẳng bằng env (`CRYPTO_ENCRYPTED_COLUMNS`, `CRYPTO_KEY_FIELD`) — **không còn** ConfigMap
   `column-crypto-settings` / `CRYPTO_CONFIG_PATH`.
 
@@ -337,7 +346,8 @@ giá trị `keyPrefix`.
 | `file,vault` | thử `file` trước, không có/lỗi thì fallback sang `vault`; lỗi gộp lý do của cả hai nguồn |
 
 `dak` **không được ghép** với nguồn khác (`dak,vault` bị từ chối): fallback tự động chạy cả khi DAK trả 403, tức là
-bỏ qua phân quyền. Khi DAK sự cố, vận hành đổi `CRYPTO_PREFIX_SOURCE=vault` rồi chạy lại job (mục "Lấy keyPrefix từ DAK").
+bỏ qua phân quyền. Khi DAK sự cố, vận hành đổi `CRYPTO_PREFIX_SOURCE=vault`, thêm lại các env `VAULT_*` rồi chạy lại job
+(mục "Lấy keyPrefix từ DAK").
 
 Kết quả được cache trong bộ nhớ theo bảng, `CRYPTO_CACHE_TTL_SECONDS` (mặc định 300, `0` = tắt cache).
 Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncrypto.<key>` (hoặc `spark.cdrcrypto.<key>`) thay vì env
@@ -357,12 +367,20 @@ DAK trả 401 thì xin token mới và thử lại đúng 1 lần; 403 và mọi
 | `DAK_TOKEN_URL`           | Có       | `https://<keycloak>/realms/<realm của tenant>/protocol/openid-connect/token`     |
 | `DAK_CLIENT_ID`           | Có       | Client Keycloak của team, vận hành cấp                                           |
 | `DAK_CLIENT_SECRET`       | Có       | Lấy từ K8s Secret `spark-dak-client` (key `clientSecret`) qua `secretKeyRef`     |
+| `DAK_ALLOW_INSECURE_HTTP` | Không    | `true` cho phép `http://` — chỉ khi test với dak-mock (`DAK_ADDR=http://dak-mock:8085`) |
+| `CRYPTO_CACHE_TTL_SECONDS`| Không    | Cache keyPrefix (mặc định 300 s); token Keycloak được cache riêng tới gần hết hạn |
+
+Keycloak nội bộ (`sso-lakehouse.cyberspace.vn`) dùng cert tự ký, nên pod driver cần thêm `hostAliases` (IP `10.221.148.42`),
+initContainer `build-truststore` (ConfigMap `keycloak-ca`, key `ca.pem`) và `-Djavax.net.ssl.trustStore=…` trong
+`spark.driver.extraJavaOptions`. Hai manifest trong `k8s/` đã có sẵn; initContainer phải khai `resources.limits` vì
+ResourceQuota của namespace bắt buộc, và `keycloak-ca` phải được mount cả ở container chính để webhook của Spark Operator
+đưa volume vào pod (`docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md` mục 4.7).
 
 Tên key gửi lên DAK là **`database.table`**, chữ thường (`spark-app` tự ghép `DB_NAME.TABLE_NAME`; trên sql-engine là tham
 số đầu của hàm, vd `cdr_decrypt('demo_db.users_cdr', ...)`). Tên một phần (`'users_cdr'`) bị từ chối khi `source=dak`.
 
-**Fallback thủ công** khi DAK sự cố: đổi `CRYPTO_PREFIX_SOURCE=vault` rồi chạy lại job (cấu hình `VAULT_*` giữ sẵn trong
-manifest). Fallback đọc secret `<VAULT_KV_PATH>/<database>.<table>` ở Vault cũ và **bỏ qua** phân quyền, thời hạn quyền của
+**Fallback thủ công** khi DAK sự cố: đổi `CRYPTO_PREFIX_SOURCE=vault`, thêm lại các env `VAULT_*` (manifest mẫu đã bỏ chúng,
+xem bảng mục 5) và Secret token Vault, rồi chạy lại job. Fallback đọc secret `<VAULT_KV_PATH>/<database>.<table>` ở Vault cũ và **bỏ qua** phân quyền, thời hạn quyền của
 DAK — chỉ dùng khi DAK sự cố và quay lại `dak` ngay khi DAK phục hồi. Thiết kế và quy trình: `docs/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md`,
 hợp đồng API: `docs/DAK_API_SPEC.md`.
 
