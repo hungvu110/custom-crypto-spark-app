@@ -20,17 +20,53 @@ object OutputFormat {
   def parse(raw: String): Option[OutputFormat] = All.find(_.name == raw.trim.toLowerCase(Locale.ROOT))
 }
 
+/** Định dạng file đầu vào. `csv`/`txt` = text phân tách bằng ký tự (mặc định `,`); `text` = mỗi dòng 1 cột `value`. */
+sealed abstract class InputFormat(val name: String, val sparkFormat: String, val defaults: Map[String, String] = Map.empty)
+
+object InputFormat {
+  case object Parquet extends InputFormat("parquet", "parquet")
+  case object Orc     extends InputFormat("orc", "orc")
+  case object Avro    extends InputFormat("avro", "avro")
+  case object Json    extends InputFormat("json", "json")
+  case object Delta   extends InputFormat("delta", "delta")
+  case object Csv     extends InputFormat("csv", "csv")
+  case object Tsv     extends InputFormat("tsv", "csv", Map("delimiter" -> "\t"))
+  case object Text    extends InputFormat("text", "text")
+
+  val All: Seq[InputFormat] = Seq(Parquet, Orc, Avro, Json, Delta, Csv, Tsv, Text)
+
+  def parse(raw: String): Option[InputFormat] = raw.trim.toLowerCase(Locale.ROOT) match {
+    case "txt" => Some(Csv)
+    case other => All.find(_.name == other)
+  }
+}
+
+/** Nguồn dữ liệu: bảng trong catalog hoặc thư mục/file trên HDFS (hay file system bất kỳ Spark đọc được). */
+sealed trait InputSource { def describe: String }
+
+final case class TableInput(db: String, table: String) extends InputSource {
+  override def describe: String = s"$db.$table"
+}
+
+final case class FileInput(path: String, format: InputFormat, schema: Option[String], options: Map[String, String])
+    extends InputSource {
+  override def describe: String = s"$path [${format.name}]"
+}
+
+/** Một cột cần giả danh kèm chế độ riêng của nó. */
+final case class PseudoColumn(name: String, mode: PseudonymMode)
+
 /**
  * Cấu hình của job, đọc từ biến môi trường của driver (`spec.driver.env` trong SparkApplication).
  *
- * Ba đầu vào chính: `DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS`. Bảng nguồn KHÔNG bao giờ bị sửa: kết quả ghi ra bảng đích
- * (`OUTPUT_DB`.`OUTPUT_TABLE`), mặc định `<DB_NAME>.<TABLE_NAME>_pseudonymized`.
+ * Nguồn là bảng (`DB_NAME` + `TABLE_NAME`) HOẶC file/thư mục (`INPUT_PATH` + `INPUT_FORMAT`); cột cần giả danh ở
+ * `PSEUDO_COLUMNS` (`cột[:MODE]`, mỗi cột một chế độ riêng được). Nguồn KHÔNG bao giờ bị sửa: kết quả ghi ra bảng đích
+ * (`OUTPUT_DB`.`OUTPUT_TABLE`), mặc định với nguồn bảng là `<DB_NAME>.<TABLE_NAME>_pseudonymized`.
  */
 final case class JobConfig(
     appName: String,
-    dbName: String,
-    tableName: String,
-    columns: Seq[String],
+    input: InputSource,
+    pseudoColumns: Seq[PseudoColumn],
     mode: PseudonymMode,
     outputDb: String,
     outputTable: String,
@@ -41,16 +77,20 @@ final case class JobConfig(
     enableHiveSupport: Boolean,
     verify: Boolean) {
 
-  def source: String = s"$dbName.$tableName"
+  def source: String = input.describe
+
+  def columns: Seq[String] = pseudoColumns.map(_.name)
+
+  /** Mọi chế độ đang dùng (để biết có cần khoá HMAC / AES / bảng ánh xạ không). */
+  def modes: Set[PseudonymMode] = pseudoColumns.map(_.mode).toSet
 
   def target: String = s"$outputDb.$outputTable"
 
   def describe: Seq[(String, String)] = Seq(
     "APP_NAME"            -> appName,
-    "DB_NAME"             -> dbName,
-    "TABLE_NAME"          -> tableName,
-    "PSEUDO_COLUMNS"      -> columns.mkString(", "),
-    "PSEUDO_MODE"         -> mode.name,
+    "INPUT"               -> input.describe,
+    "PSEUDO_COLUMNS"      -> pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "),
+    "PSEUDO_MODE (mặc định)" -> mode.name,
     "OUTPUT_DB"           -> outputDb,
     "OUTPUT_TABLE"        -> outputTable,
     "OUTPUT_FORMAT"       -> outputFormat.name,
@@ -88,24 +128,38 @@ object JobConfig {
       }
     }
 
-    val db    = identifier("DB_NAME", None)
-    val table = identifier("TABLE_NAME", None)
-
-    val columns = raw("PSEUDO_COLUMNS").map(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq).getOrElse(Nil)
-    if (columns.isEmpty) errors += "PSEUDO_COLUMNS: bắt buộc (danh sách cột cần khử định danh, phân cách bằng dấu phẩy)"
-    columns.filterNot(_.matches("^[A-Za-z_][A-Za-z0-9_]*$")).foreach(c => errors += s"PSEUDO_COLUMNS: tên cột không hợp lệ '$c'")
-    val duplicated = columns.diff(columns.distinct).distinct
-    if (duplicated.nonEmpty) errors += s"PSEUDO_COLUMNS: cột bị lặp ${duplicated.mkString(", ")}"
+    val pathInput = raw("INPUT_PATH")
+    val tableInput = (raw("DB_NAME"), raw("TABLE_NAME"))
+    if (pathInput.isDefined && (tableInput._1.isDefined || tableInput._2.isDefined)) {
+      errors += "INPUT_PATH và DB_NAME/TABLE_NAME: chỉ chọn một nguồn (file hoặc bảng)"
+    }
+    val input: InputSource = pathInput match {
+      case Some(path) => fileInput(path, env, errors)
+      case None =>
+        if (raw("INPUT_FORMAT").isDefined || raw("INPUT_SCHEMA").isDefined || inputOptions(env).nonEmpty) {
+          errors += "INPUT_FORMAT/INPUT_SCHEMA/INPUT_OPTION_*: chỉ dùng cùng INPUT_PATH"
+        }
+        TableInput(identifier("DB_NAME", None), identifier("TABLE_NAME", None))
+    }
 
     val mode = raw("PSEUDO_MODE").map(m => Try(PseudonymMode.parse(m)).toOption.getOrElse {
       errors += s"PSEUDO_MODE='$m': phải là ${PseudonymMode.All.map(_.name).mkString(" / ")}"
       PseudonymMode.Hash
     }).getOrElse(PseudonymMode.Hash)
 
-    val outDb    = identifier("OUTPUT_DB", Some(db).filter(_.nonEmpty))
-    val outTable = identifier("OUTPUT_TABLE", Some(s"${table}_pseudonymized").filter(_ => table.nonEmpty))
-    if (db.nonEmpty && table.nonEmpty && outDb == db && outTable == table) {
-      errors += "OUTPUT_DB.OUTPUT_TABLE: không được trùng bảng nguồn — job không ghi đè bảng gốc (đổi OUTPUT_TABLE hoặc OUTPUT_DB)"
+    val columns = pseudoColumns(raw("PSEUDO_COLUMNS"), mode, errors)
+
+    val (outDb, outTable) = input match {
+      case TableInput(db, table) =>
+        val d = identifier("OUTPUT_DB", Some(db).filter(_.nonEmpty))
+        val t = identifier("OUTPUT_TABLE", Some(s"${table}_pseudonymized").filter(_ => table.nonEmpty))
+        if (db.nonEmpty && table.nonEmpty && d == db && t == table) {
+          errors += "OUTPUT_DB.OUTPUT_TABLE: không được trùng bảng nguồn — job không ghi đè bảng gốc (đổi OUTPUT_TABLE hoặc OUTPUT_DB)"
+        }
+        (d, t)
+      case _: FileInput =>
+        // Nguồn file không có tên bảng để suy ra mặc định -> bắt buộc khai rõ.
+        (identifier("OUTPUT_DB", None), identifier("OUTPUT_TABLE", None))
     }
 
     val format = raw("OUTPUT_FORMAT").map(f => OutputFormat.parse(f).getOrElse {
@@ -126,8 +180,50 @@ object JobConfig {
     }
 
     if (errors.nonEmpty) Left(errors.toList)
-    else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), db, table, columns, mode, outDb, outTable, format,
+    else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
       outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true)))
+  }
+
+  private val InputOptionPrefix = "INPUT_OPTION_"
+
+  private def inputOptions(env: Map[String, String]): Map[String, String] =
+    env.collect { case (k, v) if k.startsWith(InputOptionPrefix) && k.length > InputOptionPrefix.length =>
+      k.substring(InputOptionPrefix.length) -> v }
+
+  private def fileInput(path: String, env: Map[String, String], errors: ArrayBuffer[String]): FileInput = {
+    if (!(path.startsWith("/") || Try(new java.net.URI(path)).toOption.exists(_.getScheme != null))) {
+      errors += s"INPUT_PATH='$path': phải là đường dẫn tuyệt đối hoặc URI có scheme"
+    }
+    val format = env.get("INPUT_FORMAT").map(_.trim).filter(_.nonEmpty) match {
+      case None => errors += s"INPUT_FORMAT: bắt buộc khi có INPUT_PATH (${InputFormat.All.map(_.name).mkString(" / ")} / txt)"; InputFormat.Parquet
+      case Some(f) => InputFormat.parse(f).getOrElse {
+        errors += s"INPUT_FORMAT='$f': phải là ${InputFormat.All.map(_.name).mkString(" / ")} (hoặc txt = csv)"
+        InputFormat.Parquet
+      }
+    }
+    FileInput(path, format, env.get("INPUT_SCHEMA").map(_.trim).filter(_.nonEmpty), inputOptions(env))
+  }
+
+  /** `cột` hoặc `cột:MODE`; cột không ghi mode dùng `default` (PSEUDO_MODE). */
+  private def pseudoColumns(rawValue: Option[String], default: PseudonymMode, errors: ArrayBuffer[String]): Seq[PseudoColumn] = {
+    val tokens = rawValue.map(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq).getOrElse(Nil)
+    if (tokens.isEmpty) errors += "PSEUDO_COLUMNS: bắt buộc (cột cần khử định danh, phân cách bằng dấu phẩy; mỗi cột có thể kèm chế độ riêng: isdn:HASH,imei:ENCRYPT)"
+    val parsed = tokens.map { token =>
+      val parts = token.split(":", -1).map(_.trim)
+      val name = parts(0)
+      if (!name.matches("^[A-Za-z_][A-Za-z0-9_]*$")) errors += s"PSEUDO_COLUMNS: tên cột không hợp lệ '$name'"
+      val mode =
+        if (parts.length == 1) default
+        else if (parts.length > 2) { errors += s"PSEUDO_COLUMNS: '$token' phải có dạng cột hoặc cột:MODE"; default }
+        else Try(PseudonymMode.parse(parts(1))).toOption.getOrElse {
+          errors += s"PSEUDO_COLUMNS: chế độ không hợp lệ ở '$token' (phải là ${PseudonymMode.All.map(_.name).mkString(" / ")})"
+          default
+        }
+      PseudoColumn(name, mode)
+    }
+    val duplicated = parsed.map(_.name).diff(parsed.map(_.name).distinct).distinct
+    if (duplicated.nonEmpty) errors += s"PSEUDO_COLUMNS: cột bị lặp ${duplicated.mkString(", ")}"
+    parsed
   }
 
   private def isAbsoluteUri(value: String): Boolean =

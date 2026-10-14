@@ -3,7 +3,7 @@ package vai.lakehouse.pseudonymizetable.logging
 import org.slf4j.{Logger, LoggerFactory}
 
 /**
- * Logging helper cùng format với `Log` của spark-app / pseudonym-verify-app (logger "VLP"): log4j2.properties để riêng
+ * Logging helper cùng format với `Log` của spark-app (logger "VLP"): log4j2.properties để riêng
  * logger này ở INFO, còn Spark/Hadoop bị hạ xuống WARN, nên `kubectl logs` chỉ còn phần quan trọng của app.
  */
 object Log {

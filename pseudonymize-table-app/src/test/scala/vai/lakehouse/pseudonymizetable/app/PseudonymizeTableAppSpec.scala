@@ -130,4 +130,62 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     run("PSEUDO_MODE" -> "MAPPING", "OUTPUT_TABLE" -> "x2") shouldBe PseudonymizeTableApp.ExitRuntimeError
     spark.catalog.tableExists("crm", "x1") shouldBe false // fail sớm: chưa tạo bảng đích
   }
+
+  it should "mỗi cột một chế độ: isdn HASH, imei ENCRYPT" in {
+    run("PSEUDO_COLUMNS" -> "isdn:HASH,imei:ENCRYPT", "OUTPUT_TABLE" -> "subscriber_mixed") shouldBe PseudonymizeTableApp.ExitOk
+
+    val first = rows("crm.subscriber_mixed")(0)
+    first.getAs[String]("isdn") should fullyMatch regex "k1_[0-9a-f]{32}"
+    val enc = first.getAs[String]("imei")
+    enc should startWith("e1_")
+    val key = PseudonymConf.keyProvider(spark.sparkContext.getConf).aesSivKey
+    new AesSivPseudonymizer(key).decrypt(enc) shouldBe "352099001761481"
+  }
+
+  private def runFile(extra: (String, String)*): Int =
+    PseudonymizeTableApp.execute(Map("OUTPUT_DB" -> "landing", "ENABLE_HIVE_SUPPORT" -> "false") ++ extra, Some(spark))
+
+  it should "đọc thư mục file txt (csv không header, cột _c0.._cN) và ghi bảng đích" in {
+    val dir = Files.createDirectory(workDir.resolve("landing_txt"))
+    Files.write(dir.resolve("part-0.txt"), "84903217465|352099001761481|10\n84903217466|352099001761499|20\n".getBytes(UTF_8))
+    Files.write(dir.resolve("part-1.txt"), "84903217465||30\n".getBytes(UTF_8))
+
+    runFile("INPUT_PATH" -> dir.toString, "INPUT_FORMAT" -> "txt", "INPUT_OPTION_delimiter" -> "|",
+      "PSEUDO_COLUMNS" -> "_c0:HASH,_c1:ENCRYPT", "OUTPUT_TABLE" -> "charge_txt") shouldBe PseudonymizeTableApp.ExitOk
+
+    val out = spark.table("landing.charge_txt").orderBy("_c2").collect()
+    out.length shouldBe 3
+    out.map(_.getString(0)).foreach(_ should fullyMatch regex "k1_[0-9a-f]{32}")
+    out(0).getString(0) shouldBe out(2).getString(0) // cùng số -> cùng mã
+    out(2).isNullAt(1) shouldBe true                  // chuỗi rỗng trong csv là NULL
+    out.map(_.getString(2)).toSeq shouldBe Seq("10", "20", "30")
+  }
+
+  it should "đọc parquet, json và csv có header + INPUT_SCHEMA" in {
+    val session = spark
+    import session.implicits._
+    val df = Seq((1L, "84903217465", "Ha Noi"), (2L, "84903217466", "Da Nang")).toDF("id", "isdn", "province")
+    val parquet = workDir.resolve("in_parquet").toString
+    val json = workDir.resolve("in_json").toString
+    df.write.parquet(parquet)
+    df.write.json(json)
+    val csv = Files.createDirectory(workDir.resolve("in_csv"))
+    Files.write(csv.resolve("a.csv"), "id,isdn,province\n1,84903217465,Ha Noi\n".getBytes(UTF_8))
+
+    runFile("INPUT_PATH" -> parquet, "INPUT_FORMAT" -> "parquet", "PSEUDO_COLUMNS" -> "isdn", "OUTPUT_TABLE" -> "in_p") shouldBe 0
+    runFile("INPUT_PATH" -> json, "INPUT_FORMAT" -> "json", "PSEUDO_COLUMNS" -> "isdn", "OUTPUT_TABLE" -> "in_j") shouldBe 0
+    runFile("INPUT_PATH" -> csv.toString, "INPUT_FORMAT" -> "csv", "INPUT_OPTION_header" -> "true",
+      "INPUT_SCHEMA" -> "id BIGINT, isdn STRING, province STRING", "PSEUDO_COLUMNS" -> "isdn", "OUTPUT_TABLE" -> "in_c") shouldBe 0
+
+    Seq("in_p", "in_j", "in_c").foreach { t =>
+      spark.table(s"landing.$t").select("isdn").collect().map(_.getString(0)).foreach(_ should startWith("k1_"))
+    }
+  }
+
+  it should "exit 1 khi INPUT_PATH không tồn tại hoặc cột không có trong file" in {
+    runFile("INPUT_PATH" -> workDir.resolve("khong_co").toString, "INPUT_FORMAT" -> "parquet", "PSEUDO_COLUMNS" -> "isdn",
+      "OUTPUT_TABLE" -> "f1") shouldBe PseudonymizeTableApp.ExitRuntimeError
+    runFile("INPUT_PATH" -> workDir.resolve("in_parquet").toString, "INPUT_FORMAT" -> "parquet", "PSEUDO_COLUMNS" -> "cot_la",
+      "OUTPUT_TABLE" -> "f2") shouldBe PseudonymizeTableApp.ExitRuntimeError
+  }
 }

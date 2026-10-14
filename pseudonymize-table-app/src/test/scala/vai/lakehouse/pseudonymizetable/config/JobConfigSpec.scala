@@ -68,4 +68,45 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors.exists(_.contains("tên cột không hợp lệ 'a b'")) shouldBe true
     errors.exists(_.contains("cột bị lặp isdn")) shouldBe true
   }
+
+  private val file = Map("INPUT_PATH" -> "/landing/vtt/charge/date=20261012/hour=18/", "INPUT_FORMAT" -> "csv",
+    "PSEUDO_COLUMNS" -> "_c0", "OUTPUT_DB" -> "landing", "OUTPUT_TABLE" -> "charge_safe")
+
+  it should "nhận nguồn file với định dạng, schema và option" in {
+    val cfg = JobConfig.fromEnv(file ++ Map("INPUT_FORMAT" -> "txt", "INPUT_SCHEMA" -> "a STRING, b STRING",
+      "INPUT_OPTION_delimiter" -> "|", "INPUT_OPTION_header" -> "true")).toOption.get
+
+    cfg.input shouldBe FileInput("/landing/vtt/charge/date=20261012/hour=18/", InputFormat.Csv,
+      Some("a STRING, b STRING"), Map("delimiter" -> "|", "header" -> "true"))
+    cfg.target shouldBe "landing.charge_safe"
+  }
+
+  it should "bắt buộc OUTPUT_DB/OUTPUT_TABLE và INPUT_FORMAT với nguồn file, không trộn với nguồn bảng" in {
+    val errors = JobConfig.fromEnv(Map("INPUT_PATH" -> "/x", "PSEUDO_COLUMNS" -> "a")).left.toOption.get
+    errors.exists(_.startsWith("INPUT_FORMAT")) shouldBe true
+    errors.exists(_.startsWith("OUTPUT_DB")) shouldBe true
+    errors.exists(_.startsWith("OUTPUT_TABLE")) shouldBe true
+
+    JobConfig.fromEnv(file + ("DB_NAME" -> "crm")).left.toOption.get.head should include("chỉ chọn một nguồn")
+    JobConfig.fromEnv(base + ("INPUT_FORMAT" -> "csv")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
+    JobConfig.fromEnv(file + ("INPUT_FORMAT" -> "xls")).left.toOption.get.head should include("INPUT_FORMAT='xls'")
+    JobConfig.fromEnv(file + ("INPUT_PATH" -> "landing/x")).left.toOption.get.head should include("tuyệt đối")
+  }
+
+  it should "cho mỗi cột một chế độ riêng, cột không ghi mode dùng PSEUDO_MODE" in {
+    val cfg = JobConfig.fromEnv(base ++ Map("PSEUDO_COLUMNS" -> "isdn:hash, imei:ENCRYPT, cust",
+      "PSEUDO_MODE" -> "MAPPING")).toOption.get
+
+    cfg.pseudoColumns shouldBe Seq(PseudoColumn("isdn", PseudonymMode.Hash), PseudoColumn("imei", PseudonymMode.Encrypt),
+      PseudoColumn("cust", PseudonymMode.Mapping))
+    cfg.columns shouldBe Seq("isdn", "imei", "cust")
+    cfg.modes shouldBe Set(PseudonymMode.Hash, PseudonymMode.Encrypt, PseudonymMode.Mapping)
+  }
+
+  it should "từ chối mode sai hoặc cú pháp cột sai" in {
+    val errors = JobConfig.fromEnv(base + ("PSEUDO_COLUMNS" -> "isdn:ROT13, imei:HASH:x")).left.toOption.get
+
+    errors.exists(_.contains("chế độ không hợp lệ")) shouldBe true
+    errors.exists(_.contains("cột:MODE")) shouldBe true
+  }
 }

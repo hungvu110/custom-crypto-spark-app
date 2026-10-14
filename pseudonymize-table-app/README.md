@@ -1,15 +1,16 @@
 # pseudonymize-table-app
 
-Spark job **khử định danh (giả danh hoá) một bảng**: nhận tên DB, tên bảng và danh sách cột cần khử định danh; đọc bảng
-nguồn, thay các cột đó bằng định danh giả bằng lib [`pseudonym-udf`](../pseudonym-udf), ghi ra bảng đích.
+Spark job **khử định danh (giả danh hoá) một bảng hoặc một thư mục file**: nhận nguồn (tên DB + tên bảng, hoặc đường dẫn
+file/thư mục + định dạng) và danh sách cột cần khử định danh — mỗi cột có thể dùng chế độ riêng; thay các cột đó bằng
+định danh giả bằng lib [`pseudonym-udf`](../pseudonym-udf), ghi ra bảng đích.
 
 - Giải thích cơ chế từng thuật toán kèm ví dụ: [docs/pseudonymization/ALGORITHMS.md](../docs/pseudonymization/ALGORITHMS.md)
 - Thiết kế lib: [docs/pseudonymization/LIB_PLAN.md](../docs/pseudonymization/LIB_PLAN.md)
-- Muốn **chứng minh** lib khử định danh đúng (sinh dữ liệu có đáp án, đo đạc): [`pseudonym-verify-app`](../pseudonym-verify-app/README.md)
+- Muốn **kiểm tra bảng đích** sau khi chạy (so với bảng nguồn): [`pseudonym-verify-utils`](../pseudonym-verify-utils/README.md)
 
 ```mermaid
 flowchart LR
-    S[("DB_NAME.TABLE_NAME<br/>bảng nguồn")] -->|"chỉ ĐỌC"| J["PseudonymizeTableJob<br/>pseudonym-udf: HASH / ENCRYPT / MAPPING<br/>chỉ các cột PSEUDO_COLUMNS"]
+    S[("DB_NAME.TABLE_NAME<br/>hoặc INPUT_PATH (parquet/orc/json/csv/txt…)")] -->|"chỉ ĐỌC"| J["PseudonymizeTableJob<br/>pseudonym-udf: HASH / ENCRYPT / MAPPING<br/>chỉ các cột PSEUDO_COLUMNS"]
     K[/"khoá: Secret / Vault / DAK<br/>(chỉ driver đọc)"/] -.-> J
     J -->|"ghi"| T[("OUTPUT_DB.OUTPUT_TABLE<br/>bảng đích đã khử định danh")]
     T --> V["đối chiếu nguồn ↔ đích<br/>(VERIFY=true)"]
@@ -36,7 +37,7 @@ pseudonymize-table-app/
     └── test/scala/...   13 test: cấu hình, và chạy app thật (HASH/ENCRYPT/MAPPING, append, DB đích khác, các mã lỗi)
 ```
 
-Cùng khuôn với `pseudonym-verify-app`: `main` mỏng, cấu hình chỉ qua biến môi trường, patch block token Isilon, `Log` "VLP".
+Cùng khuôn với `spark-app`: `main` mỏng, cấu hình chỉ qua biến môi trường, patch block token Isilon, `Log` "VLP".
 
 ## 2. Build
 
@@ -64,12 +65,15 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 
 | Biến | Mặc định | Ý nghĩa |
 | --- | --- | --- |
-| `DB_NAME` | (bắt buộc) | Tên database của bảng nguồn. Chỉ `[A-Za-z0-9_]` |
-| `TABLE_NAME` | (bắt buộc) | Tên bảng nguồn |
-| `PSEUDO_COLUMNS` | (bắt buộc) | Cột cần khử định danh, phân cách bằng dấu phẩy, vd `isdn,imei`. Không lặp, phải có trong bảng |
-| `PSEUDO_MODE` | `HASH` | `HASH` (một chiều) / `ENCRYPT` (giải mã lại được) / `MAPPING` (bảng ánh xạ). Áp cho **mọi** cột trong `PSEUDO_COLUMNS` |
-| `OUTPUT_DB` | `DB_NAME` | Database bảng đích (tự `CREATE DATABASE IF NOT EXISTS`) |
-| `OUTPUT_TABLE` | `<TABLE_NAME>_pseudonymized` | Tên bảng đích. **Không được trùng bảng nguồn** (xem 3.3) |
+| `DB_NAME` + `TABLE_NAME` | — | **Nguồn là bảng** trong catalog. Chỉ `[A-Za-z0-9_]`. Bắt buộc nếu không dùng `INPUT_PATH` |
+| `INPUT_PATH` | — | **Nguồn là file/thư mục**, vd `/landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/` (đường dẫn tuyệt đối hoặc URI `hdfs://…`; glob được). Loại trừ với `DB_NAME`/`TABLE_NAME` (xem 3.5) |
+| `INPUT_FORMAT` | (bắt buộc khi có `INPUT_PATH`) | `parquet` / `orc` / `avro` / `json` / `delta` / `csv` / `tsv` / `txt` (= `csv`, text phân tách ký tự) / `text` (mỗi dòng 1 cột `value`) |
+| `INPUT_SCHEMA` | — | Schema DDL cho file không có schema sẵn, vd `isdn STRING, imei STRING, amount DOUBLE`. Không có thì csv/tsv/txt đặt tên cột `_c0, _c1, …` |
+| `INPUT_OPTION_<tên>` | — | Option của Spark reader, vd `INPUT_OPTION_delimiter=\|`, `INPUT_OPTION_header=true`, `INPUT_OPTION_encoding=UTF-8` |
+| `PSEUDO_COLUMNS` | (bắt buộc) | Cột cần khử định danh, phân cách bằng dấu phẩy, vd `isdn,imei`. Mỗi cột có thể kèm chế độ riêng: `isdn:HASH,imei:ENCRYPT` (xem 3.6). Không lặp, phải có trong nguồn |
+| `PSEUDO_MODE` | `HASH` | `HASH` (một chiều) / `ENCRYPT` (giải mã lại được) / `MAPPING` (bảng ánh xạ). Chế độ **mặc định** cho cột trong `PSEUDO_COLUMNS` không ghi `:MODE` |
+| `OUTPUT_DB` | `DB_NAME` (nguồn bảng); **bắt buộc** với nguồn file | Database bảng đích (tự `CREATE DATABASE IF NOT EXISTS`) |
+| `OUTPUT_TABLE` | `<TABLE_NAME>_pseudonymized` (nguồn bảng); **bắt buộc** với nguồn file | Tên bảng đích. **Không được trùng bảng nguồn** (xem 3.3) |
 | `OUTPUT_FORMAT` | `delta` | `delta` / `hive` (ghi Parquet) / `iceberg` (cần catalog Iceberg đã cấu hình) |
 | `OUTPUT_MODE` | `overwrite` | `overwrite` (thay thế bảng đích) / `append` (ghi nối) |
 | `VERIFY` | `true` | Đọc lại bảng đích và đối chiếu với nguồn (mục 5) |
@@ -112,6 +116,49 @@ id | isdn        | imei            | province       id | isdn                   
 
 (Giá trị `k1_...` minh hoạ với khoá thử nghiệm; khoá thật cho kết quả khác. Xem [ALGORITHMS.md](../docs/pseudonymization/ALGORITHMS.md).)
 
+### 3.5. Nguồn là file / thư mục
+
+Đặt `INPUT_PATH` + `INPUT_FORMAT` (thay cho `DB_NAME`/`TABLE_NAME`). Job chỉ **đọc**, kết quả vẫn ghi ra **bảng đích**
+`OUTPUT_DB.OUTPUT_TABLE` (hai biến này bắt buộc vì không có tên bảng nguồn để suy ra mặc định).
+
+```yaml
+# Thư mục HDFS đang chứa file txt phân tách bằng '|', không header
+- name: INPUT_PATH
+  value: /landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/
+- name: INPUT_FORMAT
+  value: txt                     # csv/txt đều là text phân tách; text = nguyên dòng
+- name: INPUT_OPTION_delimiter
+  value: "|"
+- name: INPUT_SCHEMA            # có schema thì dùng tên cột thật trong PSEUDO_COLUMNS
+  value: "isdn STRING, imei STRING, amount DOUBLE"
+- name: PSEUDO_COLUMNS
+  value: isdn:HASH,imei:ENCRYPT
+- name: OUTPUT_DB
+  value: landing
+- name: OUTPUT_TABLE
+  value: f016_mpre_tot_charge_m_pseudonymized
+```
+
+Lưu ý:
+- Trỏ thẳng vào thư mục `date=…/hour=…/` thì **không** có cột partition `date`/`hour` trong dữ liệu (Spark chỉ suy ra
+  partition từ phần path *dưới* thư mục gốc đã cho). Cần cột đó thì trỏ vào thư mục cha hoặc dùng glob, vd
+  `INPUT_PATH=/landing/.../f016-mpre-tot-charge-m/` kèm `INPUT_OPTION_basePath=/landing/.../f016-mpre-tot-charge-m`.
+- Không có `INPUT_SCHEMA` và không `INPUT_OPTION_header=true` thì cột tên `_c0, _c1, …` và đều là `STRING`; có header thì
+  dùng `INPUT_OPTION_header=true` (tên cột lấy từ dòng đầu). `PSEUDO_COLUMNS` dùng đúng tên cột đó.
+- Chuỗi rỗng trong csv/txt được đọc là `NULL` (mặc định Spark) và vẫn `NULL` ở bảng đích.
+- `avro` cần module spark-avro (image `apache/spark` có sẵn); các định dạng khác là built-in.
+- Nguồn file không đổi được giữa hai lần đọc (job đọc lại nguồn để đối chiếu ở mục 5): đừng ghi thêm file vào thư mục
+  trong lúc job chạy.
+
+### 3.6. Mỗi cột một chế độ
+
+`PSEUDO_COLUMNS` nhận `cột[:MODE]`, ví dụ `isdn:HASH,imei:ENCRYPT,customer_id`. Cột không ghi `:MODE` dùng `PSEUDO_MODE`
+(mặc định `HASH`). Chỉ khoá của các chế độ **thực sự dùng** mới bị đọc: cả `HASH` và `ENCRYPT` thì cần cả
+`pseudonym.hmac_v<N>` và `pseudonym.aes_siv_v<N>` (mục 4.2); có cột `MAPPING` thì cần `MAPPING_TABLE_PATH`.
+
+Chọn chế độ theo nhu cầu từng cột: cột chỉ để nối/đếm (`isdn`) → `HASH`; cột cần khôi phục sau này theo quy trình được duyệt
+(`imei`) → `ENCRYPT`. Xem [ALGORITHMS.md](../docs/pseudonymization/ALGORITHMS.md).
+
 ## 4. Env của `pseudonym-udf` cần truyền vào
 
 Lib đọc cấu hình ở **driver** (khoá được đọc 1 lần rồi nằm trong closure của UDF gửi xuống executor), nên các biến dưới
@@ -134,7 +181,7 @@ Hai cách tương đương; dùng biến môi trường nếu muốn đồng nh�
 | --- | --- | --- |
 | `HASH` | nguồn khoá + khoá **`pseudonym.hmac_v<N>`** (32 byte) | khoá AES, bảng ánh xạ |
 | `ENCRYPT` | nguồn khoá + khoá **`pseudonym.aes_siv_v<N>`** (64 byte) | khoá HMAC, bảng ánh xạ |
-| `MAPPING` | **`MAPPING_TABLE_PATH`** (hoặc `spark.pseudonym.mapping.path`) + session có Delta (app đã tự bật) | nguồn khoá, khoá |
+| `MAPPING` (bất kỳ cột nào) | **`MAPPING_TABLE_PATH`** (hoặc `spark.pseudonym.mapping.path`) + session có Delta (app đã tự bật) | nguồn khoá, khoá |
 
 Chỉ khoá của chế độ đang dùng mới bị đọc: chạy `HASH` mà thiếu khoá AES vẫn thành công.
 
@@ -240,7 +287,7 @@ Bảng ánh xạ chứa **giá trị gốc** → đặt ở vùng HDFS riêng, p
 
 ## 5. Đối chiếu nguồn ↔ đích (`VERIFY=true`)
 
-Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** trong `PSEUDO_COLUMNS`:
+Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** trong `PSEUDO_COLUMNS` (mỗi cột theo chế độ riêng của nó):
 
 | Kiểm | `overwrite` | `append` |
 | --- | --- | --- |
@@ -253,7 +300,7 @@ Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** tr
 `JOB WRITTEN BUT VERIFICATION FAILED`, exit `3`: **đừng dùng** bảng đích đó.
 
 > Đây là kiểm tra nhanh trên chính dữ liệu của bạn. Chứng minh lib khử định danh đúng về mặt thuật toán (chống từ điển,
-> sai khoá, rò rỉ khoá...) là việc của [`pseudonym-verify-app`](../pseudonym-verify-app/README.md).
+> sai khoá, rò rỉ khoá...) là việc của [`pseudonym-verify-utils`](../pseudonym-verify-utils/README.md) (chạy độc lập sau job).
 
 ### Exit code
 

@@ -6,7 +6,7 @@ thể (phân tích dọc) mà không biết danh tính thật. Logic bọc dư�
 DataFrame API (Spark job) lẫn SQL function (sql-engine) — cùng mô hình với `cdr-crypto-udf`.
 
 App sinh dữ liệu + kiểm chứng "khử định danh thành công hay chưa": xem
-[`VERIFY_APP_PLAN.md`](./VERIFY_APP_PLAN.md).
+[`pseudonym-verify-utils/README.md`](../../pseudonym-verify-utils/README.md).
 
 ---
 
@@ -91,7 +91,7 @@ pseudonym-udf/
 Quy ước thiết kế của lib:
 
 - **Phụ thuộc một chiều:** `core` ← `policy` ← `spark`. `core` không import Spark; ranh giới được trình biên dịch giữ
-  (`private[pseudonym]`: app kiểm chứng nằm ở package `vai.lakehouse.pseudonymverify` nên **không** với tới được phần nội bộ).
+  (`private[pseudonym]`: utils kiểm chứng nằm ở package `vai.lakehouse.pseudonymverify` nên **không** với tới được phần nội bộ).
 - **Không trạng thái toàn cục:** mọi cấu hình nhận qua tham số (`KeyProvider`, `SparkConf`). Chỗ duy nhất đọc `SparkEnv` là
   `PseudonymExtension()` — vì Spark tự khởi tạo extension bằng constructor không tham số.
 - **Lỗi có kiểu:** mọi lỗi kế thừa `PseudonymException` (sealed, là `IllegalArgumentException`), không bao giờ chứa khoá/giá trị gốc.
@@ -344,8 +344,8 @@ Mục tiêu coverage ≥ 80%, chạy bằng `scalatest-maven-plugin` đã có tr
 - Executor **bắt buộc** có `key-prefix-lib.jar` + `pseudonym-udf.jar` trên `spark.jars` (UDF thật,
   giống `cdr-crypto-udf`). Chế độ `MAPPING` cần thêm `delta-spark` trên classpath.
 - Docker: thêm target vào `Dockerfile` (cùng cách làm của lib crypto). `spark-app` **không** nhúng lib này.
-- Manifest mẫu `pseudonym-verify-app/k8s/*.yaml` (nạp 2 jar qua `spark.jars`) + mẫu Secret khoá
-  `pseudonym-verify-app/k8s/pseudonym-keys-secret.yaml`; `Dockerfile.jar-carrier` mang `pseudonym-udf.jar` vào prod.
+- Manifest mẫu `pseudonymize-table-app/k8s/*.yaml` (nạp 2 jar qua `spark.jars`) + mẫu Secret khoá
+  `pseudonymize-table-app/k8s/pseudonym-keys-secret.yaml`; `Dockerfile.jar-carrier` mang `pseudonym-udf.jar` vào prod.
 - Chế độ `MAPPING` cần session có Delta (`spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension`,
   `spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog`).
 
@@ -372,8 +372,8 @@ Mục tiêu coverage ≥ 80%, chạy bằng `scalatest-maven-plugin` đã có tr
 7. `PseudonymExtension`, `PseudonymRevealExtension` + spec.
 8. `Reidentifier` + spec (luồng Viettel++).
 9. Dockerfile target + manifest mẫu.
-10. Chạy `pseudonym-verify-app` (mặc định kiểm `HASH`, `ENCRYPT`; thêm `MAPPING` vào `PSEUDO_MODES`
-    nếu định dùng chế độ này) → verdict `PASS`, rồi mới dùng trên dữ liệu thật.
+10. Chạy `pseudonymize-table-app` rồi `pseudonym-verify-utils` (nguồn ↔ đích, đúng chế độ định dùng) → `PASS`,
+    rồi mới dùng trên dữ liệu thật.
 
 ## 11. Câu hỏi cần chốt
 

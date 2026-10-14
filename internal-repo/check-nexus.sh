@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kiểm tra Nexus nội bộ có đủ artifact để build pseudonym-udf / pseudonymize-table-app / pseudonym-verify-app KHÔNG,
+# Kiểm tra Nexus nội bộ có đủ artifact để build pseudonym-udf / pseudonymize-table-app / pseudonym-verify-utils KHÔNG,
 # TRƯỚC khi chạy mvn (lỗi thiếu artifact của Maven khá khó đọc khi có mirror).
 #
 #   internal-repo/check-nexus.sh                                   # dùng Nexus mặc định của công ty
@@ -20,7 +20,7 @@ AUTH=()
 
 # group:artifact:version  (version khớp pom.xml gốc: spark 3.5.1, scala 2.12.18, delta 3.2.0, hadoop 3.3.4)
 ARTIFACTS=(
-  # --- dependency trực tiếp của pseudonym-udf / pseudonymize-table-app / pseudonym-verify-app ---
+  # --- dependency trực tiếp của pseudonym-udf / pseudonymize-table-app / pseudonym-verify-utils ---
   org.apache.spark:spark-sql_2.12:3.5.1
   org.apache.spark:spark-core_2.12:3.5.1
   org.scala-lang:scala-library:2.12.18

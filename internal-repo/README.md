@@ -96,7 +96,7 @@ Muốn kiểm tra luôn bước Metals sẽ chạy:
 ```bash
 ./mvnw -B ch.epfl.scala:bloop-maven-plugin:2.0.1:bloopInstall -DdownloadSources=true
 ls .bloop/                       # phải có key-prefix-lib.json, column-crypto-lib.json, spark-app.json,
-                                 # hdfs-load-stress-test.json, pseudonym-udf.json, pseudonym-verify-app.json, pseudonymize-table-app.json
+                                 # hdfs-load-stress-test.json, pseudonym-udf.json, pseudonym-verify-utils.json, pseudonymize-table-app.json
 ```
 
 Nếu Nexus không có version `2.0.1` của plugin, xem các version đang có tại
@@ -127,7 +127,7 @@ Sau đó trong VS Code:
    grep -n -i "maven\|mvn\|bloop\|ERROR" .metals/metals.log | grep -v "no build target\|empty definition" | tail -60
    ```
 
-## Build module khử định danh (`pseudonym-udf`, `pseudonymize-table-app`, `pseudonym-verify-app`)
+## Build module khử định danh (`pseudonym-udf`, `pseudonymize-table-app`, `pseudonym-verify-utils`)
 
 **Không cần file cấu hình mới.** `settings.xml` (mirror `*` → Nexus) ở Bước 1 là đủ: ba module này không dùng artifact
 bên thứ ba nào mà `spark-app` / `column-crypto-lib` / `key-prefix-lib` chưa dùng (Tink 1.9.0, snakeyaml 2.2, Delta 3.2.0,
@@ -211,13 +211,13 @@ với cả `maven-deploy-plugin` 2.x (Maven 3.8) lẫn 3.x (Maven 3.9).
 - **Cache đi theo URL repo.** Lần build đầu trên máy công ty tải lại toàn bộ dependency từ Nexus.
 - **`maven-public` phải proxy Maven Central.** Mọi dependency và plugin của project (kể cả
   `bloop-maven-plugin`) đều có trên Central.
-- **Module `pseudonym-udf` / `pseudonym-verify-app` / `pseudonymize-table-app`** (bài toán 4) không cần file riêng trong thư mục này.
+- **Module `pseudonym-udf` / `pseudonym-verify-utils` / `pseudonymize-table-app`** (bài toán 4) không cần file riêng trong thư mục này.
   Lý do: mọi dependency của 2 module đều có trên Maven Central, nên `maven-public` proxy được:
   - `com.google.crypto.tink:tink:1.9.0`: đúng bản Spark 3.5.1 ship sẵn, khai `provided` và loại hết dependency bắc cầu.
   - `snakeyaml` 2.2 (`provided`).
   - `delta-spark` 3.2.0 (trùng `spark-app`).
 
-  `pseudonym-verify-app/Dockerfile` và `pseudonymize-table-app/Dockerfile` cũng không chạy Maven, chỉ COPY 3 jar đã
+  `pseudonymize-table-app/Dockerfile` cũng không chạy Maven (`pseudonym-verify-utils` không có Dockerfile), chỉ COPY 3 jar đã
   build: build context là **gốc repo**, `docker build -f <module>/Dockerfile .`. Base image vẫn là `apache/spark:3.5.1-scala2.12-java11-ubuntu`,
   nên cùng lưu ý registry như dòng dưới.
 - **Docker:** các `Dockerfile` không chạy Maven (jar được build sẵn ở ngoài), nên không bị ảnh hưởng.

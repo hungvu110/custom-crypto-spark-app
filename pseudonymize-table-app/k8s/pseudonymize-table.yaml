@@ -53,9 +53,19 @@ spec:
         value: crm
       - name: TABLE_NAME
         value: subscriber
-      # Cột cần khử định danh, phân cách bằng dấu phẩy. Cột kiểu số sẽ thành STRING ở bảng đích.
+      # Cột cần khử định danh, phân cách bằng dấu phẩy; mỗi cột có thể kèm chế độ riêng (cột:MODE), vd isdn:HASH,imei:ENCRYPT.
+      # Cột kiểu số sẽ thành STRING ở bảng đích.
       - name: PSEUDO_COLUMNS
         value: isdn,imei
+      # ---- Hoặc đọc FILE/THƯ MỤC thay cho bảng (bỏ DB_NAME/TABLE_NAME; bắt buộc OUTPUT_DB + OUTPUT_TABLE) ----
+      # - name: INPUT_PATH
+      #   value: /landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/
+      # - name: INPUT_FORMAT          # parquet | orc | avro | json | delta | csv | tsv | txt | text
+      #   value: txt
+      # - name: INPUT_OPTION_delimiter  # option của Spark reader: INPUT_OPTION_<tên>
+      #   value: "|"
+      # - name: INPUT_SCHEMA          # DDL; không có thì csv/txt đặt tên cột _c0,_c1,...
+      #   value: "isdn STRING, imei STRING, amount DOUBLE"
       # HASH (mặc định, một chiều) | ENCRYPT (giải mã lại được) | MAPPING (bảng ánh xạ, cần MAPPING_TABLE_PATH).
       - name: PSEUDO_MODE
         value: HASH

@@ -21,7 +21,7 @@
   <dependencies>
     <!--
       Lib giả danh + hạ tầng lấy khoá: "provided" — KHÔNG shade vào fat jar. Image copy 2 jar này vào /opt/app và
-      manifest nạp qua spark.jars (UDF thật nên executor cũng cần), giống pseudonym-verify-app.
+      manifest nạp qua spark.jars (UDF thật nên executor cũng cần), giống pseudonym-udf trong các app khác.
     -->
     <dependency>
       <groupId>vai.lakehouse</groupId>

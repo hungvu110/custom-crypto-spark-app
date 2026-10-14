@@ -7,7 +7,7 @@ import org.apache.spark.sql.types.StringType
 import vai.lakehouse.pseudonym.{ConfigurationException, PseudonymMode}
 import vai.lakehouse.pseudonym.policy.{ColumnRule, TablePolicy}
 import vai.lakehouse.pseudonym.spark.{PseudonymConf, Pseudonymizer}
-import vai.lakehouse.pseudonymizetable.config.JobConfig
+import vai.lakehouse.pseudonymizetable.config.{FileInput, JobConfig, TableInput}
 import vai.lakehouse.pseudonymizetable.logging.Log
 
 /** Kết quả đối chiếu 1 cột đã giả danh giữa bảng nguồn và bảng đích. */
@@ -46,22 +46,19 @@ object PseudonymizeTableJob {
   /** Dựng `Pseudonymizer` từ SparkConf + env; `MAPPING_TABLE_PATH` (nếu có) ưu tiên hơn `spark.pseudonym.mapping.path`. */
   def pseudonymizerFor(cfg: JobConfig, conf: SparkConf): Pseudonymizer = {
     val mappingPath = cfg.mappingTablePath.orElse(PseudonymConf.mappingPath(conf))
-    if (cfg.mode == PseudonymMode.Mapping && mappingPath.isEmpty) {
+    if (cfg.modes.contains(PseudonymMode.Mapping) && mappingPath.isEmpty) {
       throw new ConfigurationException(
-        s"PSEUDO_MODE=MAPPING cần đường dẫn bảng ánh xạ: đặt MAPPING_TABLE_PATH hoặc ${PseudonymConf.MappingPathKey}")
+        s"Có cột dùng MAPPING cần đường dẫn bảng ánh xạ: đặt MAPPING_TABLE_PATH hoặc ${PseudonymConf.MappingPathKey}")
     }
     new Pseudonymizer(PseudonymConf.keyProvider(conf), mappingPath)
   }
 
   def run(spark: SparkSession, cfg: JobConfig): JobResult = {
     val pseudonymizer = pseudonymizerFor(cfg, spark.sparkContext.getConf)
-    val policy = TablePolicy(cfg.source, cfg.columns.map(c => ColumnRule(c, cfg.mode)))
+    val policy = TablePolicy(cfg.source, cfg.pseudoColumns.map(c => ColumnRule(c.name, c.mode)))
 
-    Log.section("3. ĐỌC BẢNG NGUỒN")
-    if (!spark.catalog.tableExists(cfg.dbName, cfg.tableName)) {
-      throw new IllegalArgumentException(s"Bảng nguồn không tồn tại: ${cfg.source}")
-    }
-    val source = spark.table(quoted(cfg.dbName, cfg.tableName))
+    Log.section("3. ĐỌC NGUỒN")
+    val source = readSource(spark, cfg)
     Log.kv("source", cfg.source)
     Log.kv("schema", source.schema.fieldNames.mkString(", "))
 
@@ -70,7 +67,7 @@ object PseudonymizeTableJob {
 
     Log.section("4. GHI BẢNG ĐÍCH")
     Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
-    Log.kv("pseudonymized columns", s"${cfg.columns.mkString(", ")} (${cfg.mode.name})")
+    Log.kv("pseudonymized columns", cfg.pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "))
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
     val start = System.nanoTime()
     pseudonymized.write.format(cfg.outputFormat.sparkFormat).mode(cfg.outputMode)
@@ -82,6 +79,19 @@ object PseudonymizeTableJob {
       Log.info("VERIFY=false: bỏ qua đối chiếu nguồn/đích")
       JobResult(-1, -1, exact = false, Nil)
     }
+  }
+
+  /** Bảng trong catalog, hoặc file/thư mục theo `INPUT_FORMAT` (+ `INPUT_SCHEMA`, `INPUT_OPTION_*`). Chỉ đọc. */
+  private def readSource(spark: SparkSession, cfg: JobConfig): DataFrame = cfg.input match {
+    case TableInput(db, table) =>
+      if (!spark.catalog.tableExists(db, table)) {
+        throw new IllegalArgumentException(s"Bảng nguồn không tồn tại: ${cfg.source}")
+      }
+      spark.table(quoted(db, table))
+    case FileInput(path, format, schema, options) =>
+      val reader = spark.read.format(format.sparkFormat).options(format.defaults ++ options)
+      schema.foreach(reader.schema)
+      reader.load(path)
   }
 
   private def verify(spark: SparkSession, cfg: JobConfig, source: DataFrame): JobResult = {

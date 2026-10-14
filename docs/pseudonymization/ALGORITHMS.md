@@ -2,7 +2,7 @@
 
 Tài liệu này giải thích **từng thuật toán hoạt động ra sao** bằng lời thường và ví dụ cụ thể. Không cần biết mật mã học.
 Muốn biết thiết kế/quyết định kỹ thuật chi tiết: [`LIB_PLAN.md`](./LIB_PLAN.md). Muốn biết cách đo "khử định danh
-thành công chưa": [`VERIFY_APP_PLAN.md`](./VERIFY_APP_PLAN.md).
+thành công chưa": [`pseudonym-verify-utils/README.md`](../../pseudonym-verify-utils/README.md).
 
 > **Về các giá trị trong tài liệu.** Mọi chuỗi `k1_...` và `e1_...` bên dưới là **kết quả thật** tính bằng đúng code của
 > lib, với khoá **chỉ để minh hoạ** (HMAC: các byte `00 01 02 ... 1f`; AES-SIV: các byte `00 01 ... 3f`). Khoá thật sinh
@@ -362,12 +362,13 @@ tra điều này khi nạp policy).
 
 ## 12. Tự quan sát trên máy bạn
 
+Tạo bảng mẫu bằng SQL ở [`pseudonymize-table-app/README.md`](../../pseudonymize-table-app/README.md), chạy app khử định danh, rồi
+kiểm bằng [`pseudonym-verify-utils`](../../pseudonym-verify-utils/README.md):
+
 ```bash
-# Sinh dữ liệu giả, giả danh cả 3 chế độ, in dữ liệu gốc và dữ liệu sau giả danh rồi mới tới các check
-PSEUDO_MODES=HASH,ENCRYPT,MAPPING PREVIEW_ROWS=5 pseudonym-verify-app/scripts/run-local.sh
-less /tmp/pseudonym-verify/<RUN_ID>/preview.txt     # so từng dòng gốc với dòng giả danh
+spark-submit --class vai.lakehouse.pseudonymverify.app.PseudonymValidateApp \
+  --jars pseudonym-udf.jar,key-prefix-lib.jar pseudonym-verify-utils.jar crm.subscriber crm.subscriber_pseudonymized isdn,imei HASH
 ```
 
-Trong `preview.txt` bạn sẽ thấy đúng các hiện tượng ở tài liệu này: `customer_id` đổi tên thành `pseudonym_id`;
-`isdn`/`imei` thành `k1_...` (HASH), `e1_...` (ENCRYPT), `t_...` (MAPPING); `NULL` vẫn `NULL`; các cột không định danh
-giữ nguyên. Chi tiết cách chạy: [`pseudonym-verify-app/README.md`](../../pseudonym-verify-app/README.md).
+Bạn sẽ thấy đúng các hiện tượng ở tài liệu này: `isdn`/`imei` thành `k1_...` (HASH), `e1_...` (ENCRYPT), `t_...` (MAPPING); `NULL` vẫn `NULL`;
+các cột không định danh giữ nguyên; không còn giá trị gốc nào trong bảng đích.

@@ -25,8 +25,8 @@
                             SQL function và DataFrame API — xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
       - pseudonym-udf     : giả danh hoá cột định danh (HASH / ENCRYPT / MAPPING) qua DataFrame API + SQL function —
                             xem docs/pseudonymization/LIB_PLAN.md.
-      - pseudonym-verify-app : Spark job sinh dữ liệu có đáp án, áp pseudonym-udf và kiểm chứng khử định danh
-                            (verdict + report.json) — xem docs/pseudonymization/VERIFY_APP_PLAN.md.
+      - pseudonym-verify-utils : utils nhỏ (API + CLI) so bảng nguồn với bảng đã khử định danh: số dòng, null, 1-1,
+                            định dạng, không sót giá trị gốc — xem pseudonym-verify-utils/README.md.
       - pseudonymize-table-app : Spark job khử định danh 1 bảng thật (DB_NAME, TABLE_NAME, PSEUDO_COLUMNS) bằng
                             pseudonym-udf -> bảng đích — xem pseudonymize-table-app/README.md.
   </description>
@@ -37,7 +37,7 @@
     <module>spark-app</module>
     <module>hdfs-load-stress-test</module>
     <module>pseudonym-udf</module>
-    <module>pseudonym-verify-app</module>
+    <module>pseudonym-verify-utils</module>
     <module>pseudonymize-table-app</module>
   </modules>
 
