@@ -66,6 +66,10 @@ spec:
         value: "false"
       - name: INPUT_OPTION_nullValue
         value: "\\N"
+      # File lỗi trong thư mục: fail (mặc định, job lỗi thì log liệt kê file lỗi) | report (chỉ quét, không ghi) | skip (bỏ file lỗi, exit 4).
+      # Chạy report một lần trên thư mục mới để biết có file hỏng không.
+      # - name: INPUT_BAD_FILES
+      #   value: report
       # Không khai INPUT_SCHEMA (bảng có 447 cột): cột đặt tên theo vị trí _c0.._c446 (vị trí 0 = isdn, 4 = customer_id...).
 
       # ================= CỘT CẦN KHỬ ĐỊNH DANH =================

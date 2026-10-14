@@ -7,7 +7,9 @@ import org.apache.spark.sql.types.StringType
 import vai.lakehouse.pseudonym.{ConfigurationException, PseudonymMode}
 import vai.lakehouse.pseudonym.policy.{ColumnRule, TablePolicy}
 import vai.lakehouse.pseudonym.spark.{PseudonymConf, Pseudonymizer}
-import vai.lakehouse.pseudonymizetable.config.{FileInput, JobConfig, TableInput}
+import scala.util.control.NonFatal
+
+import vai.lakehouse.pseudonymizetable.config.{BadFilePolicy, FileInput, JobConfig, TableInput}
 import vai.lakehouse.pseudonymizetable.logging.Log
 
 /** Kết quả đối chiếu 1 cột đã giả danh giữa bảng nguồn và bảng đích. */
@@ -29,7 +31,8 @@ final case class ColumnVerification(
 }
 
 /** `exact` = bảng đích được thay thế hoàn toàn (overwrite) nên so khớp tuyệt đối với nguồn. */
-final case class JobResult(rowsSource: Long, rowsTarget: Long, exact: Boolean, verifications: Seq[ColumnVerification]) {
+final case class JobResult(rowsSource: Long, rowsTarget: Long, exact: Boolean, verifications: Seq[ColumnVerification],
+                           badFiles: Seq[BadFile] = Nil, written: Boolean = true) {
   def verified: Boolean =
     (if (exact) rowsSource == rowsTarget else rowsTarget >= rowsSource) && verifications.forall(_.passed(exact))
 }
@@ -53,13 +56,43 @@ object PseudonymizeTableJob {
     new Pseudonymizer(PseudonymConf.keyProvider(conf), mappingPath)
   }
 
-  def run(spark: SparkSession, cfg: JobConfig): JobResult = {
+  /**
+   * Chạy job. `INPUT_BAD_FILES=fail` (mặc định) mà job lỗi thì quét từng file của `INPUT_PATH` để chỉ ra file lỗi rồi ném
+   * lại lỗi gốc; `skip`/`report` quét TRƯỚC (xem [[readSource]]).
+   */
+  def run(spark: SparkSession, cfg: JobConfig): JobResult =
+    try doRun(spark, cfg)
+    catch {
+      case NonFatal(e) =>
+        (cfg.input, cfg.badFiles) match {
+          case (in: FileInput, BadFilePolicy.Fail) => diagnose(spark, in, cfg.checkParallelism)
+          case _ =>
+        }
+        throw e
+    }
+
+  private def diagnose(spark: SparkSession, input: FileInput, parallelism: Int): Unit =
+    try {
+      Log.section("CHẨN ĐOÁN: QUÉT TỪNG FILE CỦA " + input.path)
+      val scan = FileScanner.scan(spark, input, parallelism)
+      FileScanner.log(scan)
+      if (scan.bad.isEmpty) Log.info("Mọi file đọc được riêng lẻ: lỗi không nằm ở việc đọc file (kiểm tra bước ghi/khoá).")
+      else Log.info("Chạy lại với INPUT_BAD_FILES=skip để bỏ các file này, hoặc sửa/loại chúng khỏi INPUT_PATH.")
+    } catch {
+      case NonFatal(e) => Log.warn(s"Không quét được file để chẩn đoán: ${e.getMessage}")
+    }
+
+  private def doRun(spark: SparkSession, cfg: JobConfig): JobResult = {
     val pseudonymizer = pseudonymizerFor(cfg, spark.sparkContext.getConf)
     val policy = TablePolicy(cfg.source, cfg.pseudoColumns.map(c => ColumnRule(c.name, c.mode)))
 
     Log.section("3. ĐỌC NGUỒN")
-    val source = readSource(spark, cfg)
     Log.kv("source", cfg.source)
+    val (source, scan) = readSource(spark, cfg)
+    if (cfg.badFiles == BadFilePolicy.Report) {
+      Log.info("INPUT_BAD_FILES=report: chỉ quét, KHÔNG ghi bảng đích")
+      return JobResult(-1, -1, exact = false, Nil, scan.map(_.bad).getOrElse(Nil), written = false)
+    }
     Log.kv("schema", source.schema.fieldNames.mkString(", "))
 
     // Dựng DataFrame giả danh TRƯỚC mọi thao tác ghi: cột sai/khoá thiếu thì fail sớm, chưa chạm bảng đích.
@@ -75,23 +108,31 @@ object PseudonymizeTableJob {
     Log.elapsed("write duration", start)
 
     Log.section("5. ĐỐI CHIẾU")
-    if (cfg.verify) verify(spark, cfg, source) else {
+    val result = if (cfg.verify) verify(spark, cfg, source) else {
       Log.info("VERIFY=false: bỏ qua đối chiếu nguồn/đích")
       JobResult(-1, -1, exact = false, Nil)
     }
+    result.copy(badFiles = scan.map(_.bad).getOrElse(Nil))
   }
 
   /** Bảng trong catalog, hoặc file/thư mục theo `INPUT_FORMAT` (+ `INPUT_SCHEMA`, `INPUT_OPTION_*`). Chỉ đọc. */
-  private def readSource(spark: SparkSession, cfg: JobConfig): DataFrame = cfg.input match {
+  private def readSource(spark: SparkSession, cfg: JobConfig): (DataFrame, Option[FileScan]) = cfg.input match {
     case TableInput(db, table) =>
       if (!spark.catalog.tableExists(db, table)) {
         throw new IllegalArgumentException(s"Bảng nguồn không tồn tại: ${cfg.source}")
       }
-      spark.table(quoted(db, table))
-    case FileInput(path, format, schema, options) =>
-      val reader = spark.read.format(format.sparkFormat).options(format.defaults ++ options)
-      schema.foreach(reader.schema)
-      reader.load(path)
+      (spark.table(quoted(db, table)), None)
+    case input: FileInput if cfg.badFiles == BadFilePolicy.Fail =>
+      (FileScanner.reader(spark, input).load(input.path), None)
+    case input: FileInput =>
+      // skip/report: quét từng file TRƯỚC; skip chỉ đọc các file tốt, báo file lỗi ở cuối (exit 4).
+      val scan = FileScanner.scan(spark, input, cfg.checkParallelism)
+      FileScanner.log(scan)
+      if (cfg.badFiles == BadFilePolicy.Report) (spark.emptyDataFrame, Some(scan))
+      else {
+        if (scan.good.isEmpty) throw new IllegalStateException(s"Không có file nào đọc được trong ${input.path}")
+        (FileScanner.reader(spark, input).load(scan.good: _*), Some(scan))
+      }
   }
 
   private def verify(spark: SparkSession, cfg: JobConfig, source: DataFrame): JobResult = {

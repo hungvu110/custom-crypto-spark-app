@@ -9,7 +9,8 @@ import vai.lakehouse.pseudonymizetable.logging.Log
  * Entry point: khử định danh 1 bảng (`DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS`) -> bảng đích.
  *
  * Exit code: 0 = xong và đối chiếu đạt, 1 = lỗi khi chạy, 2 = sai cấu hình, 3 = đã ghi bảng đích nhưng đối chiếu
- * nguồn/đích KHÔNG đạt (không dùng bảng đích). `main` chỉ đổi kết quả của [[execute]] thành exit code.
+ * nguồn/đích KHÔNG đạt (không dùng bảng đích), 4 = có file nguồn lỗi (`INPUT_BAD_FILES=skip`: đã xử lý phần còn lại;
+ * `report`: chỉ quét). `main` chỉ đổi kết quả của [[execute]] thành exit code.
  */
 object PseudonymizeTableApp {
 
@@ -17,6 +18,7 @@ object PseudonymizeTableApp {
   val ExitRuntimeError = 1
   val ExitConfigError = 2
   val ExitVerificationFailed = 3
+  val ExitBadFiles = 4
 
   def main(args: Array[String]): Unit = sys.exit(execute(sys.env))
 
@@ -56,9 +58,15 @@ object PseudonymizeTableApp {
       Log.kv("master", spark.sparkContext.master)
       try {
         val result = PseudonymizeTableJob.run(spark, cfg)
-        if (!cfg.verify || result.verified) {
-          Log.banner("JOB SUCCEEDED")
-          ExitOk
+        if (!result.written) {
+          if (result.badFiles.isEmpty) { Log.banner("SCAN OK — không có file lỗi"); ExitOk }
+          else { Log.banner(s"SCAN: ${result.badFiles.size} FILE LỖI"); ExitBadFiles }
+        } else if (!cfg.verify || result.verified) {
+          if (result.badFiles.isEmpty) { Log.banner("JOB SUCCEEDED"); ExitOk }
+          else {
+            Log.banner(s"JOB SUCCEEDED NHƯNG BỎ QUA ${result.badFiles.size} FILE LỖI (INPUT_BAD_FILES=skip)")
+            ExitBadFiles
+          }
         } else {
           Log.banner("JOB WRITTEN BUT VERIFICATION FAILED — KHÔNG dùng bảng đích " + cfg.target)
           ExitVerificationFailed

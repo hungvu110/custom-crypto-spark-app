@@ -109,4 +109,14 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors.exists(_.contains("chế độ không hợp lệ")) shouldBe true
     errors.exists(_.contains("cột:MODE")) shouldBe true
   }
+
+  it should "nhận INPUT_BAD_FILES chỉ với nguồn file" in {
+    val cfg = JobConfig.fromEnv(file ++ Map("INPUT_BAD_FILES" -> "skip", "INPUT_CHECK_PARALLELISM" -> "8")).toOption.get
+    cfg.badFiles shouldBe BadFilePolicy.Skip
+    cfg.checkParallelism shouldBe 8
+    JobConfig.fromEnv(file).toOption.get.badFiles shouldBe BadFilePolicy.Fail
+
+    JobConfig.fromEnv(base + ("INPUT_BAD_FILES" -> "skip")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
+    JobConfig.fromEnv(file + ("INPUT_BAD_FILES" -> "ignore")).left.toOption.get.head should include("INPUT_BAD_FILES='ignore'")
+  }
 }

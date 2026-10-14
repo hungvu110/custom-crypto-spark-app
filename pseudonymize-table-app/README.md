@@ -71,6 +71,8 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 | `INPUT_FORMAT` | (bắt buộc khi có `INPUT_PATH`) | `parquet` / `orc` / `avro` / `json` / `delta` / `csv` / `tsv` / `txt` (= `csv`, text phân tách ký tự) / `text` (mỗi dòng 1 cột `value`) |
 | `INPUT_SCHEMA` | — | Schema DDL cho file không có schema sẵn, vd `isdn STRING, imei STRING, amount DOUBLE`. Không có thì csv/tsv/txt đặt tên cột `_c0, _c1, …` |
 | `INPUT_OPTION_<tên>` | — | Option của Spark reader, vd `INPUT_OPTION_delimiter=\|`, `INPUT_OPTION_header=true`, `INPUT_OPTION_encoding=UTF-8` |
+| `INPUT_BAD_FILES` | `fail` | Chỉ với `INPUT_PATH`. File không đọc được: `fail` dừng job rồi **liệt kê file lỗi**; `skip` bỏ file lỗi, xử lý phần còn lại, exit `4`; `report` chỉ quét và liệt kê, không ghi gì (xem 3.7) |
+| `INPUT_CHECK_PARALLELISM` | `4` | Số file quét song song khi tìm file lỗi (1..64) |
 | `PSEUDO_COLUMNS` | (bắt buộc) | Cột cần khử định danh, phân cách bằng dấu phẩy, vd `isdn,imei`. Mỗi cột có thể kèm chế độ riêng: `isdn:HASH,imei:ENCRYPT` (xem 3.6). Không lặp, phải có trong nguồn |
 | `PSEUDO_MODE` | `HASH` | `HASH` (một chiều) / `ENCRYPT` (giải mã lại được) / `MAPPING` (bảng ánh xạ). Chế độ **mặc định** cho cột trong `PSEUDO_COLUMNS` không ghi `:MODE` |
 | `OUTPUT_DB` | `DB_NAME` (nguồn bảng); **bắt buộc** với nguồn file | Database bảng đích (tự `CREATE DATABASE IF NOT EXISTS`) |
@@ -159,6 +161,20 @@ Lưu ý:
 
 Chọn chế độ theo nhu cầu từng cột: cột chỉ để nối/đếm (`isdn`) → `HASH`; cột cần khôi phục sau này theo quy trình được duyệt
 (`imei`) → `ENCRYPT`. Xem [ALGORITHMS.md](../docs/pseudonymization/ALGORITHMS.md).
+
+### 3.7. Tìm file lỗi trong thư mục
+
+Một file hỏng (CSV dính dòng, parquet cụt, lỗi HDFS...) làm cả job fail mà log không nói là file nào. Với `INPUT_PATH`:
+
+| `INPUT_BAD_FILES` | Hành vi | Exit |
+| --- | --- | --- |
+| `fail` (mặc định) | Chạy bình thường; **nếu job lỗi** thì quét từng file bằng đúng cấu hình reader, log `FILE LỖI <path> — <nguyên nhân>` | 1 |
+| `report` | Chỉ quét, liệt kê file lỗi, **không ghi** bảng đích. Dùng để kiểm tra một thư mục trước khi chạy thật | 0 sạch / 4 có lỗi |
+| `skip` | Quét trước, chỉ xử lý các file tốt, cuối job liệt kê file bị bỏ | 4 (đã xử lý phần còn lại) |
+
+Mỗi file được đọc riêng và ép parse mọi cột, nên tốn thêm một lượt đọc (chạy song song `INPUT_CHECK_PARALLELISM`). `skip`
+**mất dữ liệu của file lỗi** — đừng dùng cho dữ liệu cần đủ; exit `4` để người vận hành không bỏ sót. Với `skip`, dữ liệu
+đọc theo danh sách file tốt nên cột partition suy ra từ path cần `INPUT_OPTION_basePath`.
 
 ## 4. Env của `pseudonym-udf` cần truyền vào
 
@@ -308,6 +324,7 @@ Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** tr
 | Code | Nghĩa |
 | --- | --- |
 | 0 | Xong; đối chiếu đạt (hoặc `VERIFY=false`) |
+| 4 | Có file nguồn lỗi: `INPUT_BAD_FILES=skip` đã xử lý phần còn lại, hoặc `report` tìm thấy file lỗi |
 | 1 | Lỗi khi chạy: bảng nguồn không tồn tại, cột không có trong bảng, khoá/Vault/DAK lỗi, lỗi HDFS... (kèm cây nguyên nhân) |
 | 2 | Sai cấu hình biến môi trường (mọi lỗi in một lượt, tiền tố `CONFIG`) |
 | 3 | Đã ghi bảng đích nhưng đối chiếu **không đạt** |

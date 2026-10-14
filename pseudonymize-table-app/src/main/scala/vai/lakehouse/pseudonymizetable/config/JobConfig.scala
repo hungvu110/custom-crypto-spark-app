@@ -41,6 +41,22 @@ object InputFormat {
   }
 }
 
+/**
+ * Cách xử lý file đầu vào không đọc được (`INPUT_BAD_FILES`): `fail` = dừng, rồi liệt kê file lỗi; `skip` = bỏ file lỗi,
+ * xử lý phần còn lại, kết thúc exit 4; `report` = chỉ quét và liệt kê file lỗi, không ghi gì.
+ */
+sealed abstract class BadFilePolicy(val name: String)
+
+object BadFilePolicy {
+  case object Fail   extends BadFilePolicy("fail")
+  case object Skip   extends BadFilePolicy("skip")
+  case object Report extends BadFilePolicy("report")
+
+  val All: Seq[BadFilePolicy] = Seq(Fail, Skip, Report)
+
+  def parse(raw: String): Option[BadFilePolicy] = All.find(_.name == raw.trim.toLowerCase(Locale.ROOT))
+}
+
 /** Nguồn dữ liệu: bảng trong catalog hoặc thư mục/file trên HDFS (hay file system bất kỳ Spark đọc được). */
 sealed trait InputSource { def describe: String }
 
@@ -75,7 +91,9 @@ final case class JobConfig(
     mappingTablePath: Option[String],
     warehousePath: Option[String],
     enableHiveSupport: Boolean,
-    verify: Boolean) {
+    verify: Boolean,
+    badFiles: BadFilePolicy = BadFilePolicy.Fail,
+    checkParallelism: Int = 4) {
 
   def source: String = input.describe
 
@@ -98,6 +116,7 @@ final case class JobConfig(
     "MAPPING_TABLE_PATH"  -> mappingTablePath.getOrElse("(spark.pseudonym.mapping.path hoặc không dùng)"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(mặc định của Spark/metastore)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString,
+    "INPUT_BAD_FILES"     -> badFiles.name,
     "VERIFY"              -> verify.toString)
 }
 
@@ -179,9 +198,22 @@ object JobConfig {
       errors += s"WAREHOUSE_PATH='$v': phải là URI tuyệt đối có scheme, vd hdfs://<namenode>:8020/<path>"
     }
 
+    val badFiles = raw("INPUT_BAD_FILES").map(v => BadFilePolicy.parse(v).getOrElse {
+      errors += s"INPUT_BAD_FILES='$v': phải là ${BadFilePolicy.All.map(_.name).mkString(" / ")}"
+      BadFilePolicy.Fail
+    }).getOrElse(BadFilePolicy.Fail)
+    val parallelism = raw("INPUT_CHECK_PARALLELISM").map(v => Try(v.toInt).toOption.filter(n => n >= 1 && n <= 64).getOrElse {
+      errors += s"INPUT_CHECK_PARALLELISM='$v': phải là số nguyên 1..64"
+      4
+    }).getOrElse(4)
+    if (!input.isInstanceOf[FileInput] && (raw("INPUT_BAD_FILES").isDefined || raw("INPUT_CHECK_PARALLELISM").isDefined)) {
+      errors += "INPUT_BAD_FILES/INPUT_CHECK_PARALLELISM: chỉ dùng cùng INPUT_PATH"
+    }
+
     if (errors.nonEmpty) Left(errors.toList)
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
-      outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true)))
+      outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true),
+      badFiles, parallelism))
   }
 
   private val InputOptionPrefix = "INPUT_OPTION_"

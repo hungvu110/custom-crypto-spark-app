@@ -188,4 +188,41 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     runFile("INPUT_PATH" -> workDir.resolve("in_parquet").toString, "INPUT_FORMAT" -> "parquet", "PSEUDO_COLUMNS" -> "cot_la",
       "OUTPUT_TABLE" -> "f2") shouldBe PseudonymizeTableApp.ExitRuntimeError
   }
+
+  /** Thư mục có 2 file tốt và 1 file có dòng 25 000 trường (vượt maxColumns=20480 của parser CSV). */
+  private def folderWithBadFile(name: String) = {
+    val dir = Files.createDirectory(workDir.resolve(name))
+    Files.write(dir.resolve("good-1.txt"), "84903217465|a|10\n84903217466|b|20\n".getBytes(UTF_8))
+    Files.write(dir.resolve("good-2.txt"), "84903217467|c|30\n".getBytes(UTF_8))
+    Files.write(dir.resolve("bad.txt"), (Seq.fill(25000)("x").mkString("|") + "\n").getBytes(UTF_8))
+    dir
+  }
+
+  private def badFileEnv(dir: java.nio.file.Path, table: String, policy: String) = Seq("INPUT_PATH" -> dir.toString,
+    "INPUT_FORMAT" -> "txt", "INPUT_OPTION_delimiter" -> "|", "PSEUDO_COLUMNS" -> "_c0", "OUTPUT_TABLE" -> table,
+    "INPUT_BAD_FILES" -> policy)
+
+  it should "INPUT_BAD_FILES=fail (mặc định): job exit 1 và không tạo bảng đích" in {
+    val dir = folderWithBadFile("bad_fail")
+
+    runFile(badFileEnv(dir, "bad_fail", "fail"): _*) shouldBe PseudonymizeTableApp.ExitRuntimeError
+    spark.catalog.tableExists("landing", "bad_fail") shouldBe false
+  }
+
+  it should "INPUT_BAD_FILES=skip: xử lý file tốt, bỏ file lỗi, exit 4" in {
+    val dir = folderWithBadFile("bad_skip")
+
+    runFile(badFileEnv(dir, "bad_skip", "skip"): _*) shouldBe PseudonymizeTableApp.ExitBadFiles
+
+    spark.table("landing.bad_skip").count() shouldBe 3L
+  }
+
+  it should "INPUT_BAD_FILES=report: chỉ quét (exit 4 nếu có file lỗi, exit 0 nếu sạch), không ghi bảng" in {
+    runFile(badFileEnv(folderWithBadFile("bad_report"), "bad_report", "report"): _*) shouldBe PseudonymizeTableApp.ExitBadFiles
+    spark.catalog.tableExists("landing", "bad_report") shouldBe false
+
+    val clean = Files.createDirectory(workDir.resolve("clean_report"))
+    Files.write(clean.resolve("a.txt"), "84903217465|a|10\n".getBytes(UTF_8))
+    runFile(badFileEnv(clean, "clean_report", "report"): _*) shouldBe PseudonymizeTableApp.ExitOk
+  }
 }
