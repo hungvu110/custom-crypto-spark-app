@@ -8,8 +8,8 @@ Tài liệu này là plan **phía client** (`key-prefix-lib`, `spark-app`, cấu
 rollout. Đặc tả API lấy key của DAK nằm ở [DAK_API_SPEC.md](DAK_API_SPEC.md). Trao đổi với team DAK:
 [phản hồi của DAK](dak_response/PHAN-HOI-DAK.md), [phản hồi của mình](dak_response/PHAN-HOI-SQL-ENGINE.md).
 
-Tài liệu liên quan: [COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md](COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md) (cấu hình hiện tại),
-[COLUMN_CRYPTO_ARCHITECTURE.md](COLUMN_CRYPTO_ARCHITECTURE.md) (vì sao chỉ driver lấy prefix).
+Tài liệu liên quan: [COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md) (cấu hình hiện tại),
+[COLUMN_CRYPTO_ARCHITECTURE.md](../column-crypto/COLUMN_CRYPTO_ARCHITECTURE.md) (vì sao chỉ driver lấy prefix).
 
 ## 0. Các quyết định đã chốt
 
@@ -295,8 +295,8 @@ Kiểm tra cấu hình trong `PrefixSourceFactory`:
 
 ### 5.6. Thay đổi ở `spark-app` và manifest SparkApplication
 
-**Code**: [SparkApp.scala:186](../spark-app/src/main/scala/org/example/SparkApp.scala#L186) và
-[SparkApp.scala:255](../spark-app/src/main/scala/org/example/SparkApp.scala#L255) đang truyền `cfg.tableName` (một phần) vào
+**Code**: [SparkApp.scala:186](../../spark-app/src/main/scala/org/example/SparkApp.scala#L186) và
+[SparkApp.scala:255](../../spark-app/src/main/scala/org/example/SparkApp.scala#L255) đang truyền `cfg.tableName` (một phần) vào
 `CryptoStep.encrypt`/`decrypt`. Đổi thành `s"${cfg.dbName}.${cfg.tableName}".toLowerCase` (chữ thường để fallback Vault tìm
 đúng path). Cập nhật scaladoc của `CryptoStep` (tham số đầu là `'database.table'`).
 
@@ -482,7 +482,7 @@ flowchart TD
 | P2.2 | `spark-app`: truyền `db.table` chữ thường (mục 5.6) + test                                                                                                                  | Test mục 9.5 xanh                                                                    |
 | P2.3 | Manifest SparkApplication: `DAK_*`, Secret `spark-dak-client`, giữ `VAULT_*` (mục 5.6)                                                                                      | Manifest review xong                                                                 |
 | P2.4 | Engine thử và job thử trên dev, chạy checklist mục 9.6                                                                                                                      | Checklist pass                                                                       |
-| P2.5 | Cập nhật [COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md](COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md) và README: cấu hình `dak`, cú pháp `'db.table'`, xử lý sự cố, **runbook fallback thủ công** | Tài liệu được review                                                                 |
+| P2.5 | Cập nhật [COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md) và README: cấu hình `dak`, cú pháp `'db.table'`, xử lý sự cố, **runbook fallback thủ công** | Tài liệu được review                                                                 |
 | P2.6 | Build và đưa jar `key-prefix-lib` mới lên HDFS (thư mục phiên bản mới), build image `spark-app` mới                                                                         | Jar và image mới có sẵn, bản cũ còn nguyên                                           |
 
 ### Phase 3: Migration và cutover

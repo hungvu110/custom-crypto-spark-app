@@ -26,7 +26,7 @@ import vai.lakehouse.dakmock.config.DakProperties;
 import vai.lakehouse.dakmock.web.DakApiException;
 
 /**
- * Xác minh access token theo docs/DAK_API_SPEC.md mục 4:
+ * Xác minh access token theo docs/key-access/DAK_API_SPEC.md mục 4:
  * <ol>
  *   <li>Đọc {@code iss} (CHƯA tin) chỉ để tra realm trong registry — không bao giờ dựng URL từ token.</li>
  *   <li>Verify chữ ký bằng JWKS lấy từ {@code jwksUri} của registry, chỉ RS256 (header {@code jku}/{@code x5u} bị bỏ qua).</li>

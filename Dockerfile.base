@@ -4,7 +4,7 @@
 # Các app chỉ cần:   FROM <registry>/spark-base-hdfs-compat:<tag>
 # rồi COPY jar business logic của mình — KHÔNG cần đóng gói patch vào jar app,
 # không cần cấu hình shade/ServicesResourceTransformer, không cần sửa CRD.
-# Xem docs/HDFS_PATCH_AT_SCALE.md (Chiến lược B) và README.md mục 7.
+# Xem docs/hdfs-block-token/HDFS_PATCH_AT_SCALE.md (Chiến lược B) và docs/project/BUILD_AND_TEST.md (mục Build & push image).
 #
 # Build (context = thư mục gốc project, cần thấy spark-app/target/*.jar):
 #   mvn -B clean package

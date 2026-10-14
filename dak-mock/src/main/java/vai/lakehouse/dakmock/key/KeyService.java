@@ -15,7 +15,7 @@ public class KeyService {
 
   private static final Logger AUDIT = LoggerFactory.getLogger("AUDIT");
 
-  /** Response 200 của API lấy key (docs/DAK_API_SPEC.md mục 5.2). */
+  /** Response 200 của API lấy key (docs/key-access/DAK_API_SPEC.md mục 5.2). */
   public record KeyResponse(String database, String table, String keyPrefix, long keyVersion) {}
 
   private final VaultKeyReader vault;

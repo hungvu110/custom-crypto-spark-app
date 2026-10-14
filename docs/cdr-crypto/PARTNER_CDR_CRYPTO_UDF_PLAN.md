@@ -6,9 +6,9 @@ và `spark-app`, dưới dạng **UDF** — bắt buộc phải đi hướng nà
 toán của đối tác (yêu cầu từ đối tác), không được tái tạo lại bằng biểu thức built-in như
 `column_encrypt`/`column_decrypt` hiện có.
 
-Tài liệu liên quan: [COLUMN_CRYPTO_ARCHITECTURE.md](COLUMN_CRYPTO_ARCHITECTURE.md) (kiến trúc
-built-in hiện tại và lý thuyết chung về UDF), [COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md](COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md)
-(cấu hình Vault/token đang dùng, sẽ được **tái sử dụng** ở đây), [VDL - Mã hóa CDR.docx](VDL%20-%20Mã%20hóa%20CDR.docx)
+Tài liệu liên quan: [COLUMN_CRYPTO_ARCHITECTURE.md](../column-crypto/COLUMN_CRYPTO_ARCHITECTURE.md) (kiến trúc
+built-in hiện tại và lý thuyết chung về UDF), [COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md)
+(cấu hình Vault/token đang dùng, sẽ được **tái sử dụng** ở đây), [VDL - Mã hóa CDR.docx](VDL - Mã hóa CDR.docx)
 (đặc tả gốc từ đối tác).
 
 ## 0. Sự thật đã xác nhận — căn cứ để làm plan này
@@ -122,7 +122,7 @@ import javax.crypto.spec.SecretKeySpec
  *     (ENCRYPT_MODE thay DECRYPT_MODE). Đã xác nhận đúng byte-for-byte với test vector đối tác.
  *
  * keyInput = prefix + fieldValue, ghép thẳng — xem mục 0 của
- * docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md. Không tự thêm dấu phân cách nào.
+ * docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md. Không tự thêm dấu phân cách nào.
  */
 object CdrCipherCore {
 
@@ -204,7 +204,7 @@ import vai.lakehouse.keyprefix.{ChainedConfigSource, EnvConfigSource, PrefixSour
  *
  * Cấu hình Vault RIÊNG, namespace `spark.cdrcrypto.*` (KHÔNG dùng chung `spark.columncrypto.*`
  * của column_encrypt) — vì đối tác cấp prefix qua kênh/đường dẫn Vault khác với keyPrefix tự
- * quản của mình (docs/VDL - Mã hóa CDR.docx: "prefix sẽ được gửi riêng cho từng đơn vị"). Hai
+ * quản của mình (docs/cdr-crypto/VDL - Mã hóa CDR.docx: "prefix sẽ được gửi riêng cho từng đơn vị"). Hai
  * loại prefix có thể cùng tồn tại trên 1 engine mà không đụng nhau.
  */
 class CdrCryptoExtension(prefixSource: () => PrefixSource) extends (SparkSessionExtensions => Unit) {

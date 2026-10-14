@@ -37,7 +37,7 @@ object DakTableRef {
 /**
  * Lấy keyPrefix qua DAK: xin access token `client_credentials` từ Keycloak (realm của tenant), rồi gọi
  * `GET {addr}/api/v1/keys/{database}/{table}`. DAK tự suy ra tenant/workspace/team từ token, nên request không
- * mang thông tin đó. Hợp đồng API: docs/DAK_API_SPEC.md.
+ * mang thông tin đó. Hợp đồng API: docs/key-access/DAK_API_SPEC.md.
  *
  *  - 401: bỏ token đang cache, xin token mới, thử lại đúng 1 lần.
  *  - 403 và mọi lỗi khác: báo lỗi ngay, không thử lại. 403 `access_denied` cố ý gộp nhiều nguyên nhân (không có

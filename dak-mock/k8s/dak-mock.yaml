@@ -38,7 +38,7 @@ data:
       clients:
         # Team teamtscauiy, workspace wsw7vtwvi (theo namespace vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy).
         # GIẢ ĐỊNH — thay client-id bằng client vận hành tạo cho team trong realm vlp-tenantw1xjixm
-        # (docs/DAK_API_SPEC.md mục 2.3). Thêm 1 phần tử cho mỗi client.
+        # (docs/key-access/DAK_API_SPEC.md mục 2.3). Thêm 1 phần tử cho mỗi client.
         - realm: vlp-tenantw1xjixm
           client-id: <client-id-cua-team>
           workspace: wsw7vtwvi

@@ -21,7 +21,7 @@
 #           key-prefix-lib-1.0-SNAPSHOT.jar, column-crypto-lib-1.0-SNAPSHOT.jar, cdr-crypto-udf-1.0-SNAPSHOT.jar,
 #           DataLakeSecurity_jv8.jar, sample-spark-application-privacy-1.0-SNAPSHOT.jar,
 #           sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar
-#      (spark.jars của sql-engine chỉ cần các jar theo bảng ở docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 1; key-prefix-lib
+#      (spark.jars của sql-engine chỉ cần các jar theo bảng ở docs/column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 1; key-prefix-lib
 #       luôn phải có cùng mọi lib crypto. `kubectl cp` cả thư mục cần `tar` trong container — alpine có sẵn qua busybox.)
 #   5. Dọn pod ngay sau khi lấy xong — đây là pod tạm, không nên để chạy lâu dài:
 #        kubectl delete -f k8s/column-crypto-jar-carrier-pod.yaml

@@ -1,0 +1,216 @@
+# Khử định danh dữ liệu từ FILE/THƯ MỤC: INPUT_PATH + INPUT_FORMAT + PSEUDO_COLUMNS -> bảng đích đã giả danh
+# (pseudonymize-table-app/README.md mục 3.5). Cùng image/jar với pseudonymize-table.yaml; chỉ khác nguồn đầu vào.
+# Môi trường giống crawler-streaming-app (namespace teamtscauiy, cụm HDFS datalakehla, principal presto, warehouse /prod8).
+#
+#   kubectl apply -f pseudonymize-table-app/k8s/pseudonym-keys-secret.yaml   # (hoặc kubectl create secret ... như trong file đó)
+#   kubectl apply -f pseudonymize-table-app/k8s/pseudonymize-file.yaml
+#   kubectl logs -f pseudonymize-file-driver -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+#
+# Chạy thư mục/giờ khác: sửa INPUT_PATH (và OUTPUT_TABLE nếu muốn bảng riêng) rồi xoá SparkApplication cũ trước
+# (kubectl delete sparkapplication pseudonymize-file -n ...) — Operator không chạy lại một app đã kết thúc.
+# Muốn gộp nhiều giờ vào cùng bảng đích: giữ OUTPUT_TABLE, đặt OUTPUT_MODE=append.
+# Exit code driver: 0 xong + đối chiếu đạt / 1 lỗi khi chạy / 2 sai cấu hình / 3 đã ghi nhưng đối chiếu KHÔNG đạt.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: pseudonymize-file
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+spec:
+  type: Scala
+  mode: cluster
+  sparkVersion: 3.5.1
+
+  # GIẢ ĐỊNH — đổi theo registry/tag đã push (pseudonymize-table-app/README.md mục 2).
+  image: hub.vtcc.vn:8989/hungvt0110/pseudonymize-table-app:v0.1
+  imagePullPolicy: Always
+  mainApplicationFile: local:///opt/app/pseudonymize-table-app.jar
+  mainClass: vai.lakehouse.pseudonymizetable.app.PseudonymizeTableApp
+
+  # Job ghi bảng đích: lỗi thì xem log rồi chạy lại có chủ đích, không tự restart.
+  restartPolicy:
+    type: Never
+  timeToLiveSeconds: 86400
+
+  # ConfigMap chứa core-site.xml + hdfs-site.xml (+ hive-site.xml nếu dùng Hive metastore) của cụm datalakehla. Operator mount
+  # vào /etc/hadoop/conf và set HADOOP_CONF_DIR cho driver + executor. ConfigMap phải nằm CÙNG namespace với app này.
+  hadoopConfigMap: teamtscauiy-hadoop-conf
+
+  driver:
+    cores: 1
+    coreLimit: 1000m
+    memory: 2048m
+    memoryOverhead: 512m
+    labels:
+      version: 3.5.1
+      app: pseudonymize-file
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+
+      # ================= NGUỒN FILE (README mục 3.5) =================
+      # Thư mục (hoặc file / glob) trên HDFS. Đường dẫn không scheme được resolve theo fs.defaultFS của hadoopConfigMap.
+      # Trỏ thẳng vào date=…/hour=… thì dữ liệu KHÔNG có cột partition date/hour.
+      - name: INPUT_PATH
+        value: /landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/
+      # parquet | orc | avro | json | delta | csv | tsv | txt (= csv, text phân tách ký tự) | text (nguyên dòng, cột "value")
+      - name: INPUT_FORMAT
+        value: txt
+      # GIẢ ĐỊNH — ký tự phân tách và header của file txt: kiểm tra lại với file thật. Mọi INPUT_OPTION_<tên> được chuyển
+      # nguyên cho Spark reader (header, encoding, quote, nullValue, multiLine, ...).
+      - name: INPUT_OPTION_delimiter
+        value: "|"
+      - name: INPUT_OPTION_header
+        value: "false"
+      # GIẢ ĐỊNH — schema DDL theo đúng thứ tự cột trong file; không khai thì cột tên _c0,_c1,... (đều STRING).
+      # Tên cột ở đây là tên dùng trong PSEUDO_COLUMNS.
+      - name: INPUT_SCHEMA
+        value: "isdn STRING, imei STRING, amount DOUBLE"
+
+      # ================= CỘT CẦN KHỬ ĐỊNH DANH =================
+      # Mỗi cột có thể một chế độ riêng (cột:MODE). Cột không ghi :MODE dùng PSEUDO_MODE. HASH và ENCRYPT cùng lúc thì
+      # Secret phải có cả pseudonym.hmac_v1 và pseudonym.aes_siv_v1.
+      - name: PSEUDO_COLUMNS
+        value: isdn:HASH,imei:ENCRYPT
+      # Chế độ mặc định cho cột không ghi :MODE. HASH (một chiều) | ENCRYPT (giải mã lại được) | MAPPING (cần MAPPING_TABLE_PATH).
+      - name: PSEUDO_MODE
+        value: HASH
+
+      # ================= BẢNG ĐÍCH (bắt buộc khi nguồn là file; KHÔNG ghi đè nguồn) =================
+      - name: OUTPUT_DB
+        value: landing
+      - name: OUTPUT_TABLE
+        value: f016_mpre_tot_charge_m_pseudonymized
+      # delta (mặc định) | hive (Parquet) | iceberg ; overwrite (mặc định) | append
+      # - name: OUTPUT_FORMAT
+      #   value: delta
+      # - name: OUTPUT_MODE
+      #   value: overwrite
+      # Đối chiếu nguồn/đích sau khi ghi (số dòng, null, số giá trị khác nhau, không sót giá trị gốc). Mặc định true.
+      - name: VERIFY
+        value: "true"
+      - name: ENABLE_HIVE_SUPPORT
+        value: "true"
+      # Warehouse của vùng storage datalakehla (URI đầy đủ để không phụ thuộc fs.defaultFS trong hadoopConfigMap), giống
+      # crawler-streaming-app. Bảng đích (managed) được tạo dưới đây -> app đặt spark.sql.warehouse.dir.
+      - name: WAREHOUSE_PATH
+        value: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse
+
+      # ================= ENV CỦA pseudonym-udf (README mục 4) — CHỈ driver cần =================
+      # Nguồn khoá: file (Secret mount) | vault | dak. Lib tự đọc các biến CRYPTO_*/VAULT_*/DAK_* này.
+      - name: CRYPTO_PREFIX_SOURCE
+        value: file
+      - name: CRYPTO_KEY_PREFIX_DIR
+        value: /etc/pseudonym-keys
+      # Chế độ MAPPING: đường dẫn bảng ánh xạ Delta, lưu RIÊNG (chứa giá trị gốc, phân quyền như dữ liệu gốc).
+      # - name: MAPPING_TABLE_PATH
+      #   value: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/pseudonym/_restricted/pseudonym_map
+      #
+      # ---- Thay file bằng Vault (CRYPTO_PREFIX_SOURCE=vault): ----
+      # - name: VAULT_ADDR
+      #   value: https://vault.example.internal:8200
+      # - name: VAULT_AUTH_METHOD     # kubernetes (mặc định) | token
+      #   value: kubernetes
+      # - name: VAULT_ROLE
+      #   value: pseudonymize-table
+      # - name: VAULT_KV_PATH         # khoá ở <kvMount>/data/<VAULT_KV_PATH>/pseudonym.hmac_v1, field keyPrefix
+      #   value: pseudonym
+      #
+      # ---- Thay file bằng DAK (CRYPTO_PREFIX_SOURCE=dak): khoá phải được đăng ký trong DAK với database "pseudonym",
+      # table "hmac_v1" / "aes_siv_v1" và team phải có quyền đọc ----
+      # - name: DAK_ADDR
+      #   value: https://dak.example.internal
+      # - name: DAK_TOKEN_URL
+      #   value: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token
+      # - name: DAK_CLIENT_ID
+      #   value: team-de-ws8
+      # - name: DAK_CLIENT_SECRET
+      #   valueFrom:
+      #     secretKeyRef:
+      #       name: spark-dak-client
+      #       key: clientSecret
+    volumeMounts:
+      - name: pseudonym-keys
+        mountPath: /etc/pseudonym-keys
+        readOnly: true
+
+  # GIẢ ĐỊNH — một thư mục giờ thường nhỏ hơn một bảng: chỉnh executor theo kích thước dữ liệu và ResourceQuota.
+  executor:
+    instances: 2
+    cores: 2
+    coreLimit: 2000m
+    memory: 4096m
+    memoryOverhead: 1024m
+    labels:
+      version: 3.5.1
+      app: pseudonymize-file
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+
+  # Thiếu Secret thì pod driver không khởi động được (CreateContainerConfigError). Executor KHÔNG cần khoá: khoá được
+  # đọc ở driver và nằm trong closure của UDF; executor chỉ cần 2 jar lib (spark.jars).
+  volumes:
+    - name: pseudonym-keys
+      secret:
+        secretName: pseudonym-keys
+
+  sparkConf:
+    # ------ Lib giả danh: 2 jar rời trong image, UDF thật nên executor cũng nạp ------
+    spark.jars: local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/pseudonym-udf-1.0-SNAPSHOT.jar
+    # Cách thay thế cho biến môi trường: cấu hình lib qua Spark conf (ưu tiên hơn env) — README mục 4.
+    # spark.pseudonym.source: file
+    # spark.pseudonym.file.dir: /etc/pseudonym-keys
+    # spark.pseudonym.hmac.version: "1"
+    # spark.pseudonym.aes-siv.version: "1"
+    # spark.pseudonym.mapping.path: hdfs://.../_restricted/pseudonym_map
+
+    # ------ Kerberos (vùng storage datalakehla) — giống crawler-streaming-app ------
+    # keytab/krb5.conf là path TRÊN pod Spark Operator (nơi chạy spark-submit): spark-submit đọc file rồi tự đưa vào
+    # driver qua Secret/ConfigMap -> không mount, không bake vào image.
+    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020
+    spark.kerberos.principal: presto@VAILAKEHOUSE.VIETTEL.COM
+    spark.kerberos.keytab: /etc/security/keytabs/presto.keytab
+    spark.kubernetes.kerberos.krb5.path: /etc/krb5.conf
+    spark.security.credentials.hadoopfs.enabled: "true"
+
+    # ------ HDFS security: GIỮ wire encryption (privacy) ------
+    spark.hadoop.hadoop.security.authentication: kerberos
+    spark.hadoop.hadoop.security.authorization: "true"
+    spark.hadoop.fs.permissions.umask-mode: "002"
+
+    # ------ Delta Lake (đã có trong fat jar) ------
+    # App tự nối extension/catalog này vào cấu hình (SparkSessions), khai ở đây để tường minh và đồng nhất với app mẫu.
+    spark.sql.extensions: io.delta.sql.DeltaSparkSessionExtension
+    spark.sql.catalog.spark_catalog: org.apache.spark.sql.delta.catalog.DeltaCatalog
+
+    # ------ BẮT BUỘC false (patch block token qua ServiceLoader) ------
+    # App TỰ thêm vai.lakehouse.hdfs.BlockTokenFixPlugin vào spark.plugins (SparkSessions): chỉ khai spark.plugins ở đây
+    # nếu cần plugin KHÁC — app sẽ nối thêm, không ghi đè.
+    spark.driver.userClassPathFirst: "false"
+    spark.executor.userClassPathFirst: "false"
+
+    # ------ log4j2 ------
+    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    spark.executor.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+
+    # ------ Spark ------
+    spark.jars.ivy: /tmp
+    spark.serializer: org.apache.spark.serializer.KryoSerializer
+    spark.scheduler.mode: FAIR
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.sources.ignoreDataLocality.enabled: "true"
+    spark.dynamicAllocation.enabled: "false"
+    spark.sql.shuffle.partitions: "64"
+
+    # ------ Event log (Spark History Server vùng datalakehla) ------
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/spark_history
+    spark.eventLog.rolling.enabled: "true"
+    spark.eventLog.rolling.maxFileSize: 128m

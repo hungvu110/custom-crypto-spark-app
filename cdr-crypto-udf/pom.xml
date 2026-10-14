@@ -18,7 +18,7 @@
     (DataLakeSecurity_jv8.jar, class com.viettel.datalake.security.TransformDL). Khác
     column-crypto-lib: đây là UDF thật (ScalaUDF), không phải biểu thức built-in, vì thuật toán
     của đối tác (vòng lặp cộng dồn key + AES/ECB) không tái tạo được bằng hàm built-in của Spark.
-    Xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
+    Xem docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
 
     Jar DataLakeSecurity_jv8.jar KHÔNG nằm trên Maven Central — cài vào local repo trước:
       mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar -DgroupId=com.viettel.datalake
@@ -30,7 +30,7 @@
     Jar thuần, KHÔNG shade: giống column-crypto-lib, mọi dependency đều "provided" nên jar output
     chỉ chứa đúng 2 class của module này (CdrCipherCore, CdrCryptoExtension) — KHÔNG chứa
     TransformDL (jar đối tác) lẫn class của key-prefix-lib. Khi triển khai phải nạp ĐỦ CẢ 3 jar
-    qua spark.jars (xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md mục 5.2) — Spark gộp chúng vào cùng
+    qua spark.jars (xem docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md mục 5.2) — Spark gộp chúng vào cùng
     1 classloader nên class ở jar này gọi được class ở 2 jar kia lúc chạy.
   -->
   <dependencies>

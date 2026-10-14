@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 import vai.lakehouse.dakmock.auth.TokenVerifier;
 import vai.lakehouse.dakmock.key.KeyService;
 
-/** {@code GET /api/v1/keys/{database}/{table}} — API duy nhất của mock (docs/DAK_API_SPEC.md mục 5). */
+/** {@code GET /api/v1/keys/{database}/{table}} — API duy nhất của mock (docs/key-access/DAK_API_SPEC.md mục 5). */
 @RestController
 @RequestMapping("/api/v1/keys")
 public class KeyController {

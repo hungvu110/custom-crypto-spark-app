@@ -21,7 +21,7 @@
   <version>0.1.0-SNAPSHOT</version>
   <name>dak-mock</name>
   <description>
-    Mock DAK chỉ cho use case lấy key: GET /api/v1/keys/{database}/{table} theo docs/DAK_API_SPEC.md.
+    Mock DAK chỉ cho use case lấy key: GET /api/v1/keys/{database}/{table} theo docs/key-access/DAK_API_SPEC.md.
     Xác minh token bằng JWKS của realm Keycloak, đọc keyPrefix từ Vault KV v2 bằng token tĩnh.
     KHÔNG có phân quyền (grant, thời hạn quyền) và chức năng quản trị.
   </description>

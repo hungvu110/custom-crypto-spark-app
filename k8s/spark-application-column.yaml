@@ -6,7 +6,7 @@ metadata:
   namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
 spec:
   # App không dùng arguments dòng lệnh — toàn bộ cấu hình đọc qua biến môi
-  # trường (khai báo ở cả driver lẫn executor bên dưới, xem README mục 5).
+  # trường (khai báo ở cả driver lẫn executor bên dưới, xem docs/project/SPARK_APP_REFERENCE.md).
   driver:
     # --- Gọi Keycloak nội bộ (DAK_TOKEN_URL): CHỈ driver cần, executor không gọi Keycloak/DAK ---
     # hostAliases/initContainers/volumeMounts cần mutating webhook của Spark Operator đang bật.
@@ -97,7 +97,7 @@ spec:
       #    Tên key là DB_NAME.TABLE_NAME chữ thường (app tự ghép). Secret lấy từ K8s Secret "spark-dak-client"
       #    (key "clientSecret") — tạo TRƯỚC khi apply, xem chú thích ở cuối file.
       #    CHỈ dùng DAK: manifest không còn VAULT_* nên job không đọc được Vault cũ. Fallback thủ công khi DAK sự
-      #    cố = đổi thành "vault" VÀ thêm lại khối VAULT_* (docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.6).
+      #    cố = đổi thành "vault" VÀ thêm lại khối VAULT_* (docs/column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.6).
       #    KHÔNG đặt "dak,vault": lib từ chối, vì fallback tự động sẽ bỏ qua phân quyền của DAK.
       - name: CRYPTO_PREFIX_SOURCE
         value: "dak"

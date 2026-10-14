@@ -6,8 +6,8 @@ Service Spring Boot giả lập DAK, **chỉ** phục vụ API mà sql-engine v�
 GET /api/v1/keys/{database}/{table}      Authorization: Bearer <access token Keycloak của team>
 ```
 
-Hợp đồng API đầy đủ: [docs/DAK_API_SPEC.md](../docs/DAK_API_SPEC.md). Phía client (`key-prefix-lib`, nguồn `source=dak`):
-[docs/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md](../docs/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md).
+Hợp đồng API đầy đủ: [docs/key-access/DAK_API_SPEC.md](../docs/key-access/DAK_API_SPEC.md). Phía client (`key-prefix-lib`, nguồn `source=dak`):
+[docs/key-access/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md](../docs/key-access/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md).
 
 ## 1. Môi trường triển khai
 
@@ -107,7 +107,7 @@ dak:
 ```
 
 - Mỗi client của team là một phần tử trong `clients`. Client phải được tạo trong realm `vlp-tenantw1xjixm` theo checklist
-  [docs/DAK_API_SPEC.md mục 2.3](../docs/DAK_API_SPEC.md#23-yêu-cầu-với-client-của-team) (confidential, bật Service accounts,
+  [docs/key-access/DAK_API_SPEC.md mục 2.3](../docs/key-access/DAK_API_SPEC.md#23-yêu-cầu-với-client-của-team) (confidential, bật Service accounts,
   tắt Standard flow/Direct access).
 - `path-template` trùng path của luồng column/cdr cũ với **tên key hai phần** `<database>.<table>` (chữ thường).
 - Pod không khởi động nếu thiếu Secret token Vault, `path-template` thiếu `{database}`/`{table}`, client trỏ tới realm không có,
@@ -267,7 +267,7 @@ Thiếu ConfigMap thì pod đứng ở `Init`/`ContainerCreating`; `ca.pem` khô
 rồi `kubectl rollout restart -n "$NS" deploy/dak-mock`.
 
 Spark (sql-engine, SparkApplication) cũng gọi Keycloak để xin token nên cần cùng cấu hình này cho **driver** — xem
-[docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.7](../docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md).
+[docs/column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.7](../docs/column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md).
 
 ## 9. Nối với Spark
 

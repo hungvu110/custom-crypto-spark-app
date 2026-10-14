@@ -2,7 +2,7 @@
 
 > Tài liệu hướng dẫn thao tác: cấp quyền trên Ranger (Hadoop SQL + Ranger KMS),
 > submit một Spark application qua Airflow, và giám sát job qua Spark History
-> Server (SHS). Ảnh minh hoạ nằm ở [`docs/images/`](./images/).
+> Server (SHS). Ảnh minh hoạ nằm ở [`docs/images/`](../images).
 >
 > **Ví dụ xuyên suốt:** Spark application `sample-spark-application-privacy` chạy
 > trên Kubernetes (qua Spark Operator), dùng Kerberos principal
@@ -70,23 +70,23 @@ job có đang bị thiếu quyền hay không thông qua Spark History Server.
    HADOOP SQL đúng tenant đang dùng (ví dụ service `wsbmkimit` ứng với namespace
    `vlp-tenantw1xjixm-wsytjjtr0-ingestion`).
 
-   ![Service Manager, nhóm HADOOP SQL](images/ranger6.png)
+   ![Service Manager, nhóm HADOOP SQL](../images/ranger6.png)
 
 2. Mở service đó để vào **List of Policies**, chọn policy có phạm vi phù hợp (áp
    dụng cho toàn bộ database, hay chỉ 1 database cụ thể). Nếu chưa có policy phù
    hợp, bấm **Add New Policy** để tạo mới.
 
-   ![List of Policies của wsbmkimit — policy 100 phạm vi all db/table/column](images/ranger5.png)
+   ![List of Policies của wsbmkimit — policy 100 phạm vi all db/table/column](../images/ranger5.png)
 
 3. Trong phần **Policy Details**, giữ nguyên `Enabled` và bật `Audit Logging: Yes`
    — nhờ vậy sau này có thể tra lịch sử ai đã truy cập gì trong tab Audit.
 
-   ![Policy Details — Enabled, Audit Logging Yes](images/ranger1.png)
+   ![Policy Details — Enabled, Audit Logging Yes](../images/ranger1.png)
 
 4. Ở phần **Resources**, khai báo `database` / `table` / `column` mà policy áp
    dụng (dùng `*` nếu muốn áp dụng cho tất cả).
 
-   ![Resources database/table/column = *](images/ranger2.png)
+   ![Resources database/table/column = *](../images/ranger2.png)
 
 5. Ở phần **Allow Conditions**, gõ tên user cần cấp quyền vào ô **Select User**,
    sau đó bấm biểu tượng bút chì ở cột **Permissions** để chọn quyền. Chỉ nên cấp
@@ -94,12 +94,12 @@ job có đang bị thiếu quyền hay không thông qua Spark History Server.
    job có ghi dữ liệu vào bảng), tránh cấp `All` hoặc `Service Admin` cho một
    service account. Không cần bật **Delegate Admin**.
 
-   ![Allow Conditions — thêm user, chọn permission](images/ranger3.png)
+   ![Allow Conditions — thêm user, chọn permission](../images/ranger3.png)
 
 6. Kiểm tra phần **Deny Conditions** bên dưới không có rule nào chặn user vừa
    thêm — vì Deny luôn được ưu tiên hơn Allow. Sau đó bấm **Save**.
 
-   ![Deny Conditions rỗng](images/ranger4.png)
+   ![Deny Conditions rỗng](../images/ranger4.png)
 
 7. Plugin Hive/Trino sẽ tự động đồng bộ policy mới sau vài chục giây, không cần
    restart service nào. Để kiểm tra lại, chạy thử job rồi mở tab **Audit → Access**
@@ -119,7 +119,7 @@ bị chặn ở bước đọc/ghi file nếu thiếu quyền key ở mục này
 
 1. Đăng nhập Ranger KMS UI bằng tài khoản quản trị key (ví dụ `keyadmin`).
 
-   ![Đăng nhập Ranger KMS UI](images/kms1.png)
+   ![Đăng nhập Ranger KMS UI](../images/kms1.png)
 
 2. Phần cấu hình kết nối tới KMS server (service `kmsdev`) thường đã được hạ tầng
    thiết lập sẵn, chỉ cần biết vị trí để tra cứu khi cần: vào **Access Manager →
@@ -127,26 +127,26 @@ bị chặn ở bước đọc/ghi file nếu thiếu quyền key ở mục này
    Kerberos riêng của Ranger KMS server (`rangerprincipal`, `rangerkeytab`,
    `authtype: kerberos`).
 
-   ![Edit Service kmsdev — KMS URL, username keyadmin](images/kms2.png)
-   ![Config Properties Kerberos của kmsdev](images/kms3.png)
+   ![Edit Service kmsdev — KMS URL, username keyadmin](../images/kms2.png)
+   ![Config Properties Kerberos của kmsdev](../images/kms3.png)
 
 3. Xem danh sách các key hiện có tại **Encryption → Key Management**. Cột
    **Attributes** hiển thị `key.acl.name` — đây chính là tên resource dùng để
    khớp với policy ở bước tiếp theo.
 
-   ![Key Management — vlp-key-hkh-1, vlp-key-hkh2](images/kms4.png)
+   ![Key Management — vlp-key-hkh-1, vlp-key-hkh2](../images/kms4.png)
 
 4. Để cấp quyền theo key, vào **Access Manager → kmsdev → List of Policies**. Ở
    ví dụ này, policy `49 — all - keyname` đang áp dụng cho mọi key (`*`) và đã có
    sẵn user `k8s` trong danh sách.
 
-   ![List of Policies của kmsdev — policy 49 all-keyname, có user k8s](images/kms5.png)
+   ![List of Policies của kmsdev — policy 49 all-keyname, có user k8s](../images/kms5.png)
 
 5. Mở policy đó: **Policy Details** giữ `Enabled` và `Audit Logging: Yes`; ở
    **Resources**, khai báo `Key Name` (`*` cho mọi key, hoặc gõ đúng tên key nếu
    muốn giới hạn phạm vi).
 
-   ![Policy Details policy 49](images/kms6.png)
+   ![Policy Details policy 49](../images/kms6.png)
 
 6. Ở **Allow Conditions**, thêm user vào **Select User** rồi chọn quyền. Trong
    policy 49, user `k8s` hiện đang được cấp **toàn bộ quyền** (`Create`, `Delete`,
@@ -154,7 +154,7 @@ bị chặn ở bước đọc/ghi file nếu thiếu quyền key ở mục này
    `Generate EEK`, `Decrypt EEK`) cùng `Delegate Admin` — ngang với tài khoản quản
    trị `keyadmin`/`root`.
 
-   ![Resources Key Name + Allow Conditions — user k8s có đủ quyền, kèm hdfs/om chỉ có Get Metadata + Generate EEK](images/kms7.png)
+   ![Resources Key Name + Allow Conditions — user k8s có đủ quyền, kèm hdfs/om chỉ có Get Metadata + Generate EEK](../images/kms7.png)
 
    > **Khuyến nghị** cho một service account chỉ chạy job (không cần quản trị
    > key): chỉ nên cấp `Get Metadata` + `Decrypt EEK` (thêm `Generate EEK` nếu job
@@ -178,13 +178,13 @@ liệu.
    ứng dụng lẫn log Spark khi job kết thúc); tìm dòng `Marking task as SUCCESS`
    để xác nhận.
 
-   ![DAG Grid + Logs — task SUCCESS](images/airflow1.png)
+   ![DAG Grid + Logs — task SUCCESS](../images/airflow1.png)
 
 2. Để xem đầy đủ log của một lần chạy task, bấm vào task đó trên tab **Grid**
    rồi chọn tab **Logs** — toàn bộ log từ lúc Airflow bắt đầu submit
    `SparkApplication` cho tới khi task kết thúc đều hiển thị ở đây.
 
-   ![Log chi tiết của task — từ lúc submit sparkApplication tới khi kết thúc](images/airflow2.png)
+   ![Log chi tiết của task — từ lúc submit sparkApplication tới khi kết thúc](../images/airflow2.png)
 
 3. Trước khi trigger, cần đảm bảo hạ tầng đã chuẩn bị sẵn: Secret chứa keytab của
    user đã mount đúng đường dẫn trong pod, cấu hình Kerberos client (`krb5.conf`)
@@ -206,34 +206,34 @@ liệu.
    (`spark.eventLog.dir`) — đây là cấu hình ghi log để phục vụ giám sát, **không
    liên quan tới phân quyền** ở mục 1–2.
 
-   ![SHS — danh sách application, Spark User k8s](images/shs1.png)
+   ![SHS — danh sách application, Spark User k8s](../images/shs1.png)
 
 2. Bấm vào **App ID** để mở giao diện chi tiết. Tab **Jobs** cho cái nhìn tổng
    quan về tiến độ chạy job, kèm Event Timeline; mỗi dòng mô tả job còn trỏ ngược
    được về đúng vị trí trong code (ví dụ `SparkApp.scala:225`).
 
-   ![Tab Jobs](images/shs2.png)
+   ![Tab Jobs](../images/shs2.png)
 
 3. Tab **Stages** cho biết chi tiết hơn: `Input`/`Output`/`Shuffle Read/Write`
    của từng stage. Nếu một stage lẽ ra phải đọc/ghi dữ liệu mà cột `Input`/
    `Output` lại hiện 0 byte, đây là dấu hiệu job đang **thiếu quyền Ranger** (đôi
    khi exception bị nuốt ở tầng khác nên không hiện lỗi rõ ràng).
 
-   ![Tab Stages](images/shs3.png)
+   ![Tab Stages](../images/shs3.png)
 
 4. Tab **Environment** giúp xác minh nhanh cấu hình Kerberos đã được áp dụng đúng
    cho lần chạy đó (ví dụ `spark.driver.extraJavaOptions` có bật debug
    `krb5.debug`/`spnego.debug`, hay `spark.driver.host` đúng namespace mong
    muốn) mà không cần đăng nhập vào pod để kiểm tra.
 
-   ![Tab Environment](images/shs4.png)
+   ![Tab Environment](../images/shs4.png)
 
 5. Tab **Executors** cho biết số `Failed Tasks` của từng executor. Nếu Ranger từ
    chối quyền ngay khi job đang chạy, executor tương ứng thường có
    `Failed Tasks > 0` — bấm vào executor đó để mở log `stderr` và tìm dòng lỗi
    `AccessControlException`.
 
-   ![Tab Executors](images/shs5.png)
+   ![Tab Executors](../images/shs5.png)
 
 ---
 

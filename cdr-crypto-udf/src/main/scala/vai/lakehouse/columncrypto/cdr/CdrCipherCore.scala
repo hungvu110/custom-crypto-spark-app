@@ -16,10 +16,10 @@ import javax.crypto.spec.SecretKeySpec
  *     dồn bằng tay, để loại trừ rủi ro chép sai. Chỉ tự viết phần đảo chiều `Cipher`
  *     (`ENCRYPT_MODE` thay `DECRYPT_MODE`). Đã xác nhận đúng byte-for-byte với test vector đối
  *     tác — xem `tools/datalake-security-test/EncryptDecryptTest.java` và
- *     `docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md` mục 0.
+ *     `docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md` mục 0.
  *
  * `keyInput = prefix ‖ fieldValue`, ghép thẳng không dấu phân cách, không băm — đúng công thức
- * trong `docs/VDL - Mã hóa CDR.docx`. Không tự thêm bất kỳ dấu phân cách nào ở đây; caller
+ * trong `docs/cdr-crypto/VDL - Mã hóa CDR.docx`. Không tự thêm bất kỳ dấu phân cách nào ở đây; caller
  * (`CdrCryptoExtension`) chịu trách nhiệm ghép đúng.
  */
 object CdrCipherCore {
@@ -49,7 +49,7 @@ object CdrCipherCore {
     Base64.getEncoder.encodeToString(cipher.doFinal(plaintext.getBytes))
   }
 
-  // Test vector đã xác nhận với đối tác qua email, đối chiếu docs/VDL - Mã hóa CDR.docx.
+  // Test vector đã xác nhận với đối tác qua email, đối chiếu docs/cdr-crypto/VDL - Mã hóa CDR.docx.
   private val SelfCheckCiphertext = "MmQtOaOWlG1rRkt49Gn6Bw=="
   private val SelfCheckKeyInput   = "231x#@Vie3" + "20260928123456"
   private val SelfCheckPlaintext  = "978356099"
@@ -58,7 +58,7 @@ object CdrCipherCore {
    * Tự-kiểm tra bằng test vector đã xác nhận với đối tác, chạy 1 lần lúc `CdrCryptoExtension`
    * khởi tạo. Nếu đối tác đổi version jar và hành vi lệch đi (vd đổi tên method private `a`, đổi
    * thuật toán), lỗi hiện NGAY lúc engine khởi động thay vì âm thầm mã hoá/giải mã sai trong
-   * production — xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md mục 2.
+   * production — xem docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md mục 2.
    */
   def verifyCompatibility(): Unit = {
     val actualDecrypt = decrypt(SelfCheckCiphertext, SelfCheckKeyInput)

@@ -119,7 +119,7 @@
         thẳng vào /opt/spark/jars/ của image Spark History Server — SHS chạy
         HistoryServer JVM riêng, không dùng file jar chính (org.example.*),
         nhưng vẫn cần patch này trên classpath để đọc được event log ghi
-        trên Isilon HKH (xem docs/spark-history-server-hdfs-hkh-kerberos.md).
+        trên Isilon HKH (xem docs/hdfs-block-token/spark-history-server-hdfs-hkh-kerberos.md).
         Không cần Spark/Hadoop/Scala runtime kèm theo vì SHS đã có sẵn.
       -->
       <plugin>

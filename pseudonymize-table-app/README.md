@@ -25,7 +25,8 @@ pseudonymize-table-app/
 ├── Dockerfile                          # build context = GỐC REPO (cần jar của pseudonym-udf + key-prefix-lib)
 ├── pom.xml                             # lib = provided (nạp qua spark.jars); shade Delta + patch block token
 ├── k8s/
-│   ├── pseudonymize-table.yaml         # SparkApplication
+│   ├── pseudonymize-table.yaml         # SparkApplication, nguồn là bảng
+│   ├── pseudonymize-file.yaml          # SparkApplication, nguồn là file/thư mục (INPUT_PATH)
 │   └── pseudonym-keys-secret.yaml      # mẫu Secret khoá (CRYPTO_PREFIX_SOURCE=file) — chỉ có chỗ trống
 └── src/
     ├── main/resources/log4j2.properties
@@ -317,7 +318,9 @@ Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** tr
 NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
 # 1. Secret khoá (nguồn file) — tạo bằng lệnh trong k8s/pseudonym-keys-secret.yaml, KHÔNG commit khoá thật
 # 2. Sửa DB_NAME / TABLE_NAME / PSEUDO_COLUMNS / PSEUDO_MODE trong k8s/pseudonymize-table.yaml, rồi:
-kubectl apply -f pseudonymize-table-app/k8s/pseudonymize-table.yaml
+kubectl apply -f pseudonymize-table-app/k8s/pseudonymize-table.yaml   # nguồn là bảng
+# hoặc nguồn là file/thư mục (sửa INPUT_PATH / INPUT_FORMAT / INPUT_SCHEMA trong file):
+kubectl apply -f pseudonymize-table-app/k8s/pseudonymize-file.yaml
 kubectl logs -f pseudonymize-table-driver -n $NS
 # Chạy lại: kubectl delete sparkapplication pseudonymize-table -n $NS rồi apply
 ```

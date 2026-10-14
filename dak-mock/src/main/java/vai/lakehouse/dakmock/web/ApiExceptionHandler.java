@@ -15,7 +15,7 @@ public class ApiExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
-  /** Body lỗi (docs/DAK_API_SPEC.md mục 5.4). */
+  /** Body lỗi (docs/key-access/DAK_API_SPEC.md mục 5.4). */
   public record ApiError(String error, String message, String requestId) {}
 
   @ExceptionHandler(DakApiException.class)

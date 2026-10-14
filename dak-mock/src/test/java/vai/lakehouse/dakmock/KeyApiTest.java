@@ -43,7 +43,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Test end-to-end của API lấy key: MockWebServer đóng vai Keycloak (JWKS) và Vault, token ký bằng khoá RSA sinh
- * trong test. Kiểm tra theo docs/DAK_API_SPEC.md mục 4–5.
+ * trong test. Kiểm tra theo docs/key-access/DAK_API_SPEC.md mục 4–5.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class KeyApiTest {

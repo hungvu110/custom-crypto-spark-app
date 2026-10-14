@@ -8,7 +8,7 @@
 # Image chỉ cần "đứng yên" để kubectl cp lấy jar ra, không cần JDK/Spark/Scala.
 #
 # Image chứa (đều giữ NGUYÊN tên file gốc, khớp với các lệnh `hdfs dfs -put` và `spark.jars` trong
-# docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md):
+# docs/column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md):
 #   key-prefix-lib-1.0-SNAPSHOT.jar         hạ tầng lấy keyPrefix — cần cho mọi lib crypto
 #   column-crypto-lib-1.0-SNAPSHOT.jar      column_encrypt/column_decrypt
 #   cdr-crypto-udf-1.0-SNAPSHOT.jar         cdr_encrypt/cdr_decrypt

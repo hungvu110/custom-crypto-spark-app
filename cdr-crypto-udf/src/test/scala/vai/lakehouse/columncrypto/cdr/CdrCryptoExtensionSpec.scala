@@ -13,7 +13,7 @@ import vai.lakehouse.keyprefix.PrefixSource
 
 /**
  * Test qua SQL thật (`local[2]`), dùng thẳng jar đối tác (đã cài `install:install-file` — xem
- * `docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md` mục 1.1). Đối chiếu 2 chiều với [[CdrCipherCore]] gọi
+ * `docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md` mục 1.1). Đối chiếu 2 chiều với [[CdrCipherCore]] gọi
  * trực tiếp (không qua SQL) để xác nhận UDF không làm lệch kết quả so với lõi crypto.
  */
 class CdrCryptoExtensionSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {

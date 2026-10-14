@@ -21,7 +21,7 @@ dak:
       issuer: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm
       jwks-uri: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs
 
-  # Client Keycloak của các team (do vận hành tạo theo docs/DAK_API_SPEC.md mục 2.3).
+  # Client Keycloak của các team (do vận hành tạo theo docs/key-access/DAK_API_SPEC.md mục 2.3).
   # (realm, client-id) -> workspace, team. enabled: false để khoá client.
   clients:
     # GIẢ ĐỊNH — client-id của team teamtscauiy trong realm vlp-tenantw1xjixm, workspace wsw7vtwvi.

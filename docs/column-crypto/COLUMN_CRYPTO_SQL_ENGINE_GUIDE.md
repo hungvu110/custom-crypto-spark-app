@@ -50,7 +50,7 @@ Executor:
 `spark.jars` áp dụng cho cả driver lẫn executor nên nạp đủ jar theo bảng mục 1 là đủ cho cả hai.
 
 Chi tiết kiến trúc của luồng này (vì sao `column_*` là "biểu thức built-in" còn `cdr_*` bắt buộc là UDF) nằm ở
-[COLUMN_CRYPTO_ARCHITECTURE.md](COLUMN_CRYPTO_ARCHITECTURE.md) và [PARTNER_CDR_CRYPTO_UDF_PLAN.md](PARTNER_CDR_CRYPTO_UDF_PLAN.md).
+[COLUMN_CRYPTO_ARCHITECTURE.md](COLUMN_CRYPTO_ARCHITECTURE.md) và [PARTNER_CDR_CRYPTO_UDF_PLAN.md](../cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md).
 
 Công thức `column_*` là **cùng một** `CryptoExpressions` với DataFrame API của SparkApplication, và `cdr_*` cùng một hàm
 biến đổi với DataFrame API `CdrCrypto`, nên dữ liệu ghi bằng job SparkApplication đọc được bằng SQL và ngược lại (có test
@@ -207,7 +207,7 @@ bảng, nội dung là prefix). `file,vault` thử file trước rồi fallback 
 ### 4.6. Nguồn DAK (`source=dak`) — cách đang triển khai
 
 Engine lấy key qua **DAK** bằng danh tính của team (client Keycloak riêng), thay cho token Vault dùng chung. Thiết kế:
-[DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md](DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md); hợp đồng API: [DAK_API_SPEC.md](DAK_API_SPEC.md).
+[DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md](../key-access/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md); hợp đồng API: [DAK_API_SPEC.md](../key-access/DAK_API_SPEC.md).
 
 ```properties
 # --- Nguồn đang dùng. Fallback thủ công: đổi thành vault rồi restart engine ---
@@ -347,8 +347,8 @@ Lưu ý:
   `UnknownHostException: sso-lakehouse.cyberspace.vn` là thiếu `hostAliases`; `PKIX path building failed` là JVM chưa nhận
   truststore (kiểm `spark.driver.extraJavaOptions`).
 
-SparkApplication: [k8s/spark-application-cdr.yaml](../k8s/spark-application-cdr.yaml) và
-[k8s/spark-application-column.yaml](../k8s/spark-application-column.yaml) đã có sẵn cùng cấu hình ở `spec.driver`
+SparkApplication: [k8s/spark-application-cdr.yaml](../../k8s/spark-application-cdr.yaml) và
+[k8s/spark-application-column.yaml](../../k8s/spark-application-column.yaml) đã có sẵn cùng cấu hình ở `spec.driver`
 (`hostAliases`, `initContainers`, `volumeMounts`), `spec.volumes` và `spark.driver.extraJavaOptions`. Spark Operator cần bật
 mutating webhook thì các trường này mới được áp vào pod driver.
 

@@ -5,7 +5,7 @@
 # template labels) được đánh dấu "GIẢ ĐỊNH" — đối chiếu với `kubectl get sts sql-engine-en-sqlxidle9p -o yaml`
 # trước khi apply, ưu tiên giá trị trong cluster.
 #
-# Chuẩn bị trước, cùng namespace (docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.7):
+# Chuẩn bị trước, cùng namespace (docs/column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.7):
 #   - ConfigMap keycloak-ca, key ca.pem (cert của sso-lakehouse, PEM)
 #   - Secret spark-dak-client, key clientSecret (secret của client team-de-ws8) — dùng chung với SparkApplication
 #

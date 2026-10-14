@@ -27,7 +27,7 @@ import vai.lakehouse.keyprefix.PrefixSource
  *      lựa chọn thực tế đã xác nhận). Không cần khai thêm biến/Secret nào riêng cho CDR trên
  *      SparkApplication CRD nếu dùng cách này.
  *
- * Xem `docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`.
+ * Xem `docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md`.
  *
  * @param prefixSource nơi lấy keyPrefix; mặc định dựng từ `spark.cdrcrypto.*` lần đầu cần dùng.
  */

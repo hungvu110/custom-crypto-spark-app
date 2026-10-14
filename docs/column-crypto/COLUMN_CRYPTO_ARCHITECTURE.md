@@ -33,7 +33,7 @@ nó bằng một cây con chỉ gồm các nút built-in đã có sẵn trong Sp
 Physical planner, Codegen) Spark không biết và không cần biết có `column_encrypt` — nó chỉ thấy
 `Base64(AesEncrypt(...))`, y như người dùng tự gõ biểu thức đó trong SQL.
 
-### 1.2. Công thức mã hoá (nguồn: [`CryptoExpressions.scala`](../column-crypto-lib/src/main/scala/vai/lakehouse/columncrypto/CryptoExpressions.scala))
+### 1.2. Công thức mã hoá (nguồn: [`CryptoExpressions.scala`](../../column-crypto-lib/src/main/scala/vai/lakehouse/columncrypto/CryptoExpressions.scala))
 
 ```
 key      = unhex(sha2(keyPrefix || cast(keyValue as string), 256))   -- SHA-256 → luôn đúng 32 byte (AES-256)
@@ -63,7 +63,7 @@ Query console ──SQL──> STS (driver)
                          │     └─ ColumnCryptoExtension.register(...) chạy builder:
                          │          1. lấy tên bảng từ literal đầu tiên
                          │          2. source.read("customers") -> CachedPrefixSource -> VaultPrefixSource
-                         │             (Vault: login → read → revoke, HOẶC đọc thẳng bằng token tĩnh — mục 1.5)
+                         │             (Vault: login → read → revoke, HOẶC đọc thẳng bằng token tĩnh — xem KEY_PREFIX_SOURCES.md, mục token Vault tĩnh)
                          │          3. ColumnCrypto.redactKeyPrefixInPlans(...) che prefix khỏi EXPLAIN/UI/event log
                          │          4. trả về CryptoExpressions.encrypt(value, keyValue, prefix)
                          └─ cây con thay thế node column_encrypt trong logical plan
@@ -85,7 +85,7 @@ biểu thức đó. Đây là lý do hướng này an toàn hơn so với việc
 ### 1.5. Nguồn `keyPrefix`: Kubernetes auth và token tĩnh
 
 `VaultPrefixSource` hỗ trợ 2 cách xác thực với Vault (chọn qua `vault.authMethod`, xem
-[`PrefixSourceFactory.scala`](../key-prefix-lib/src/main/scala/vai/lakehouse/keyprefix/PrefixSourceFactory.scala)):
+[`PrefixSourceFactory.scala`](../../key-prefix-lib/src/main/scala/vai/lakehouse/keyprefix/PrefixSourceFactory.scala)):
 
 | `vault.authMethod`      | Luồng gọi Vault                                                                                                           | Khi nào dùng                                                                                                                                                           |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -22,7 +22,7 @@
       - hdfs-load-stress-test : Spark job stress test nạp dữ liệu vào HDFS HKH, chỉ kèm patch block token của
                             spark-app (không có lib crypto) — xem docs/hdfs-load-stress-test/PLAN.md.
       - cdr-crypto-udf    : (profile "cdr-crypto") mã hoá CDR của đối tác (DataLakeSecurity_jv8.jar) qua cả
-                            SQL function và DataFrame API — xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
+                            SQL function và DataFrame API — xem docs/cdr-crypto/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
       - pseudonym-udf     : giả danh hoá cột định danh (HASH / ENCRYPT / MAPPING) qua DataFrame API + SQL function —
                             xem docs/pseudonymization/LIB_PLAN.md.
       - pseudonym-verify-utils : utils nhỏ (API + CLI) so bảng nguồn với bảng đã khử định danh: số dòng, null, 1-1,

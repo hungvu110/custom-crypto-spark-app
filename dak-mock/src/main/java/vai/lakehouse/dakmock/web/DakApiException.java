@@ -3,7 +3,7 @@ package vai.lakehouse.dakmock.web;
 import org.springframework.http.HttpStatus;
 
 /**
- * Lỗi trả cho bên gọi theo bảng mã lỗi của docs/DAK_API_SPEC.md mục 5.4. {@code getMessage()} là thông điệp
+ * Lỗi trả cho bên gọi theo bảng mã lỗi của docs/key-access/DAK_API_SPEC.md mục 5.4. {@code getMessage()} là thông điệp
  * công khai (không chứa token, secret, prefix); {@code internalReason} chỉ để ghi log.
  */
 public final class DakApiException extends RuntimeException {

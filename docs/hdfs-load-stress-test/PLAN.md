@@ -1,6 +1,6 @@
 # Plan: stress test nạp dữ liệu vào HDFS HKH (100 GiB/ngày)
 
-Code app, `Dockerfile` và manifest SparkApplication nằm ở module [`hdfs-load-stress-test/`](../../hdfs-load-stress-test/) ở gốc
+Code app, `Dockerfile` và manifest SparkApplication nằm ở module [`hdfs-load-stress-test/`](../../hdfs-load-stress-test) ở gốc
 repo. Hướng dẫn build và chạy: [hdfs-load-stress-test/README.md](../../hdfs-load-stress-test/README.md). Các đường dẫn file trong
 plan này (`StressConfig.scala`, `k8s/...`) tính từ thư mục module đó.
 
