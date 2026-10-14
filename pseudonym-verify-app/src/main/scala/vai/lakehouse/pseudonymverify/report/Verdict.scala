@@ -6,7 +6,7 @@ import vai.lakehouse.pseudonymverify.check.{CheckResult, Level, Status}
 sealed abstract class Verdict(val name: String, val exitCode: Int, val rank: Int)
 
 /**
- * docs/pseudonym-verify-app/PLAN.md mục 5.3:
+ * docs/pseudonymization/VERIFY_APP_PLAN.md mục 5.3:
  *   check ném exception hoặc CONTROL (P6) không đạt -> ERROR (exit 2, không kết luận được)
  *   check MUST không đạt                            -> FAIL  (exit 1)
  *   còn lại                                         -> PASS  (exit 0)

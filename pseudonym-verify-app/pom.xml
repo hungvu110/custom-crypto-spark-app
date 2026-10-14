@@ -15,13 +15,13 @@
   <name>pseudonym-verify-app</name>
   <description>
     Spark app sinh dữ liệu viễn thông tổng hợp (có đáp án), áp pseudonym-udf rồi kiểm chứng đo được "đã khử định danh
-    thành công chưa" (verdict PASS/FAIL/ERROR + report.json + exit code). Plan: docs/pseudonym-verify-app/PLAN.md.
+    thành công chưa" (verdict PASS/FAIL/ERROR + report.json + exit code). Plan: docs/pseudonymization/VERIFY_APP_PLAN.md.
   </description>
 
   <dependencies>
     <!--
       Lib giả danh + hạ tầng lấy khoá: "provided" — KHÔNG shade vào fat jar. Image copy 2 jar này vào /opt/app và manifest
-      nạp qua spark.jars, đúng cách một job thật dùng lib (xem docs/PSEUDONYMIZATION_UDF_PLAN.md mục 8).
+      nạp qua spark.jars, đúng cách một job thật dùng lib (xem docs/pseudonymization/LIB_PLAN.md mục 8).
     -->
     <dependency>
       <groupId>vai.lakehouse</groupId>

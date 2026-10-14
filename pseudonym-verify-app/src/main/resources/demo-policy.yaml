@@ -1,5 +1,5 @@
 # Policy giả danh cho dữ liệu tổng hợp của pseudonym-verify-app — KHÔNG chứa bí mật, commit được vào Git.
-# Format: docs/PSEUDONYMIZATION_UDF_PLAN.md mục 4.2. App chạy policy này 1 lần cho MỖI chế độ trong PSEUDO_MODES
+# Format: docs/pseudonymization/LIB_PLAN.md mục 4.2. App chạy policy này 1 lần cho MỖI chế độ trong PSEUDO_MODES
 # (thay `mode` của mọi cột), nên `mode` ở đây chỉ là mặc định khi dùng policy với lib trực tiếp.
 #
 # Cột không có trong policy giữ nguyên. Cùng 1 cột định danh trên nhiều bảng phải cùng mode để join được.

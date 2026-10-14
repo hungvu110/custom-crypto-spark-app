@@ -13,7 +13,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StringType
 
 /**
- * RUN_MODE=guard — cổng chặn trên dữ liệu THẬT (docs/pseudonym-verify-app/PLAN.md mục 7): giả danh `INPUT_TABLE` theo
+ * RUN_MODE=guard — cổng chặn trên dữ liệu THẬT (docs/pseudonymization/VERIFY_APP_PLAN.md mục 7): giả danh `INPUT_TABLE` theo
  * policy của `GUARD_TABLE`, chạy các check KHÔNG cần đáp án, chỉ ghi output khi verdict PASS.
  */
 object GuardJob extends VerifyJob {

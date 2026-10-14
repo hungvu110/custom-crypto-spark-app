@@ -42,7 +42,7 @@ class HmacPseudonymizerSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "mang version của khoá trong tiền tố" in {
-    val v3 = PseudonymKey.parse("pseudonym.hmac.v3", 3, TestKeys.HmacEncoded, HmacPseudonymizer.KeyBytes)
+    val v3 = PseudonymKey.parse("pseudonym.hmac_v3", 3, TestKeys.HmacEncoded, HmacPseudonymizer.KeyBytes)
     new HmacPseudonymizer(v3).pseudonymize("84903217465") shouldBe "k3_3fe27d9b4727fb8a0f900bc4126c6164"
   }
 

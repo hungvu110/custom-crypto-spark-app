@@ -4,8 +4,9 @@ Spark job sinh dữ liệu viễn thông **tổng hợp có đáp án** (biết 
 lib [`pseudonym-udf`](../pseudonym-udf), rồi chạy bộ check đo được để trả lời **có/không**: _đã khử định danh thành
 công chưa_. Kết quả là verdict `PASS` / `FAIL` / `ERROR`, file `report.json` và exit code.
 
-- Plan lib + quyết định thiết kế: [docs/PSEUDONYMIZATION_UDF_PLAN.md](../docs/PSEUDONYMIZATION_UDF_PLAN.md)
-- Plan app + định nghĩa "thành công" + danh sách check: [docs/pseudonym-verify-app/PLAN.md](../docs/pseudonym-verify-app/PLAN.md)
+- Cơ chế từng thuật toán kèm ví dụ: [docs/pseudonymization/ALGORITHMS.md](../docs/pseudonymization/ALGORITHMS.md)
+- Plan lib + quyết định thiết kế: [docs/pseudonymization/LIB_PLAN.md](../docs/pseudonymization/LIB_PLAN.md)
+- Plan app + định nghĩa "thành công" + danh sách check: [docs/pseudonymization/VERIFY_APP_PLAN.md](../docs/pseudonymization/VERIFY_APP_PLAN.md)
 
 ## 1. Cấu trúc thư mục
 

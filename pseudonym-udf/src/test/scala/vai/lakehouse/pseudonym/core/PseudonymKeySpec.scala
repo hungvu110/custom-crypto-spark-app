@@ -41,7 +41,7 @@ class PseudonymKeySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "KHÔNG đưa giá trị khoá vào toString hay message lỗi" in {
-    val key = PseudonymKey.parse("pseudonym.hmac.v1", 1, "hex:" + secretHex, 32)
+    val key = PseudonymKey.parse("pseudonym.hmac_v1", 1, "hex:" + secretHex, 32)
     key.toString should not include secretHex
     key.toString should include("***")
 

@@ -57,7 +57,7 @@ class PseudonymExtensionSpec extends AnyFlatSpec with Matchers with SparkTestSes
 
   "PseudonymExtension() qua spark.sql.extensions" should "đọc khoá từ spark.pseudonym.* (file) và KHÔNG có pseudo_reveal" in {
     val dir = Files.createTempDirectory("pseudonym-keys")
-    Files.write(dir.resolve("pseudonym.hmac.v1"), (TestKeys.HmacEncoded + "\n").getBytes(StandardCharsets.UTF_8))
+    Files.write(dir.resolve("pseudonym.hmac_v1"), (TestKeys.HmacEncoded + "\n").getBytes(StandardCharsets.UTF_8))
     spark.stop()
     SparkSession.clearActiveSession()
     SparkSession.clearDefaultSession()

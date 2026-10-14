@@ -11,7 +11,7 @@ import org.apache.spark.sql.types.StringType
 
 /**
  * Nhóm U — liên kết được các bản ghi của cùng một chủ thể, phân tích dọc vẫn đúng (điều kiện C3, mục b + d của tài liệu).
- * Xem docs/pseudonym-verify-app/PLAN.md mục 5.1.
+ * Xem docs/pseudonymization/VERIFY_APP_PLAN.md mục 5.1.
  */
 private[pseudonymverify] object LinkabilityChecks {
   import CheckSupport._

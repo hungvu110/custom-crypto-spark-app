@@ -13,6 +13,7 @@ Bản tương đương cho sbt nằm ở `crawler-streaming-app/internal-repo`.
 | `settings.xml` | `~/.m2/settings.xml` | Mirror `*` sang Nexus: dependency, plugin và `bloop-maven-plugin` của Metals đều tải qua Nexus | `project/repositories` + `.sbtopts` |
 | `mvnw` + `.mvn/wrapper/maven-wrapper.properties` | `./mvnw`, `./.mvn/wrapper/` | Tải bản Maven 3.9.9 từ Nexus. Dùng khi máy chưa cài Maven, hoặc Maven quá cũ | `sbtw` |
 | `.vscode/settings.json` | `./.vscode/settings.json` | Metals tải server/Bloop qua Nexus và import build bằng `./mvnw` | `.vscode/settings.json` |
+| `check-nexus.sh` | chạy tại chỗ (không copy) | Kiểm tra Nexus có đủ artifact/plugin cho `pseudonym-udf` + 2 app giả danh **trước** khi build; in `OK`/`MISS`/`AUTH` từng artifact | — |
 | (trong `settings.xml`, phần `<servers>`) | `~/.m2/settings.xml` | Credential khi Nexus bắt đăng nhập, hoặc khi `mvn deploy` | `credentials.example` |
 | `dak-mock/pom.xml` | `./dak-mock/pom.xml` | Pom của mock DAK, thêm `<repositories>`, `<pluginRepositories>`, `<distributionManagement>` theo tài liệu công ty | `build.sbt` (`publishTo`) |
 | `dak-mock/Dockerfile` | `./dak-mock/Dockerfile` | Maven trong container dùng `settings.xml` có mirror; base image đổi được qua `--build-arg` | (crawler: `SPARK_BASE_IMAGE`) |
@@ -95,7 +96,7 @@ Muốn kiểm tra luôn bước Metals sẽ chạy:
 ```bash
 ./mvnw -B ch.epfl.scala:bloop-maven-plugin:2.0.1:bloopInstall -DdownloadSources=true
 ls .bloop/                       # phải có key-prefix-lib.json, column-crypto-lib.json, spark-app.json,
-                                 # hdfs-load-stress-test.json, pseudonym-udf.json, pseudonym-verify-app.json
+                                 # hdfs-load-stress-test.json, pseudonym-udf.json, pseudonym-verify-app.json, pseudonymize-table-app.json
 ```
 
 Nếu Nexus không có version `2.0.1` của plugin, xem các version đang có tại
@@ -125,6 +126,36 @@ Sau đó trong VS Code:
    ```bash
    grep -n -i "maven\|mvn\|bloop\|ERROR" .metals/metals.log | grep -v "no build target\|empty definition" | tail -60
    ```
+
+## Build module khử định danh (`pseudonym-udf`, `pseudonymize-table-app`, `pseudonym-verify-app`)
+
+**Không cần file cấu hình mới.** `settings.xml` (mirror `*` → Nexus) ở Bước 1 là đủ: ba module này không dùng artifact
+bên thứ ba nào mà `spark-app` / `column-crypto-lib` / `key-prefix-lib` chưa dùng (Tink 1.9.0, snakeyaml 2.2, Delta 3.2.0,
+Spark 3.5.1 đều đã có trong tập của module cũ), và không dùng plugin mới. Nghĩa là máy build được module cũ qua Nexus thì
+build được app mới.
+
+```bash
+# 0. (khuyến nghị) kiểm tra Nexus có đủ artifact — in OK/MISS từng cái, exit 1 nếu thiếu
+internal-repo/check-nexus.sh                      # NEXUS=... nếu URL khác; NEXUS_USER/NEXUS_PASSWORD nếu cần đăng nhập
+
+# 1. build app khử định danh bảng; -am BẮT BUỘC: tự build key-prefix-lib, pseudonym-udf, spark-app (jar block-token-patch)
+./mvnw -B -pl pseudonymize-table-app -am clean package -DskipTests
+# -> pseudonymize-table-app/target/pseudonymize-table-app.jar
+# -> pseudonym-udf/target/pseudonym-udf-1.0-SNAPSHOT.jar, key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar
+
+# 2. cùng với test (cần JDK >= 11; JDK 17+ đã có --add-opens trong pom.xml gốc)
+./mvnw -B -pl pseudonymize-table-app -am clean package
+```
+
+Lưu ý riêng cho các module này:
+
+- **`-am` là bắt buộc.** App khai `pseudonym-udf`/`key-prefix-lib` ở scope `provided`; không có `-am` Maven đi tìm chúng trong
+  `~/.m2` và fail nếu chưa `mvn install`. (`internal-repo` không cấu hình việc này: đó là hành vi reactor của Maven.)
+- **Không cần jar đối tác** (`DataLakeSecurity_jv8.jar`) và không cần profile `cdr-crypto`: khác `cdr-crypto-udf`.
+- **Lỗi `Cannot access internal-mirror ... in offline mode`** hoặc `Could not resolve dependencies` nghĩa là Nexus thiếu
+  artifact hoặc yêu cầu đăng nhập: chạy `check-nexus.sh` để biết chính xác artifact nào.
+- **Docker build** không chạy Maven (chỉ COPY jar đã build) nên không cần mirror; base image
+  `apache/spark:3.5.1-scala2.12-java11-ubuntu` vẫn cần pull được từ registry (xem mục "Lưu ý" bên dưới).
 
 ## Mock DAK (`dak-mock`): build riêng
 
@@ -180,14 +211,14 @@ với cả `maven-deploy-plugin` 2.x (Maven 3.8) lẫn 3.x (Maven 3.9).
 - **Cache đi theo URL repo.** Lần build đầu trên máy công ty tải lại toàn bộ dependency từ Nexus.
 - **`maven-public` phải proxy Maven Central.** Mọi dependency và plugin của project (kể cả
   `bloop-maven-plugin`) đều có trên Central.
-- **Module `pseudonym-udf` / `pseudonym-verify-app`** (bài toán 4) không cần file riêng trong thư mục này.
+- **Module `pseudonym-udf` / `pseudonym-verify-app` / `pseudonymize-table-app`** (bài toán 4) không cần file riêng trong thư mục này.
   Lý do: mọi dependency của 2 module đều có trên Maven Central, nên `maven-public` proxy được:
   - `com.google.crypto.tink:tink:1.9.0`: đúng bản Spark 3.5.1 ship sẵn, khai `provided` và loại hết dependency bắc cầu.
   - `snakeyaml` 2.2 (`provided`).
   - `delta-spark` 3.2.0 (trùng `spark-app`).
 
-  `pseudonym-verify-app/Dockerfile` cũng không chạy Maven, chỉ COPY 3 jar đã build: build context là **gốc repo**,
-  `docker build -f pseudonym-verify-app/Dockerfile .`. Base image vẫn là `apache/spark:3.5.1-scala2.12-java11-ubuntu`,
+  `pseudonym-verify-app/Dockerfile` và `pseudonymize-table-app/Dockerfile` cũng không chạy Maven, chỉ COPY 3 jar đã
+  build: build context là **gốc repo**, `docker build -f <module>/Dockerfile .`. Base image vẫn là `apache/spark:3.5.1-scala2.12-java11-ubuntu`,
   nên cùng lưu ý registry như dòng dưới.
 - **Docker:** các `Dockerfile` không chạy Maven (jar được build sẵn ở ngoài), nên không bị ảnh hưởng.
   Riêng base image `apache/spark:3.5.1-scala2.12-java11-ubuntu` lấy từ Docker Hub. Nếu máy build không

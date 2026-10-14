@@ -10,7 +10,7 @@ import org.apache.spark.SparkConf
 
 /**
  * Entry point. Exit code: 0 = PASS, 1 = FAIL (check MUST không đạt / selftest có mutation lọt), 2 = ERROR (không kết
- * luận được: check lỗi, đối chứng P6 không đạt, sai cấu hình, job lỗi). Xem docs/pseudonym-verify-app/PLAN.md.
+ * luận được: check lỗi, đối chứng P6 không đạt, sai cấu hình, job lỗi). Xem docs/pseudonymization/VERIFY_APP_PLAN.md.
  *
  * `main` chỉ đổi kết quả của [[execute]] thành exit code — toàn bộ logic nằm trong `execute` (gọi được từ test, không
  * `sys.exit`).

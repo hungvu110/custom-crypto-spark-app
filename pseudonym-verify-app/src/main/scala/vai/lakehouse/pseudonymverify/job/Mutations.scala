@@ -18,7 +18,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StringType
 
 /**
- * Bản giả danh CỐ Ý SAI để kiểm chứng chính bộ check (docs/pseudonym-verify-app/PLAN.md mục 6). Bộ check chỉ đáng tin khi
+ * Bản giả danh CỐ Ý SAI để kiểm chứng chính bộ check (docs/pseudonymization/VERIFY_APP_PLAN.md mục 6). Bộ check chỉ đáng tin khi
  * mọi mutation bị bắt: verdict ≠ PASS và các check trong `expected` nằm trong danh sách fail.
  */
 final case class Mutation(id: String, mode: PseudonymMode, description: String, expected: Seq[String],

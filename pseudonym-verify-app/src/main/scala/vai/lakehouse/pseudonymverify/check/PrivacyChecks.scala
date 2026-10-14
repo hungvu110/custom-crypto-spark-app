@@ -16,7 +16,7 @@ import scala.util.Try
 
 /**
  * Nhóm P — đã thay định danh (C1), không suy ngược được nếu không có salt/khoá/bảng ánh xạ (C2, mục a + c + chú thích ¹).
- * Xem docs/pseudonym-verify-app/PLAN.md mục 5.2.
+ * Xem docs/pseudonymization/VERIFY_APP_PLAN.md mục 5.2.
  */
 private[pseudonymverify] object PrivacyChecks {
   import CheckSupport._

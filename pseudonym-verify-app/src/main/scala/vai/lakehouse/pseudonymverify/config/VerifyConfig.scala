@@ -26,7 +26,7 @@ object RunMode {
 
 /**
  * Cấu hình của job, đọc từ biến môi trường của driver (`spec.driver.env` trong SparkApplication) — xem
- * docs/pseudonym-verify-app/PLAN.md mục 9.
+ * docs/pseudonymization/VERIFY_APP_PLAN.md mục 9.
  */
 final case class VerifyConfig(
     appName: String,

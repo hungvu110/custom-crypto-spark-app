@@ -6,7 +6,7 @@ thể (phân tích dọc) mà không biết danh tính thật. Logic bọc dư�
 DataFrame API (Spark job) lẫn SQL function (sql-engine) — cùng mô hình với `cdr-crypto-udf`.
 
 App sinh dữ liệu + kiểm chứng "khử định danh thành công hay chưa": xem
-[`docs/pseudonym-verify-app/PLAN.md`](./pseudonym-verify-app/PLAN.md).
+[`VERIFY_APP_PLAN.md`](./VERIFY_APP_PLAN.md).
 
 ---
 
@@ -15,45 +15,46 @@ App sinh dữ liệu + kiểm chứng "khử định danh thành công hay chưa
 Tài liệu nêu **3 cách** tạo định danh giả (mục a: "băm có salt hoặc mã hoá"; mục c: "salt, khoá bí
 mật hoặc bảng ánh xạ") — lib hiện thực **cả 3**, mỗi cách là 1 chế độ (`mode`):
 
-| Tài liệu nguồn                                                | Trong plan                                                                                                                  |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| a) "thuật toán băm (hashing) có salt"                         | Chế độ **`HASH`**: HMAC-SHA256 với khoá bí mật 256-bit (mục 3.2)                                                             |
-| a) "hoặc mã hoá" + chú thích ¹ "AES-256"                       | Chế độ **`ENCRYPT`**: AES-256-SIV — mã hoá **tất định**, giải mã lại được bằng khoá (mục 3.3)                                |
-| c) "bảng ánh xạ (nếu có)"                                     | Chế độ **`MAPPING`**: token ngẫu nhiên + bảng ánh xạ Delta lưu riêng (mục 3.4)                                              |
-| b) liên kết bản ghi cùng chủ thể, phân tích dọc                | Cả 3 chế độ cho **cùng 1 giá trị → cùng 1 định danh giả** (tất định)                                                        |
+| Tài liệu nguồn                                                           | Trong plan                                                                                                                      |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| a) "thuật toán băm (hashing) có salt"                                    | Chế độ **`HASH`**: HMAC-SHA256 với khoá bí mật 256-bit (mục 3.2)                                                                |
+| a) "hoặc mã hoá" + chú thích ¹ "AES-256"                                 | Chế độ **`ENCRYPT`**: AES-256-SIV — mã hoá **tất định**, giải mã lại được bằng khoá (mục 3.3)                                   |
+| c) "bảng ánh xạ (nếu có)"                                                | Chế độ **`MAPPING`**: token ngẫu nhiên + bảng ánh xạ Delta lưu riêng (mục 3.4)                                                  |
+| b) liên kết bản ghi cùng chủ thể, phân tích dọc                          | Cả 3 chế độ cho **cùng 1 giá trị → cùng 1 định danh giả** (tất định)                                                            |
 | c) bảo vệ tuyệt đối salt/khoá/bảng ánh xạ, lưu riêng, kiểm soát truy cập | Khoá trong Vault/Secret qua `key-prefix-lib`; bảng ánh xạ ở vùng HDFS riêng có phân quyền; hàm tái định danh tách riêng (mục 5) |
-| d) Ví dụ MyViettel, trạm BTS, Viettel++                        | Policy mẫu (mục 4.2), luồng cá nhân hoá ưu đãi Viettel++ (mục 6); app kiểm chứng đo lại cả 3 ví dụ                          |
-| d) Viettel++: "Mã khách hàng được thay thế bằng một `pseudonym_id`" | Policy có tuỳ chọn `output` để đổi tên cột, vd `customer_id` → `pseudonym_id` (mục 4.2)                                    |
+| d) Ví dụ MyViettel, trạm BTS, Viettel++                                  | Policy mẫu (mục 4.2), luồng cá nhân hoá ưu đãi Viettel++ (mục 6); app kiểm chứng đo lại cả 3 ví dụ                              |
+| d) Viettel++: "Mã khách hàng được thay thế bằng một `pseudonym_id`"      | Policy có tuỳ chọn `output` để đổi tên cột, vd `customer_id` → `pseudonym_id` (mục 4.2)                                         |
 
 3 điểm **lệch có chủ đích** so với tài liệu (giữ lại vì làm đúng theo tài liệu sẽ vi phạm chính mục c):
 
-| Tài liệu nguồn                                   | Vì sao không theo                                                                                                                                                         |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| d) SQL `sha256()` / `HASHBYTES()`                 | Không khoá: không gian SĐT/IMEI nhỏ, liệt kê được (~10⁹ số di động VN) → băm lại toàn bộ là đảo ngược 100%. Ghép salt vào câu SQL thì salt lộ trong query/`EXPLAIN`/log. |
-| chú thích ¹ "RSA-2048"                           | RSA chuẩn (OAEP) cho kết quả ngẫu nhiên → cùng 1 SĐT ra 2 giá trị → mất tính liên kết (mục b). RSA không padding thì không an toàn.                                      |
-| d) Python: Faker, AnonymizeDF, SSB-Pseudonymization | Project là Spark 3.5.1 / Scala 2.12; UDF Python tốn serialize JVM↔Python. Viết bằng Scala.                                                                              |
+| Tài liệu nguồn                                      | Vì sao không theo                                                                                                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| d) SQL `sha256()` / `HASHBYTES()`                   | Không khoá: không gian SĐT/IMEI nhỏ, liệt kê được (~10⁹ số di động VN) → băm lại toàn bộ là đảo ngược 100%. Ghép salt vào câu SQL thì salt lộ trong query/`EXPLAIN`/log. |
+| chú thích ¹ "RSA-2048"                              | RSA chuẩn (OAEP) cho kết quả ngẫu nhiên → cùng 1 SĐT ra 2 giá trị → mất tính liên kết (mục b). RSA không padding thì không an toàn.                                      |
+| d) Python: Faker, AnonymizeDF, SSB-Pseudonymization | Project là Spark 3.5.1 / Scala 2.12; UDF Python tốn serialize JVM↔Python. Viết bằng Scala.                                                                               |
 
 > Dữ liệu đã giả danh **vẫn là dữ liệu cá nhân**: ai giữ khoá hoặc bảng ánh xạ là tái định danh
 > được — đúng như mục c, an toàn phụ thuộc hoàn toàn vào việc bảo vệ chúng.
 
 ## 1. Quyết định thiết kế
 
-| #   | Vấn đề                      | Quyết định                                                                                                                                                                                                                                                       |
-| --- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Chọn chế độ nào             | Khai báo theo **từng cột** trong policy. Mặc định `HASH`. Dùng `ENCRYPT` khi cần lấy lại giá trị gốc mà không muốn giữ bảng ánh xạ. Dùng `MAPPING` khi muốn định danh giả **không suy ra được từ giá trị gốc dù lộ khoá** (không có khoá nào để brute-force). |
-| D2  | Định dạng output            | `HASH`: `k1_<32 hex>` (16 byte đầu của HMAC). `ENCRYPT`: `e1_<base64url>`. `MAPPING`: `t_<32 hex>` (16 byte ngẫu nhiên). Tiền tố cho biết định danh giả sinh bằng cách nào và thế hệ khoá nào.                                                                |
-| D3  | Đầu vào                     | Băm/mã hoá/tra **nguyên trạng** giá trị. `null` vào → `null` ra. Lib không đổi định dạng: dữ liệu đầu vào phải đồng nhất định dạng (xem rủi ro ở mục 9).                                                                                                      |
-| D4  | Khoá                        | 1 khoá HMAC (32 byte) cho `HASH`, 1 khoá AES-256-SIV (64 byte) cho `ENCRYPT`. Cùng khoá trên mọi bảng → join được giữa các bảng (hành trình MyViettel trải trên nhiều bảng).                                                                                 |
-| D5  | Nguồn khoá                  | Tái dùng `key-prefix-lib` (`PrefixSource`: K8s Secret / Vault / DAK), namespace conf `spark.pseudonym.*`. Khoá không bao giờ nằm trong Spark conf, code hay plan.                                                                                            |
-| D6  | UDF hay built-in            | **UDF** (`ScalaUDF`). Spark 3.5 không có HMAC/AES-SIV built-in; ghép `sha2(concat('<key>', col))` thì khoá thành `Literal` hiện trong `EXPLAIN`. Với UDF, khoá nằm trong closure, plan chỉ hiện tên hàm.                                                      |
-| D7  | Cột nào được xử lý          | Chỉ các cột khai báo trong policy; các cột khác giữ nguyên.                                                                                                                                                                                                    |
-| D8  | Tái định danh               | `HASH`: tra **xuôi** (giá trị gốc → định danh giả). `ENCRYPT`: `pseudo_reveal` giải mã. `MAPPING`: join ngược bảng ánh xạ. Cả 3 chỉ chạy trong môi trường có thẩm quyền (D9).                                                                                 |
-| D9  | Kiểm soát truy cập (mục c)  | `PseudonymExtension` (sinh định danh giả) chỉ nạp ở job ETL/engine hạn chế; `PseudonymRevealExtension` (giải mã) nạp riêng ở môi trường tái định danh. **Không** nạp lên sql-engine của analyst: ai gọi được `pseudo_hash` tuỳ ý là có "oracle", chỉ cần liệt kê ~10⁹ SĐT là đảo ngược được — tương đương lộ khoá. |
+| #   | Vấn đề                     | Quyết định                                                                                                                                                                                                                                                                                                         |
+| --- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | Chọn chế độ nào            | Khai báo theo **từng cột** trong policy. Mặc định `HASH`. Dùng `ENCRYPT` khi cần lấy lại giá trị gốc mà không muốn giữ bảng ánh xạ. Dùng `MAPPING` khi muốn định danh giả **không suy ra được từ giá trị gốc dù lộ khoá** (không có khoá nào để brute-force).                                                      |
+| D2  | Định dạng output           | `HASH`: `k1_<32 hex>` (16 byte đầu của HMAC). `ENCRYPT`: `e1_<base64url>`. `MAPPING`: `t_<32 hex>` (16 byte ngẫu nhiên). Tiền tố cho biết định danh giả sinh bằng cách nào và thế hệ khoá nào.                                                                                                                     |
+| D3  | Đầu vào                    | Băm/mã hoá/tra **nguyên trạng** giá trị. `null` vào → `null` ra. Lib không đổi định dạng: dữ liệu đầu vào phải đồng nhất định dạng (xem rủi ro ở mục 9).                                                                                                                                                           |
+| D4  | Khoá                       | 1 khoá HMAC (32 byte) cho `HASH`, 1 khoá AES-256-SIV (64 byte) cho `ENCRYPT`. Cùng khoá trên mọi bảng → join được giữa các bảng (hành trình MyViettel trải trên nhiều bảng).                                                                                                                                       |
+| D5  | Nguồn khoá                 | Tái dùng `key-prefix-lib` (`PrefixSource`: K8s Secret / Vault / DAK), namespace conf `spark.pseudonym.*`. Khoá không bao giờ nằm trong Spark conf, code hay plan.                                                                                                                                                  |
+| D6  | UDF hay built-in           | **UDF** (`ScalaUDF`). Spark 3.5 không có HMAC/AES-SIV built-in; ghép `sha2(concat('<key>', col))` thì khoá thành `Literal` hiện trong `EXPLAIN`. Với UDF, khoá nằm trong closure, plan chỉ hiện tên hàm.                                                                                                           |
+| D7  | Cột nào được xử lý         | Chỉ các cột khai báo trong policy; các cột khác giữ nguyên.                                                                                                                                                                                                                                                        |
+| D8  | Tái định danh              | `HASH`: tra **xuôi** (giá trị gốc → định danh giả). `ENCRYPT`: `pseudo_reveal` giải mã. `MAPPING`: join ngược bảng ánh xạ. Cả 3 chỉ chạy trong môi trường có thẩm quyền (D9).                                                                                                                                      |
+| D9  | Kiểm soát truy cập (mục c) | `PseudonymExtension` (sinh định danh giả) chỉ nạp ở job ETL/engine hạn chế; `PseudonymRevealExtension` (giải mã) nạp riêng ở môi trường tái định danh. **Không** nạp lên sql-engine của analyst: ai gọi được `pseudo_hash` tuỳ ý là có "oracle", chỉ cần liệt kê ~10⁹ SĐT là đảo ngược được — tương đương lộ khoá. |
 
 ## 2. Cấu trúc module
 
 Module mới `pseudonym-udf` (Maven, thêm vào `<modules>` của root `pom.xml`). Phụ thuộc — **tất cả `provided`**,
 jar không shade gì:
+
 - `key-prefix-lib`, Spark.
 - `delta-spark` 3.2.0, cho `MAPPING`.
 - Google Tink 1.9.0, cho `ENCRYPT`. **Spark 3.5.1 đã ship đúng bản này** (dependency của `spark-network-common`,
@@ -88,6 +89,7 @@ pseudonym-udf/
 ```
 
 Quy ước thiết kế của lib:
+
 - **Phụ thuộc một chiều:** `core` ← `policy` ← `spark`. `core` không import Spark; ranh giới được trình biên dịch giữ
   (`private[pseudonym]`: app kiểm chứng nằm ở package `vai.lakehouse.pseudonymverify` nên **không** với tới được phần nội bộ).
 - **Không trạng thái toàn cục:** mọi cấu hình nhận qua tham số (`KeyProvider`, `SparkConf`). Chỗ duy nhất đọc `SparkEnv` là
@@ -197,8 +199,8 @@ flowchart TD
 
 ```scala
 trait KeyProvider extends Serializable {
-  def hmacKey: PseudonymKey     // PrefixSource.read("pseudonym.hmac.v<N>")
-  def aesSivKey: PseudonymKey   // PrefixSource.read("pseudonym.aes-siv.v<N>")
+  def hmacKey: PseudonymKey     // PrefixSource.read("pseudonym.hmac_v<N>")
+  def aesSivKey: PseudonymKey   // PrefixSource.read("pseudonym.aes_siv_v<N>")
 }
 ```
 
@@ -229,8 +231,8 @@ tables:
   loyalty.loyalty_txn:
     customer_id: { mode: HASH, output: pseudonym_id }
   crm.subscriber:
-    isdn:        { mode: HASH }
-    imei:        { mode: HASH }
+    isdn: { mode: HASH }
+    imei: { mode: HASH }
     customer_id: { mode: HASH, output: pseudonym_id }
 ```
 
@@ -275,12 +277,12 @@ SELECT pseudo_reveal(pseudonym_id) AS customer_id FROM ...;
 
 ## 5. Bảo vệ khoá và bảng ánh xạ (mục c)
 
-| Việc         | Quy ước                                                                                                                                                                                     |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Lưu riêng    | Khoá: Vault (`VaultPrefixSource`/`DakPrefixSource`) hoặc K8s Secret mount. Bảng ánh xạ: thư mục HDFS riêng, **không** nằm dưới thư mục dữ liệu phân tích.                                  |
-| Ai truy cập  | Đọc khoá / bảng ánh xạ: SA của job ETL + người có thẩm quyền tái định danh. Analyst **không**. Phân quyền HDFS bằng Ranger.                                                                |
-| Xoay khoá    | Xoay = mọi định danh giả `HASH`/`ENCRYPT` đổi → đứt chuỗi phân tích dọc. Chỉ xoay khi nghi lộ khoá, kèm giả danh lại toàn bộ lịch sử. Tiền tố `k<N>_`/`e<N>_` để phát hiện 2 thế hệ trộn lẫn. |
-| Không làm    | Không đặt khoá trong `sparkConf`, env của manifest commit vào git, log, message lỗi, tên file.                                                                                             |
+| Việc        | Quy ước                                                                                                                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lưu riêng   | Khoá: Vault (`VaultPrefixSource`/`DakPrefixSource`) hoặc K8s Secret mount. Bảng ánh xạ: thư mục HDFS riêng, **không** nằm dưới thư mục dữ liệu phân tích.                                     |
+| Ai truy cập | Đọc khoá / bảng ánh xạ: SA của job ETL + người có thẩm quyền tái định danh. Analyst **không**. Phân quyền HDFS bằng Ranger.                                                                   |
+| Xoay khoá   | Xoay = mọi định danh giả `HASH`/`ENCRYPT` đổi → đứt chuỗi phân tích dọc. Chỉ xoay khi nghi lộ khoá, kèm giả danh lại toàn bộ lịch sử. Tiền tố `k<N>_`/`e<N>_` để phát hiện 2 thế hệ trộn lẫn. |
+| Không làm   | Không đặt khoá trong `sparkConf`, env của manifest commit vào git, log, message lỗi, tên file.                                                                                                |
 
 ## 6. Tái định danh có thẩm quyền — luồng ưu đãi Viettel++
 
@@ -323,16 +325,16 @@ Hệ thống phân tích không bao giờ thấy `customer_id`; hệ thống g�
 
 ## 7. Test (`pseudonym-udf`)
 
-| Spec                     | Nội dung                                                                                                                                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `HmacPseudonymizerSpec`  | RFC 4231 test vectors (chứng minh đúng HMAC-SHA256); golden vectors (khoá cố định → output ghim cứng, chặn đổi format vô tình); 16 thread song song = kết quả tuần tự; `null` → `null`.         |
-| `AesSivPseudonymizerSpec`| Output khớp byte-for-byte với primitive `AesSiv` của Tink gọi trực tiếp; `decrypt(encrypt(x)) == x` (kể cả unicode, chuỗi dài, rỗng); tất định; sai khoá / sửa 1 ký tự bản mã → lỗi xác thực. |
-| `MappingTableSpec`       | Spark + Delta local: giá trị mới nhận token, giá trị cũ giữ token cũ qua nhiều lần chạy; 2 job song song cùng giá trị → vẫn 1 token; retry task không sinh token thứ 2.                           |
-| `PseudonymKeySpec`       | Từ chối sai độ dài, khoá toàn 0, thiếu tiền tố; `toString`/message lỗi không chứa khoá.                                                                                                          |
-| `PseudonymPolicySpec`    | Parse YAML; cột không tồn tại → fail; `output` trùng tên cột → fail.                                                                                                                             |
-| `PseudonymizerSpec`      | Spark `local[*]`: cột đổi tên đúng, cột gốc biến mất; đúng format theo mode; `df.queryExecution.toString` không chứa khoá.                                                                         |
-| `ReidentifierSpec`       | Cả 3 mode: danh sách `pseudonym_id` → đúng `customer_id` gốc 100%.                                                                                                                              |
-| `PseudonymExtensionSpec` | SQL == DataFrame API; `pseudo_reveal` không có khi chỉ nạp `PseudonymExtension`.                                                                                                                 |
+| Spec                      | Nội dung                                                                                                                                                                                      |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HmacPseudonymizerSpec`   | RFC 4231 test vectors (chứng minh đúng HMAC-SHA256); golden vectors (khoá cố định → output ghim cứng, chặn đổi format vô tình); 16 thread song song = kết quả tuần tự; `null` → `null`.       |
+| `AesSivPseudonymizerSpec` | Output khớp byte-for-byte với primitive `AesSiv` của Tink gọi trực tiếp; `decrypt(encrypt(x)) == x` (kể cả unicode, chuỗi dài, rỗng); tất định; sai khoá / sửa 1 ký tự bản mã → lỗi xác thực. |
+| `MappingTableSpec`        | Spark + Delta local: giá trị mới nhận token, giá trị cũ giữ token cũ qua nhiều lần chạy; 2 job song song cùng giá trị → vẫn 1 token; retry task không sinh token thứ 2.                       |
+| `PseudonymKeySpec`        | Từ chối sai độ dài, khoá toàn 0, thiếu tiền tố; `toString`/message lỗi không chứa khoá.                                                                                                       |
+| `PseudonymPolicySpec`     | Parse YAML; cột không tồn tại → fail; `output` trùng tên cột → fail.                                                                                                                          |
+| `PseudonymizerSpec`       | Spark `local[*]`: cột đổi tên đúng, cột gốc biến mất; đúng format theo mode; `df.queryExecution.toString` không chứa khoá.                                                                    |
+| `ReidentifierSpec`        | Cả 3 mode: danh sách `pseudonym_id` → đúng `customer_id` gốc 100%.                                                                                                                            |
+| `PseudonymExtensionSpec`  | SQL == DataFrame API; `pseudo_reveal` không có khi chỉ nạp `PseudonymExtension`.                                                                                                              |
 
 Mục tiêu coverage ≥ 80%, chạy bằng `scalatest-maven-plugin` đã có trong root pom.
 
@@ -349,15 +351,15 @@ Mục tiêu coverage ≥ 80%, chạy bằng `scalatest-maven-plugin` đã có tr
 
 ## 9. Rủi ro
 
-| Rủi ro                                                                 | Giảm thiểu                                                                                                                         |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Lộ khoá (`HASH`) → đảo ngược toàn bộ (không gian SĐT nhỏ)              | Khoá chỉ trong Vault/Secret, quyền đọc tối thiểu; check P7 (khoá không lọt vào plan/log/data). `MAPPING` không có rủi ro này.      |
-| Lộ khoá (`ENCRYPT`) → giải mã trực tiếp toàn bộ                       | Như trên; `pseudo_reveal` tách extension riêng.                                                                                   |
-| Lộ bảng ánh xạ (`MAPPING`) = lộ toàn bộ                               | Vùng HDFS riêng + Ranger; không đặt dưới thư mục phân tích.                                                                        |
-| Analyst gọi được `pseudo_hash` → oracle                                | D9: không nạp extension lên sql-engine của analyst.                                                                               |
-| Cùng 1 người nhưng giá trị gốc khác định dạng (`0912…` / `+84912…`) → nhiều định danh giả | Lib xử lý nguyên trạng (D3) → dữ liệu phải được đồng nhất định dạng ở bước trước khi giả danh hoá.                               |
-| Bảng ánh xạ lớn dần (1 dòng/giá trị từng xuất hiện), join tốn kém     | Chỉ đọc 2 cột `raw_value`, `token`; chạy `OPTIMIZE` định kỳ cho bảng Delta; theo dõi kích thước bảng trong report của app kiểm chứng. |
-| Đổi thuật toán/format sau khi phát hành làm đứt dữ liệu cũ             | Golden vectors trong test; mọi thay đổi format phải đi kèm version mới.                                                           |
+| Rủi ro                                                                                    | Giảm thiểu                                                                                                                            |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Lộ khoá (`HASH`) → đảo ngược toàn bộ (không gian SĐT nhỏ)                                 | Khoá chỉ trong Vault/Secret, quyền đọc tối thiểu; check P7 (khoá không lọt vào plan/log/data). `MAPPING` không có rủi ro này.         |
+| Lộ khoá (`ENCRYPT`) → giải mã trực tiếp toàn bộ                                           | Như trên; `pseudo_reveal` tách extension riêng.                                                                                       |
+| Lộ bảng ánh xạ (`MAPPING`) = lộ toàn bộ                                                   | Vùng HDFS riêng + Ranger; không đặt dưới thư mục phân tích.                                                                           |
+| Analyst gọi được `pseudo_hash` → oracle                                                   | D9: không nạp extension lên sql-engine của analyst.                                                                                   |
+| Cùng 1 người nhưng giá trị gốc khác định dạng (`0912…` / `+84912…`) → nhiều định danh giả | Lib xử lý nguyên trạng (D3) → dữ liệu phải được đồng nhất định dạng ở bước trước khi giả danh hoá.                                    |
+| Bảng ánh xạ lớn dần (1 dòng/giá trị từng xuất hiện), join tốn kém                         | Chỉ đọc 2 cột `raw_value`, `token`; chạy `OPTIMIZE` định kỳ cho bảng Delta; theo dõi kích thước bảng trong report của app kiểm chứng. |
+| Đổi thuật toán/format sau khi phát hành làm đứt dữ liệu cũ                                | Golden vectors trong test; mọi thay đổi format phải đi kèm version mới.                                                               |
 
 ## 10. Thứ tự triển khai
 

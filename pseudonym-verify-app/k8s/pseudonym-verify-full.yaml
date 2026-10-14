@@ -1,4 +1,4 @@
-# RUN_MODE=full — nghiệm thu pseudonym-udf (docs/pseudonym-verify-app/PLAN.md mục 13): sinh dữ liệu tổng hợp, giả danh
+# RUN_MODE=full — nghiệm thu pseudonym-udf (docs/pseudonymization/VERIFY_APP_PLAN.md mục 13): sinh dữ liệu tổng hợp, giả danh
 # theo từng chế độ trong PSEUDO_MODES, chạy bộ check U/P, ghi report.json. Exit code: 0 PASS / 1 FAIL / 2 ERROR.
 # Môi trường giống hdfs-load-stress-test (namespace teamk6gy0b5, cụm HDFS datalakehkh, principal k8s).
 #
@@ -92,7 +92,7 @@ spec:
     # ------ Lib giả danh: 2 jar rời trong image, UDF thật nên executor cũng nạp ------
     spark.jars: local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/pseudonym-udf-1.0-SNAPSHOT.jar
     # App tự nối DeltaSparkSessionExtension + DeltaCatalog và nạp PseudonymExtension với khoá của lần chạy.
-    # Khi KEY_SOURCE=file: thư mục Secret mount (mỗi khoá 1 file pseudonym.hmac.v1, pseudonym.aes-siv.v1).
+    # Khi KEY_SOURCE=file: thư mục Secret mount (mỗi khoá 1 file pseudonym.hmac_v1, pseudonym.aes_siv_v1).
     # spark.pseudonym.file.dir: /etc/pseudonym-keys
 
     # ------ Kerberos (vùng storage datalakehkh) — giống hdfs-load-stress-test ------

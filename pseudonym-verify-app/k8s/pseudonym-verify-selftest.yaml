@@ -1,4 +1,4 @@
-# RUN_MODE=selftest — kiểm chứng CHÍNH bộ check (docs/pseudonym-verify-app/PLAN.md mục 6): chạy các mutation (bản giả danh
+# RUN_MODE=selftest — kiểm chứng CHÍNH bộ check (docs/pseudonymization/VERIFY_APP_PLAN.md mục 6): chạy các mutation (bản giả danh
 # cố ý sai). PASS ⇔ mọi mutation đã chạy đều bị bắt: 8/8 với PSEUDO_MODES mặc định, 10/10 khi bật MAPPING.
 # Dữ liệu nhỏ (50 000 chủ thể) vì mỗi mutation chạy lại toàn bộ pipeline + check.
 #

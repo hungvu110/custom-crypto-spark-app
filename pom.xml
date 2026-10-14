@@ -24,9 +24,11 @@
       - cdr-crypto-udf    : (profile "cdr-crypto") mã hoá CDR của đối tác (DataLakeSecurity_jv8.jar) qua cả
                             SQL function và DataFrame API — xem docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md.
       - pseudonym-udf     : giả danh hoá cột định danh (HASH / ENCRYPT / MAPPING) qua DataFrame API + SQL function —
-                            xem docs/PSEUDONYMIZATION_UDF_PLAN.md.
+                            xem docs/pseudonymization/LIB_PLAN.md.
       - pseudonym-verify-app : Spark job sinh dữ liệu có đáp án, áp pseudonym-udf và kiểm chứng khử định danh
-                            (verdict + report.json) — xem docs/pseudonym-verify-app/PLAN.md.
+                            (verdict + report.json) — xem docs/pseudonymization/VERIFY_APP_PLAN.md.
+      - pseudonymize-table-app : Spark job khử định danh 1 bảng thật (DB_NAME, TABLE_NAME, PSEUDO_COLUMNS) bằng
+                            pseudonym-udf -> bảng đích — xem pseudonymize-table-app/README.md.
   </description>
 
   <modules>
@@ -36,6 +38,7 @@
     <module>hdfs-load-stress-test</module>
     <module>pseudonym-udf</module>
     <module>pseudonym-verify-app</module>
+    <module>pseudonymize-table-app</module>
   </modules>
 
   <!--

@@ -17,7 +17,7 @@
     Giả danh hoá (pseudonymization) cột định danh theo 3 chế độ: HASH (HMAC-SHA256 có khoá), ENCRYPT
     (AES-256-SIV, giải mã lại được), MAPPING (token ngẫu nhiên + bảng ánh xạ Delta). Dùng qua DataFrame API
     (Pseudonymizer) và SQL function (pseudo_hash/pseudo_encrypt, pseudo_reveal nạp riêng).
-    Xem docs/PSEUDONYMIZATION_UDF_PLAN.md.
+    Xem docs/pseudonymization/LIB_PLAN.md.
   </description>
 
   <!--

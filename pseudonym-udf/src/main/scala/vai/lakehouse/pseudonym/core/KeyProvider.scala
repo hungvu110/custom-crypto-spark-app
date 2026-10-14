@@ -10,7 +10,7 @@ trait KeyProvider {
 
 /**
  * Đọc khoá qua `key-prefix-lib` (K8s Secret / Vault / DAK) — khoá "lưu trữ riêng biệt" theo mục c của tài liệu.
- * Tên khoá trong nguồn: `pseudonym.hmac.v<N>` và `pseudonym.aes-siv.v<N>`, giá trị `base64:<...>`/`hex:<...>`.
+ * Tên khoá trong nguồn: `pseudonym.hmac_v<N>` và `pseudonym.aes_siv_v<N>`, giá trị `base64:<...>`/`hex:<...>`.
  * Khoá chỉ được đọc khi cần lần đầu (chế độ không dùng thì không đụng tới khoá của nó).
  */
 final class PrefixSourceKeyProvider(
@@ -29,6 +29,6 @@ final class PrefixSourceKeyProvider(
 }
 
 object PrefixSourceKeyProvider {
-  def hmacName(version: Int): String   = s"pseudonym.hmac.v$version"
-  def aesSivName(version: Int): String = s"pseudonym.aes-siv.v$version"
+  def hmacName(version: Int): String   = s"pseudonym.hmac_v$version"
+  def aesSivName(version: Int): String = s"pseudonym.aes_siv_v$version"
 }

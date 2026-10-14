@@ -8,7 +8,7 @@ Kubernetes qua **Spark Operator**, đọc/ghi HDFS trên Dell PowerScale/Isilon 
 | 1   | Isilon **ép wire encryption bắt buộc** (`dfs.data.transfer.protection = privacy`), nhưng block token của Isilon không đúng chuẩn Apache khiến Hadoop client ≥ 3.2.1 parse lỗi — **mọi thao tác đọc/ghi HDFS fail** | Patch tương thích `LenientBlockTokenIdentifier`, giữ nguyên mã hoá và Kerberos (không hạ mức bảo mật)                                    | `spark-app` (`vai.lakehouse.hdfs.*`) |
 | 2   | Mã hoá **cột dữ liệu nhạy cảm** trước khi ghi lên Data Lake, phải dùng được cả trong Spark job (DataFrame API) lẫn trên query console SQL của sql-engine, và 2 đường phải cho cùng kết quả                         | Biểu thức Catalyst **built-in** của Spark (`aes_encrypt`/`aes_decrypt`, AES-256-GCM), `keyPrefix` lấy từ K8s Secret hoặc HashiCorp Vault | `column-crypto-lib`                  |
 | 3   | Đọc/ghi CDR đã mã hoá theo **thuật toán riêng của đối tác** (không tự chọn được thuật toán; đối tác chỉ cấp thư viện Java **chỉ có decrypt**)                                                                      | **UDF** bọc thư viện đối tác + tự viết phần encrypt tương ứng (thuật toán không tái tạo được bằng hàm built-in)                          | `cdr-crypto-udf`                     |
-| 4   | **Khử định danh — giả danh hoá**: thay số thuê bao / IMEI / mã khách hàng bằng định danh giả mà vẫn liên kết được bản ghi của cùng một người (phân tích dọc), và **chứng minh đo được** là đã khử định danh thành công | **UDF** giả danh theo 3 chế độ (HMAC-SHA256 có khoá / AES-256-SIV / bảng ánh xạ Delta) + Spark app sinh dữ liệu có đáp án và chạy bộ check có verdict | `pseudonym-udf`, `pseudonym-verify-app` |
+| 4   | **Khử định danh — giả danh hoá**: thay số thuê bao / IMEI / mã khách hàng bằng định danh giả mà vẫn liên kết được bản ghi của cùng một người (phân tích dọc), và **chứng minh đo được** là đã khử định danh thành công | **UDF** giả danh theo 3 chế độ (HMAC-SHA256 có khoá / AES-256-SIV / bảng ánh xạ Delta) + Spark app sinh dữ liệu có đáp án và chạy bộ check có verdict | `pseudonym-udf`, `pseudonym-verify-app`, `pseudonymize-table-app` |
 
 Các module dùng chung 1 project Maven multi-module và chung hạ tầng lấy `keyPrefix`/khoá từ K8s Secret / Vault / DAK
 (`PrefixSourceFactory`, tái dùng giữa module 2, 3 và 4 qua namespace conf riêng). Chi tiết từng
@@ -114,9 +114,11 @@ khoảng 10⁹ SĐT là đảo ngược được, tương đương lộ khoá.
 
 Bộ check tự kiểm chính nó bằng 10 mutation cố ý sai. Kết quả là verdict, `report.json` và exit code.
 
-- Plan lib: [`docs/PSEUDONYMIZATION_UDF_PLAN.md`](./docs/PSEUDONYMIZATION_UDF_PLAN.md)
-- Plan app + định nghĩa "thành công": [`docs/pseudonym-verify-app/PLAN.md`](./docs/pseudonym-verify-app/PLAN.md)
-- Build/chạy: [`pseudonym-verify-app/README.md`](./pseudonym-verify-app/README.md), mục 6.6 bên dưới
+- **Giải thích cơ chế từng thuật toán kèm ví dụ:** [`docs/pseudonymization/ALGORITHMS.md`](./docs/pseudonymization/ALGORITHMS.md)
+- Plan lib: [`docs/pseudonymization/LIB_PLAN.md`](./docs/pseudonymization/LIB_PLAN.md)
+- Plan app + định nghĩa "thành công": [`docs/pseudonymization/VERIFY_APP_PLAN.md`](./docs/pseudonymization/VERIFY_APP_PLAN.md)
+- **Khử định danh một bảng thật** (DB + bảng + cột → bảng đích, kèm bảng env của lib): [`pseudonymize-table-app/README.md`](./pseudonymize-table-app/README.md)
+- Kiểm chứng/chạy ở máy local / K8s: [`pseudonym-verify-app/README.md`](./pseudonym-verify-app/README.md), mục 6.6 bên dưới
 
 ## 2. Giải pháp tổng quan
 
@@ -160,12 +162,13 @@ token đúng chuẩn Apache. Khi đó chỉ cần gỡ package `vai.lakehouse.hd
 | **k8s/spark-application-cdr.yaml** | Manifest `SparkApplication` biến thể **cdr-crypto** (nạp `key-prefix-lib` + `cdr-crypto-udf` + jar đối tác, dùng `cdr_encrypt`/`cdr_decrypt`) |
 | **Stress test HDFS** `hdfs-load-stress-test` (`vai.lakehouse.stress.*`) | Job Spark sinh dữ liệu tổng hợp và ghi vào HDFS HKH theo tải cấu hình được (mặc định 100 GiB/ngày), chỉ kèm patch block token (shade jar `block-token-patch` của `spark-app`), không có lib crypto. Có Dockerfile + manifest riêng — xem `hdfs-load-stress-test/README.md` và `docs/hdfs-load-stress-test/PLAN.md` |
 | **Lib giả danh** `pseudonym-udf` (`vai.lakehouse.pseudonym.*`) | Bài toán 4 (mục 1.5): giả danh cột định danh theo 3 chế độ HASH / ENCRYPT / MAPPING qua **DataFrame API** (`Pseudonymizer`, `Reidentifier`) lẫn **SQL function** (`pseudo_hash`/`pseudo_encrypt`; `pseudo_reveal` ở extension riêng). Jar thuần, khoá lấy qua `key-prefix-lib` (namespace `spark.pseudonym.*`) |
+| **App khử định danh bảng** `pseudonymize-table-app` (`vai.lakehouse.pseudonymizetable.*`) | Bài toán 4: nhận `DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS` → ghi bảng đích đã giả danh bằng `pseudonym-udf` (HASH / ENCRYPT / MAPPING), đối chiếu nguồn ↔ đích. Có Dockerfile + manifest riêng và bảng env của lib — xem `pseudonymize-table-app/README.md` |
 | **App kiểm chứng** `pseudonym-verify-app` (`vai.lakehouse.pseudonymverify.*`) | Bài toán 4: sinh dữ liệu tổng hợp có đáp án, áp `pseudonym-udf`, chạy bộ check đo được (`full` / `selftest` / `guard`) → verdict + `report.json` + exit code. Có Dockerfile + manifest riêng — xem `pseudonym-verify-app/README.md` |
 | **docs/**                                                                | Tài liệu kỹ thuật chi tiết (mục 10)                                                                                                                                                                                                                                       |
 
 `mvn package` (mặc định, không profile) build `key-prefix-lib` + `column-crypto-lib` + `spark-app` (**4 artifact** ở bảng
 dưới), `hdfs-load-stress-test` (fat jar `hdfs-load-stress-test/target/hdfs-load-stress-test.jar`, xem README của module),
-`pseudonym-udf` và `pseudonym-verify-app` (bài toán 4, 2 dòng cuối bảng). Jar của `spark-app` KHÔNG nhúng và không biên dịch với lib crypto nào — các lib là jar rời, nạp lúc deploy
+`pseudonym-udf`, `pseudonym-verify-app` và `pseudonymize-table-app` (bài toán 4, 3 dòng cuối bảng). Jar của `spark-app` KHÔNG nhúng và không biên dịch với lib crypto nào — các lib là jar rời, nạp lúc deploy
 qua Dockerfile (COPY) + `sparkConf` (`spark.jars`, `spark.sql.extensions`). `cdr-crypto-udf` (module bài toán 3) KHÔNG
 build mặc định — cần jar đối tác cài cục bộ trước và bật profile `cdr-crypto` (xem mục 6.5):
 
@@ -177,6 +180,7 @@ build mặc định — cần jar đối tác cài cục bộ trước và bật
 | `spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar` | Jar "thin" chỉ chứa `vai.lakehouse.hdfs.*` + `META-INF/services`                   | Nhét vào `/opt/spark/jars/` của image khác (ví dụ Spark History Server)  |
 | `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`) | Jar thuần (~15 KB): chỉ `vai.lakehouse.columncrypto.cdr.*`, KHÔNG chứa jar đối tác | Nạp CÙNG `key-prefix-lib.jar` và jar đối tác (3 jar); KHÔNG cần `column-crypto-lib.jar` |
 | `pseudonym-udf/target/pseudonym-udf-1.0-SNAPSHOT.jar` | Jar thuần (~100 KB): chỉ `vai.lakehouse.pseudonym.*` (Tink/Delta/snakeyaml đều `provided`) | Job ETL / engine hạn chế (`spark.jars` + `spark.sql.extensions`), nạp CÙNG `key-prefix-lib.jar`; executor cũng cần (UDF thật) |
+| `pseudonymize-table-app/target/pseudonymize-table-app.jar` | Fat jar (~6.5 MB): app khử định danh bảng + Delta + patch block token — KHÔNG chứa `pseudonym-udf` | Chạy SparkApplication `pseudonymize-table`, nạp 2 jar lib qua `spark.jars` |
 | `pseudonym-verify-app/target/pseudonym-verify-app.jar` | Fat jar (~6.5 MB): app kiểm chứng + Delta + patch block token — KHÔNG chứa `pseudonym-udf` | Chạy SparkApplication `pseudonym-verify-*`, nạp 2 jar lib qua `spark.jars` |
 
 ## 4. Cấu trúc thư mục
@@ -201,8 +205,10 @@ build mặc định — cần jar đối tác cài cục bộ trước và bật
 │   ├── HDFS_BLOCK_TOKEN_PATCH_FLOW.md           # bài toán 1: diagram + ảnh hưởng hiệu năng
 │   ├── HDFS_PATCH_AT_SCALE.md                   # bài toán 1: phân phối patch cho nhiều app
 │   ├── hdfs-load-stress-test/PLAN.md            # plan stress test nạp 100 GiB/ngày vào HDFS HKH
-│   ├── PSEUDONYMIZATION_UDF_PLAN.md             # bài toán 4: plan lib giả danh (3 chế độ, khoá, luồng Viettel++)
-│   ├── pseudonym-verify-app/PLAN.md             # bài toán 4: plan app kiểm chứng + định nghĩa "khử định danh thành công"
+│   ├── pseudonymization/                        # bài toán 4: toàn bộ tài liệu khử định danh (xem README.md trong thư mục)
+│   │   ├── ALGORITHMS.md                        #   giải thích cơ chế 3 thuật toán bằng ví dụ cụ thể (đọc đầu tiên)
+│   │   ├── LIB_PLAN.md                          #   plan lib giả danh (3 chế độ, khoá, luồng Viettel++)
+│   │   └── VERIFY_APP_PLAN.md                   #   plan app kiểm chứng + định nghĩa "khử định danh thành công"
 │   └── spark-history-server-hdfs-hkh-kerberos.md
 ├── pseudonym-udf/                  # BÀI TOÁN 4: lib giả danh (jar thuần, phụ thuộc key-prefix-lib)
 │   └── src/main/scala/vai/lakehouse/pseudonym/
@@ -210,14 +216,10 @@ build mặc định — cần jar đối tác cài cục bộ trước và bật
 │       ├── core/      # thuần JVM, KHÔNG Spark: HmacPseudonymizer, AesSivPseudonymizer, PseudonymKey, KeyProvider
 │       ├── policy/    # PseudonymPolicy (YAML) -> TablePolicy / ColumnRule
 │       └── spark/     # Pseudonymizer, Reidentifier, MappingTable (Delta), PseudonymConf, PseudonymExtension (SQL)
-├── pseudonym-verify-app/PLAN.md             # bài toán 4: plan app kiểm chứng + định nghĩa "khử định danh thành công"
-│   └── spark-history-server-hdfs-hkh-kerberos.md
-├── pseudonym-udf/                  # BÀI TOÁN 4: lib giả danh (jar thuần, phụ thuộc key-prefix-lib)
-│   └── src/main/scala/vai/lakehouse/pseudonym/
-│       ├── HmacPseudonymizer.scala / AesSivPseudonymizer.scala / MappingTable.scala   # lõi 3 chế độ
-│       ├── Pseudonymizer.scala / Reidentifier.scala / PseudonymPolicy.scala            # DataFrame API + policy YAML
-│       ├── PseudonymKey.scala / KeyProvider.scala / PseudonymConf.scala               # khoá qua key-prefix-lib
-│       └── sql/PseudonymExtension.scala   # pseudo_hash / pseudo_encrypt; PseudonymRevealExtension: pseudo_reveal
+├── pseudonymize-table-app/         # BÀI TOÁN 4: app khử định danh 1 bảng (DB_NAME/TABLE_NAME/PSEUDO_COLUMNS -> bảng đích)
+│   ├── Dockerfile                  # build context = gốc repo
+│   ├── k8s/                        # pseudonymize-table.yaml, pseudonym-keys-secret.yaml
+│   └── src/main/scala/vai/lakehouse/pseudonymizetable/   # app/ config/ job/ logging/
 ├── pseudonym-verify-app/           # BÀI TOÁN 4: app sinh dữ liệu + kiểm chứng khử định danh (README riêng)
 │   ├── Dockerfile                  # build context = gốc repo
 │   ├── k8s/                        # pseudonym-verify-full.yaml, pseudonym-verify-selftest.yaml, pseudonym-keys-secret.yaml
@@ -568,6 +570,7 @@ Project là Maven **multi-module** — chạy lệnh ở thư mục gốc. Cần
 | `cdr-crypto-udf`    | `cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar` (profile `cdr-crypto`)                    | Nạp cùng `key-prefix-lib.jar` + jar đối tác                                |
 | `pseudonym-udf`     | `pseudonym-udf/target/pseudonym-udf-1.0-SNAPSHOT.jar`                                             | Lib giả danh, nạp cùng `key-prefix-lib.jar` (mục 6.6)                      |
 | `pseudonym-verify-app` | `pseudonym-verify-app/target/pseudonym-verify-app.jar`                                         | App kiểm chứng khử định danh (mục 6.6)                                     |
+| `pseudonymize-table-app` | `pseudonymize-table-app/target/pseudonymize-table-app.jar` | App khử định danh 1 bảng thật (mục 6.6) |
 
 ### 6.1. Build cả project (bài toán 1 + 2 + 4)
 
@@ -578,7 +581,7 @@ mvn -B -Pcdr-crypto clean package    # build TẤT CẢ: thêm cdr-crypto-udf (c
 
 | Lệnh                                | Module được build                                                | Cần `DataLakeSecurity_jv8.jar` | Dùng khi                                                 |
 | ----------------------------------- | ---------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------- |
-| `mvn -B clean package`              | `key-prefix-lib`, `column-crypto-lib`, `spark-app`, `hdfs-load-stress-test`, `pseudonym-udf`, `pseudonym-verify-app` | Không | Image `no-crypto` / `column-crypto`, phát triển hằng ngày |
+| `mvn -B clean package`              | `key-prefix-lib`, `column-crypto-lib`, `spark-app`, `hdfs-load-stress-test`, `pseudonym-udf`, `pseudonym-verify-app`, `pseudonymize-table-app` | Không | Image `no-crypto` / `column-crypto`, phát triển hằng ngày |
 | `mvn -B -Pcdr-crypto clean package` | 3 module trên + `cdr-crypto-udf`                                 | Có                             | Trước khi `docker build --target cdr-crypto`             |
 
 `docker build --target cdr-crypto` cần thêm `cdr-crypto-udf/target/*.jar` và `DataLakeSecurity_jv8.jar` ở thư mục gốc, nên phải build bằng lệnh có `-Pcdr-crypto`.
@@ -663,15 +666,21 @@ mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package -DskipTests
 `mvn clean package`/`mvn test` **không có `-Pcdr-crypto`** (mục 6.1, 6.4) hoàn toàn không đụng module này — build chính không bao giờ fail vì thiếu jar đối tác. Chi tiết đầy đủ:
 [`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`](./docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md).
 
-### 6.6. Build & test `pseudonym-udf` + `pseudonym-verify-app` (bài toán 4)
+### 6.6. Build & test `pseudonym-udf` + `pseudonym-verify-app` + `pseudonymize-table-app` (bài toán 4)
 
 Không cần jar đối tác. Mọi dependency đều có trên Maven Central/Nexus: Tink 1.9.0 và snakeyaml lấy đúng bản Spark
 3.5.1 ship sẵn, Delta 3.2.0 trùng version của `spark-app`.
 
 ```bash
-mvn -B -pl pseudonym-udf -am clean test                     # 56 test: RFC 4231, golden vector (openssl), AES-SIV, Delta, SQL
-mvn -B -pl pseudonym-verify-app -am clean package           # + 22 test của app, kể cả END-TO-END full/selftest/guard
-# -> pseudonym-udf/target/pseudonym-udf-1.0-SNAPSHOT.jar
+# --- Lib giả danh (pseudonym-udf) ---
+mvn -B -pl pseudonym-udf -am clean test                     # 59 test: RFC 4231, golden vector (openssl), AES-SIV, Delta, SQL, tên khoá
+mvn -B -pl pseudonym-udf -am clean package -DskipTests      # chỉ cần jar
+# -> pseudonym-udf/target/pseudonym-udf-1.0-SNAPSHOT.jar   (+ key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar)
+
+# --- App dùng lib: -am tự build trước key-prefix-lib, pseudonym-udf, spark-app (jar block-token-patch) ---
+mvn -B -pl pseudonymize-table-app -am clean package         # khử định danh 1 bảng; + 13 test chạy app thật
+mvn -B -pl pseudonym-verify-app -am clean package           # kiểm chứng; + 22 test, kể cả END-TO-END full/selftest/guard
+# -> pseudonymize-table-app/target/pseudonymize-table-app.jar
 # -> pseudonym-verify-app/target/pseudonym-verify-app.jar
 
 # Chạy app ở máy local (build + classpath + add-opens + tóm tắt kết quả; xem pseudonym-verify-app/README.md mục 3.2)
@@ -680,7 +689,12 @@ PSEUDO_MODES=HASH,ENCRYPT,MAPPING pseudonym-verify-app/scripts/run-local.sh    #
 RUN_MODE=selftest pseudonym-verify-app/scripts/run-local.sh                    # kiểm chứng chính bộ check
 ```
 
-Output theo thứ tự: **dữ liệu gốc → dữ liệu sau giả danh** (cũng ghi ra `preview.txt`, biến `PREVIEW_ROWS`) → kết quả check →
+Lib `pseudonym-udf` và `key-prefix-lib` là jar **rời**, KHÔNG nằm trong fat jar của app: app khai chúng ở scope
+`provided` trong `pom.xml`; image copy 2 jar này vào `/opt/app` và manifest nạp qua `spark.jars` (UDF thật nên executor
+cũng cần). Chi tiết app khử định danh bảng, kể cả **bảng env của lib** (`CRYPTO_*`/`VAULT_*`/`DAK_*`/`spark.pseudonym.*`):
+[`pseudonymize-table-app/README.md`](./pseudonymize-table-app/README.md).
+
+Output của `pseudonym-verify-app` theo thứ tự: **dữ liệu gốc → dữ liệu sau giả danh** (cũng ghi ra `preview.txt`, biến `PREVIEW_ROWS`) → kết quả check →
 verdict. Exit code 0 = `PASS`, 1 = `FAIL`, 2 = `ERROR`.
 
 | Spec | Nội dung |
@@ -690,10 +704,12 @@ verdict. Exit code 0 = `PASS`, 1 = `FAIL`, 2 = `ERROR`.
 | `MappingTableSpec` | Token ổn định qua nhiều lần chạy; 4 job MERGE song song vẫn ra 1 token/giá trị |
 | `PseudonymizerSpec` / `PseudonymExtensionSpec` | Đổi tên cột (`pseudonym_id`), null; khoá không có trong `EXPLAIN`; SQL ≡ DataFrame API; `pseudo_reveal` tách extension |
 | `ReidentifierSpec` | Luồng ưu đãi Viettel++: danh sách `pseudonym_id` → đúng `customer_id`, cả 3 chế độ |
+| `KeyNamesSpec` | Tên khoá `pseudonym.hmac_v1` / `aes_siv_v1` hợp lệ với cả nguồn file, Vault và DAK (DAK chỉ nhận `<db>.<table>`) |
+| `PseudonymizeTableAppSpec` (pseudonymize-table-app) | Chạy app thật trên bảng thật: HASH/ENCRYPT/MAPPING, `append`, DB đích khác, không sửa bảng nguồn, exit 1/2 |
 | `PseudoVerifyAppSpec` (app) | `main` (`execute`): cấu hình sai → exit 2; chạy `full` nhỏ → exit 0 |
 | `EndToEndSpec` (app) | `full` cả 3 chế độ → `PASS`; `selftest` → 10/10 mutation bị bắt; `guard` trên parquet + khoá từ file → `PASS` |
 
-Image, manifest và cách chạy trên K8s: [`pseudonym-verify-app/README.md`](./pseudonym-verify-app/README.md).
+Image, manifest và cách chạy trên K8s: [`pseudonymize-table-app/README.md`](./pseudonymize-table-app/README.md) (khử định danh bảng), [`pseudonym-verify-app/README.md`](./pseudonym-verify-app/README.md) (kiểm chứng).
 
 Kiểm tra jar trước khi dùng — thiếu bước này patch có thể **âm thầm** không hoạt động:
 
@@ -815,8 +831,9 @@ chưa, `userClassPathFirst` có bị bật không — xem
 | [`docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md`](./docs/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md)                 | Nạp `column-crypto-lib` vào sql-engine, cấu hình Vault (kể cả token tĩnh), cú pháp query console     |
 | [`docs/COLUMN_CRYPTO_ARCHITECTURE.md`](./docs/COLUMN_CRYPTO_ARCHITECTURE.md)                         | Kiến trúc biểu thức built-in hiện tại so với phương án UDF, bảng so sánh chi tiết                    |
 | [`docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md`](./docs/PARTNER_CDR_CRYPTO_UDF_PLAN.md)                       | Plan UDF bọc thư viện mã hoá CDR của đối tác (`TransformDL`): module, code, deploy, so sánh built-in |
-| [`docs/PSEUDONYMIZATION_UDF_PLAN.md`](./docs/PSEUDONYMIZATION_UDF_PLAN.md)                           | Plan lib giả danh: đối chiếu tài liệu khử định danh, 3 chế độ, quản lý khoá, luồng ưu đãi Viettel++  |
-| [`docs/pseudonym-verify-app/PLAN.md`](./docs/pseudonym-verify-app/PLAN.md)                           | Plan app kiểm chứng: định nghĩa "khử định danh thành công", bộ check U/P, mutation self-test, guard  |
+| [`docs/pseudonymization/ALGORITHMS.md`](./docs/pseudonymization/ALGORITHMS.md)                       | Giải thích cơ chế 3 thuật toán giả danh (HASH / ENCRYPT / MAPPING) bằng ví dụ thật — đọc đầu tiên     |
+| [`docs/pseudonymization/LIB_PLAN.md`](./docs/pseudonymization/LIB_PLAN.md)                           | Plan lib giả danh: đối chiếu tài liệu khử định danh, 3 chế độ, quản lý khoá, luồng ưu đãi Viettel++  |
+| [`docs/pseudonymization/VERIFY_APP_PLAN.md`](./docs/pseudonymization/VERIFY_APP_PLAN.md)                           | Plan app kiểm chứng: định nghĩa "khử định danh thành công", bộ check U/P, mutation self-test, guard  |
 | [`docs/SPARK_HDFS_WIRE_ENCRYPTION_TASK.md`](./docs/SPARK_HDFS_WIRE_ENCRYPTION_TASK.md)               | Bối cảnh, stack trace, root cause, thiết kế patch, verify, fallback Plugin                           |
 | [`docs/HDFS_BLOCK_TOKEN_PATCH_FLOW.md`](./docs/HDFS_BLOCK_TOKEN_PATCH_FLOW.md)                       | Diagram Mermaid: luồng lỗi, luồng đã vá, class thuộc lib nào, ảnh hưởng khi chạy dữ liệu lớn         |
 | [`docs/HDFS_PATCH_AT_SCALE.md`](./docs/HDFS_PATCH_AT_SCALE.md)                                       | Cách dùng patch cho nhiều SparkApplication (~100 app, monorepo)                                      |

@@ -1,7 +1,7 @@
 # Plan: Spark app sinh dữ liệu + kiểm chứng giả danh hoá — `pseudonym-verify-app`
 
 App Spark tự sinh dữ liệu viễn thông tổng hợp (có "đáp án" — biết chính xác dòng nào thuộc chủ thể
-nào), áp thư viện [`pseudonym-udf`](../PSEUDONYMIZATION_UDF_PLAN.md) lên dữ liệu đó theo các chế
+nào), áp thư viện [`pseudonym-udf`](./LIB_PLAN.md) lên dữ liệu đó theo các chế
 độ của tài liệu nguồn — băm có salt `HASH`, mã hoá `ENCRYPT` (mặc định), bảng ánh xạ `MAPPING`
 (**mặc định tắt**, bật qua `PSEUDO_MODES`) — rồi chạy một
 bộ kiểm tra đo được để trả lời **có/không**: _đã khử định danh thành công chưa_. Kết quả là verdict
