@@ -24,3 +24,6 @@ tools/datalake-security-test/
 
 # Secret khoá giả danh sinh tự động (chứa khoá thật) — không bao giờ commit
 *.generated.yaml
+
+# Schema nguồn dữ liệu thật (có thông tin nhạy cảm) — KHÔNG commit
+docs/schema.xlsx

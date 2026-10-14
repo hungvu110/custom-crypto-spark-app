@@ -58,22 +58,24 @@ spec:
       # parquet | orc | avro | json | delta | csv | tsv | txt (= csv, text phân tách ký tự) | text (nguyên dòng, cột "value")
       - name: INPUT_FORMAT
         value: txt
-      # GIẢ ĐỊNH — ký tự phân tách và header của file txt: kiểm tra lại với file thật. Mọi INPUT_OPTION_<tên> được chuyển
-      # nguyên cho Spark reader (header, encoding, quote, nullValue, multiLine, ...).
+      # File f016_mpre_tot_charge_m: phân tách bằng '|', KHÔNG có header, NULL ghi là \N (xem schema trong docs/schema.xlsx,
+      # file này gitignore). Thiếu nullValue thì '\N' bị coi là một giá trị và bị băm thành định danh giả.
       - name: INPUT_OPTION_delimiter
         value: "|"
       - name: INPUT_OPTION_header
         value: "false"
-      # GIẢ ĐỊNH — schema DDL theo đúng thứ tự cột trong file; không khai thì cột tên _c0,_c1,... (đều STRING).
-      # Tên cột ở đây là tên dùng trong PSEUDO_COLUMNS.
-      - name: INPUT_SCHEMA
-        value: "isdn STRING, imei STRING, amount DOUBLE"
+      - name: INPUT_OPTION_nullValue
+        value: "\\N"
+      # Không khai INPUT_SCHEMA (bảng có 447 cột): cột đặt tên theo vị trí _c0.._c446 (vị trí 0 = isdn, 4 = customer_id...).
 
       # ================= CỘT CẦN KHỬ ĐỊNH DANH =================
       # Mỗi cột có thể một chế độ riêng (cột:MODE). Cột không ghi :MODE dùng PSEUDO_MODE. HASH và ENCRYPT cùng lúc thì
       # Secret phải có cả pseudonym.hmac_v1 và pseudonym.aes_siv_v1.
+      # Theo vị trí trong schema f016_mpre_tot_charge_m (0-based):
+      #   _c0 isdn · _c4 customer_id · _c10 staff_code · _c15 serial (SIM) · _c16 sub_id · _c37 user_name → HASH (chỉ cần nối/đếm)
+      #   _c45 imei_use → ENCRYPT (giải mã lại được khi có quy trình được duyệt)
       - name: PSEUDO_COLUMNS
-        value: isdn:HASH,imei:ENCRYPT
+        value: _c0:HASH,_c4:HASH,_c10:HASH,_c15:HASH,_c16:HASH,_c37:HASH,_c45:ENCRYPT
       # Chế độ mặc định cho cột không ghi :MODE. HASH (một chiều) | ENCRYPT (giải mã lại được) | MAPPING (cần MAPPING_TABLE_PATH).
       - name: PSEUDO_MODE
         value: HASH
