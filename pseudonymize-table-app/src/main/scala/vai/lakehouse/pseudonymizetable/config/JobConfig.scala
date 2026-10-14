@@ -37,6 +37,7 @@ final case class JobConfig(
     outputFormat: OutputFormat,
     outputMode: String,
     mappingTablePath: Option[String],
+    warehousePath: Option[String],
     enableHiveSupport: Boolean,
     verify: Boolean) {
 
@@ -55,6 +56,7 @@ final case class JobConfig(
     "OUTPUT_FORMAT"       -> outputFormat.name,
     "OUTPUT_MODE"         -> outputMode,
     "MAPPING_TABLE_PATH"  -> mappingTablePath.getOrElse("(spark.pseudonym.mapping.path hoặc không dùng)"),
+    "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(mặc định của Spark/metastore)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString,
     "VERIFY"              -> verify.toString)
 }
@@ -117,8 +119,17 @@ object JobConfig {
     // MAPPING_TABLE_PATH hoặc spark.pseudonym.mapping.path đều được: job kiểm tra lại sau khi có SparkConf.
     val mappingPath = raw("MAPPING_TABLE_PATH")
 
+    // Cùng quy ước với crawler-streaming-app: URI đầy đủ để không phụ thuộc fs.defaultFS trong hadoopConfigMap.
+    val warehousePath = raw("WAREHOUSE_PATH")
+    warehousePath.filterNot(isAbsoluteUri).foreach { v =>
+      errors += s"WAREHOUSE_PATH='$v': phải là URI tuyệt đối có scheme, vd hdfs://<namenode>:8020/<path>"
+    }
+
     if (errors.nonEmpty) Left(errors.toList)
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), db, table, columns, mode, outDb, outTable, format,
-      outputMode, mappingPath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true)))
+      outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true)))
   }
+
+  private def isAbsoluteUri(value: String): Boolean =
+    Try(new java.net.URI(value)).toOption.exists(u => u.getScheme != null && Option(u.getPath).exists(_.startsWith("/")))
 }

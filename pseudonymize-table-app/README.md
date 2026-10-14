@@ -74,6 +74,7 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 | `OUTPUT_MODE` | `overwrite` | `overwrite` (thay thế bảng đích) / `append` (ghi nối) |
 | `VERIFY` | `true` | Đọc lại bảng đích và đối chiếu với nguồn (mục 5) |
 | `MAPPING_TABLE_PATH` | — | Chỉ `PSEUDO_MODE=MAPPING`: đường dẫn bảng ánh xạ Delta (hoặc dùng `spark.pseudonym.mapping.path`) |
+| `WAREHOUSE_PATH` | — | URI đầy đủ của warehouse, vd `hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse`; đặt `spark.sql.warehouse.dir` (không phụ thuộc `fs.defaultFS`) — cùng quy ước với `crawler-streaming-app` |
 | `ENABLE_HIVE_SUPPORT` | `true` | `true` để đọc bảng qua Hive metastore (như `spark-app`) |
 | `APP_NAME` | `PseudonymizeTable` | Tên trên Spark UI |
 
@@ -266,7 +267,7 @@ Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** tr
 ## 6. Chạy trên K8s
 
 ```bash
-NS=vlp-tenantw1xjixm-wsbmkimit-teamk6gy0b5
+NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
 # 1. Secret khoá (nguồn file) — tạo bằng lệnh trong k8s/pseudonym-keys-secret.yaml, KHÔNG commit khoá thật
 # 2. Sửa DB_NAME / TABLE_NAME / PSEUDO_COLUMNS / PSEUDO_MODE trong k8s/pseudonymize-table.yaml, rồi:
 kubectl apply -f pseudonymize-table-app/k8s/pseudonymize-table.yaml
@@ -274,8 +275,8 @@ kubectl logs -f pseudonymize-table-driver -n $NS
 # Chạy lại: kubectl delete sparkapplication pseudonymize-table -n $NS rồi apply
 ```
 
-Chuẩn bị giống `pseudonym-verify-app`: ConfigMap `teamk6gy0b5-hadoop-conf`, ServiceAccount `spark-application-sa`, keytab trên
-pod Spark Operator, quyền **đọc** bảng nguồn và **ghi** DB đích cho principal `k8s`. Image/tài nguyên trong manifest là giả
+Chuẩn bị giống `crawler-streaming-app` (cùng namespace `teamtscauiy`, cụm `datalakehla`, principal `presto`): ConfigMap `teamtscauiy-hadoop-conf` (cụm `datalakehla`), ServiceAccount `spark-application-sa`, keytab trên
+pod Spark Operator, quyền **đọc** bảng nguồn và **ghi** DB đích cho principal `presto@VAILAKEHOUSE.VIETTEL.COM`. Image/tài nguyên trong manifest là giả
 định — chỉnh theo registry và ResourceQuota thật.
 
 Trong log (logger `VLP`) theo thứ tự `1. CONFIG` → `2. SPARK SESSION` → `3. ĐỌC BẢNG NGUỒN` → `4. GHI BẢNG ĐÍCH` →

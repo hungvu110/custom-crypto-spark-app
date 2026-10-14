@@ -16,13 +16,16 @@ object SparkSessions {
 
   /**
    * `fs.defaultFS` lấy từ core-site.xml của `hadoopConfigMap`, KHÔNG hard-code ở đây (đổi cụm HDFS không phải build lại
-   * image). `master` do spark-submit/Operator cấp.
+   * image). `master` do spark-submit/Operator cấp. `warehousePath` (env `WAREHOUSE_PATH`, URI đầy đủ) đặt
+   * `spark.sql.warehouse.dir` để bảng đích được tạo đúng vùng storage, giống crawler-streaming-app.
    */
-  def create(appName: String, enableHiveSupport: Boolean, conf: SparkConf = new SparkConf()): SparkSession = {
-    val builder = SparkSession.builder().appName(appName)
+  def create(appName: String, enableHiveSupport: Boolean, warehousePath: Option[String] = None,
+             conf: SparkConf = new SparkConf()): SparkSession = {
+    val base = SparkSession.builder().appName(appName)
       .config("spark.plugins", merged(conf.getOption("spark.plugins"), BlockTokenPluginClass))
       .config("spark.sql.extensions", merged(conf.getOption("spark.sql.extensions"), DeltaExtension))
       .config("spark.sql.catalog.spark_catalog", DeltaCatalog)
+    val builder = warehousePath.fold(base)(w => base.config("spark.sql.warehouse.dir", w))
     (if (enableHiveSupport) builder.enableHiveSupport() else builder).getOrCreate()
   }
 }

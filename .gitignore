@@ -21,3 +21,6 @@ target/
 # của project, chỉ dùng để khám phá/đối chiếu thuật toán mã hoá CDR với đối tác.
 DataLakeSecurity_jv8.jar
 tools/datalake-security-test/
+
+# Secret khoá giả danh sinh tự động (chứa khoá thật) — không bao giờ commit
+*.generated.yaml

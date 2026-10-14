@@ -50,7 +50,7 @@ object PseudonymizeTableApp {
     try {
       Log.section("2. SPARK SESSION")
       val owned = existingSession.isEmpty
-      val spark = existingSession.getOrElse(SparkSessions.create(cfg.appName, cfg.enableHiveSupport))
+      val spark = existingSession.getOrElse(SparkSessions.create(cfg.appName, cfg.enableHiveSupport, cfg.warehousePath))
       Log.kv("spark version", spark.version)
       Log.kv("application id", spark.sparkContext.applicationId)
       Log.kv("master", spark.sparkContext.master)

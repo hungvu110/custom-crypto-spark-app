@@ -45,6 +45,15 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors.exists(_.startsWith("OUTPUT_MODE")) shouldBe true
   }
 
+  it should "nhận WAREHOUSE_PATH là URI đầy đủ và từ chối đường dẫn tương đối" in {
+    val ok = JobConfig.fromEnv(base + ("WAREHOUSE_PATH" -> "hdfs://nn:8020/prod8/warehouse")).toOption.get
+    ok.warehousePath shouldBe Some("hdfs://nn:8020/prod8/warehouse")
+    JobConfig.fromEnv(base).toOption.get.warehousePath shouldBe None
+
+    JobConfig.fromEnv(base + ("WAREHOUSE_PATH" -> "prod8/warehouse")).left.toOption.get.head should
+      include("URI tuyệt đối")
+  }
+
   it should "từ chối ghi đè bảng nguồn (bảng đích trùng nguồn)" in {
     val errors = JobConfig.fromEnv(base ++ Map("OUTPUT_TABLE" -> "subscriber")).left.toOption.get
 
