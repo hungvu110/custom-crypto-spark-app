@@ -1,0 +1,127 @@
+# RUN_MODE=full — nghiệm thu pseudonym-udf (docs/pseudonym-verify-app/PLAN.md mục 13): sinh dữ liệu tổng hợp, giả danh
+# theo từng chế độ trong PSEUDO_MODES, chạy bộ check U/P, ghi report.json. Exit code: 0 PASS / 1 FAIL / 2 ERROR.
+# Môi trường giống hdfs-load-stress-test (namespace teamk6gy0b5, cụm HDFS datalakehkh, principal k8s).
+#
+#   kubectl apply -f pseudonym-verify-app/k8s/pseudonym-verify-full.yaml
+#   kubectl logs -f pseudonym-verify-full-driver -n vlp-tenantw1xjixm-wsbmkimit-teamk6gy0b5
+#
+# Chạy lần mới: ĐỔI RUN_ID và xoá SparkApplication cũ (kubectl delete sparkapplication pseudonym-verify-full -n ...).
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: pseudonym-verify-full
+  namespace: vlp-tenantw1xjixm-wsbmkimit-teamk6gy0b5
+spec:
+  type: Scala
+  mode: cluster
+  sparkVersion: 3.5.1
+
+  # GIẢ ĐỊNH — đổi theo registry/tag đã push (pseudonym-verify-app/README.md mục 2).
+  image: hub.vtcc.vn:8989/hungvt0110/pseudonym-verify-app:v0.1
+  imagePullPolicy: Always
+  mainApplicationFile: local:///opt/app/pseudonym-verify-app.jar
+  mainClass: vai.lakehouse.pseudonym.verify.PseudoVerifyApp
+
+  # Phép đo: lỗi thì xem log/report rồi chạy lại có chủ đích, không tự restart.
+  restartPolicy:
+    type: Never
+  timeToLiveSeconds: 86400
+
+  hadoopConfigMap: teamk6gy0b5-hadoop-conf
+
+  driver:
+    cores: 1
+    coreLimit: 1000m
+    memory: 4096m
+    memoryOverhead: 1024m
+    labels:
+      version: 3.5.1
+      app: pseudonym-verify-full
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+      - name: RUN_MODE
+        value: full
+      # Mặc định HASH,ENCRYPT. Thêm MAPPING chỉ khi định dùng bảng ánh xạ trên dữ liệu thật (PLAN.md mục 13.6).
+      - name: PSEUDO_MODES
+        value: HASH,ENCRYPT
+      - name: RUN_ID
+        value: full-20261013-01
+      # GIẢ ĐỊNH — thư mục test riêng, cần xác nhận quyền ghi của principal k8s.
+      - name: OUTPUT_PATH
+        value: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020/prod6/pseudonym_verify
+      - name: N_SUBJECTS
+        value: "1000000"
+      - name: PARTITIONS
+        value: "200"
+      # ephemeral: khoá ngẫu nhiên trong bộ nhớ. Kiểm cả đường khoá production: đổi thành "file" và bỏ comment phần
+      # Secret pseudonym-keys bên dưới (hoặc "vault"/"dak" + cấu hình spark.pseudonym.* như lib crypto).
+      - name: KEY_SOURCE
+        value: ephemeral
+    # volumeMounts:
+    #   - name: pseudonym-keys
+    #     mountPath: /etc/pseudonym-keys
+    #     readOnly: true
+
+  # GIẢ ĐỊNH — tổng request phải vừa ResourceQuota của namespace.
+  executor:
+    instances: 4
+    cores: 4
+    coreLimit: 4000m
+    memory: 8192m
+    memoryOverhead: 2048m
+    labels:
+      version: 3.5.1
+      app: pseudonym-verify-full
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+
+  # volumes:
+  #   - name: pseudonym-keys
+  #     secret:
+  #       secretName: pseudonym-keys       # xem pseudonym-verify-app/k8s/pseudonym-keys-secret.yaml
+
+  sparkConf:
+    # ------ Lib giả danh: 2 jar rời trong image, UDF thật nên executor cũng nạp ------
+    spark.jars: local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/pseudonym-udf-1.0-SNAPSHOT.jar
+    # App tự nối DeltaSparkSessionExtension + DeltaCatalog và nạp PseudonymExtension với khoá của lần chạy.
+    # Khi KEY_SOURCE=file: thư mục Secret mount (mỗi khoá 1 file pseudonym.hmac.v1, pseudonym.aes-siv.v1).
+    # spark.pseudonym.file.dir: /etc/pseudonym-keys
+
+    # ------ Kerberos (vùng storage datalakehkh) — giống hdfs-load-stress-test ------
+    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020
+    spark.kerberos.principal: k8s@VAILAKEHOUSE.VIETTEL.COM
+    spark.kerberos.keytab: /etc/security/keytabs/k8s.keytab
+    spark.kubernetes.kerberos.krb5.path: /etc/krb5.conf
+    spark.security.credentials.hadoopfs.enabled: "true"
+
+    # ------ HDFS security: GIỮ wire encryption (privacy) ------
+    spark.hadoop.hadoop.security.authentication: kerberos
+    spark.hadoop.hadoop.security.authorization: "true"
+    spark.hadoop.fs.permissions.umask-mode: "077"
+
+    # ------ BẮT BUỘC false (patch block token qua ServiceLoader) ------
+    spark.driver.userClassPathFirst: "false"
+    spark.executor.userClassPathFirst: "false"
+
+    # ------ log4j2 ------
+    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    spark.executor.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+
+    # ------ Spark ------
+    spark.jars.ivy: /tmp
+    spark.serializer: org.apache.spark.serializer.KryoSerializer
+    spark.sql.sources.ignoreDataLocality.enabled: "true"
+    spark.dynamicAllocation.enabled: "false"
+    spark.sql.shuffle.partitions: "200"
+
+    # Event log (Spark History Server) — sau khi job xong, quét event log tìm khoá là bước CI ngoài app (PLAN.md mục 5.2).
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020/prod6/spark_history

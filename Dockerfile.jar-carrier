@@ -12,6 +12,8 @@
 #   key-prefix-lib-1.0-SNAPSHOT.jar         hạ tầng lấy keyPrefix — cần cho mọi lib crypto
 #   column-crypto-lib-1.0-SNAPSHOT.jar      column_encrypt/column_decrypt
 #   cdr-crypto-udf-1.0-SNAPSHOT.jar         cdr_encrypt/cdr_decrypt
+#   pseudonym-udf-1.0-SNAPSHOT.jar          giả danh hoá: pseudo_hash/pseudo_encrypt (+ pseudo_reveal ở extension riêng) —
+#                                           CHỈ nạp lên engine ETL/hạn chế, KHÔNG lên sql-engine của analyst
 #   DataLakeSecurity_jv8.jar                lib mã hoá CDR của đối tác (KHÔNG phải của mình, xem cảnh báo bên dưới)
 #   sample-spark-application-privacy-1.0-SNAPSHOT.jar                     fat jar của app (SparkApplication)
 #   sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar   patch block token Isilon (thin)
@@ -38,6 +40,7 @@ RUN mkdir -p /opt/artifacts
 COPY key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar             /opt/artifacts/
 COPY column-crypto-lib/target/column-crypto-lib-1.0-SNAPSHOT.jar       /opt/artifacts/
 COPY cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar             /opt/artifacts/
+COPY pseudonym-udf/target/pseudonym-udf-1.0-SNAPSHOT.jar               /opt/artifacts/
 
 # --- Jar của đối tác (nguyên trạng, không repackage) ---
 COPY DataLakeSecurity_jv8.jar                                          /opt/artifacts/

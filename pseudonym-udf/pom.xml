@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>vai.lakehouse</groupId>
+    <artifactId>sample-spark-application-privacy-parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>pseudonym-udf</artifactId>
+  <name>pseudonym-udf</name>
+  <description>
+    Giả danh hoá (pseudonymization) cột định danh theo 3 chế độ: HASH (HMAC-SHA256 có khoá), ENCRYPT
+    (AES-256-SIV, giải mã lại được), MAPPING (token ngẫu nhiên + bảng ánh xạ Delta). Dùng qua DataFrame API
+    (Pseudonymizer) và SQL function (pseudo_hash/pseudo_encrypt, pseudo_reveal nạp riêng).
+    Xem docs/PSEUDONYMIZATION_UDF_PLAN.md.
+  </description>
+
+  <!--
+    Jar thuần, KHÔNG shade: mọi dependency đều "provided" — giống cdr-crypto-udf. Khi triển khai phải nạp
+    key-prefix-lib.jar + pseudonym-udf.jar qua spark.jars (UDF thật, executor cũng cần).
+  -->
+  <dependencies>
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>key-prefix-lib</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      AES-SIV (chế độ ENCRYPT). Spark 3.5.1 đã ship đúng bản này (spark-network-common phụ thuộc tink 1.9.0,
+      có trong /opt/spark/jars) -> "provided", không shade, không xung đột protobuf. Khai báo tường minh để
+      version được ghim theo Spark.
+    -->
+    <dependency>
+      <groupId>com.google.crypto.tink</groupId>
+      <artifactId>tink</artifactId>
+      <version>1.9.0</version>
+      <scope>provided</scope>
+      <!-- Chỉ cần class của tink; runtime dùng đúng bộ jar Spark ship (Spark cũng loại các dependency phụ này). -->
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- Chế độ MAPPING: bảng ánh xạ là bảng Delta. Image apache/spark KHÔNG có Delta: app dùng MAPPING phải tự mang. -->
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-spark_${scala.binary.version}</artifactId>
+      <version>${delta.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Parse policy YAML. Spark 3.5 ship sẵn snakeyaml 1.33; API dùng ở đây tương thích cả 1.x và 2.x. -->
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <version>2.2</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
