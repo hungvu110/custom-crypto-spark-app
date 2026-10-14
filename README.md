@@ -97,7 +97,7 @@ MyViettel, mẫu di chuyển theo trạm BTS, lịch sử điểm Viettel++). Li
 Policy có thể đổi tên cột, vd `customer_id` → `pseudonym_id`.
 
 ```sql
--- spark.sql.extensions=vai.lakehouse.pseudonym.sql.PseudonymExtension, khoá cấu hình qua spark.pseudonym.*
+-- spark.sql.extensions=vai.lakehouse.pseudonym.spark.PseudonymExtension, khoá cấu hình qua spark.pseudonym.*
 SELECT pseudo_hash(isdn) AS isdn, event_type, event_ts FROM raw.app_event;
 ```
 
@@ -160,7 +160,7 @@ token đúng chuẩn Apache. Khi đó chỉ cần gỡ package `vai.lakehouse.hd
 | **k8s/spark-application-cdr.yaml** | Manifest `SparkApplication` biến thể **cdr-crypto** (nạp `key-prefix-lib` + `cdr-crypto-udf` + jar đối tác, dùng `cdr_encrypt`/`cdr_decrypt`) |
 | **Stress test HDFS** `hdfs-load-stress-test` (`vai.lakehouse.stress.*`) | Job Spark sinh dữ liệu tổng hợp và ghi vào HDFS HKH theo tải cấu hình được (mặc định 100 GiB/ngày), chỉ kèm patch block token (shade jar `block-token-patch` của `spark-app`), không có lib crypto. Có Dockerfile + manifest riêng — xem `hdfs-load-stress-test/README.md` và `docs/hdfs-load-stress-test/PLAN.md` |
 | **Lib giả danh** `pseudonym-udf` (`vai.lakehouse.pseudonym.*`) | Bài toán 4 (mục 1.5): giả danh cột định danh theo 3 chế độ HASH / ENCRYPT / MAPPING qua **DataFrame API** (`Pseudonymizer`, `Reidentifier`) lẫn **SQL function** (`pseudo_hash`/`pseudo_encrypt`; `pseudo_reveal` ở extension riêng). Jar thuần, khoá lấy qua `key-prefix-lib` (namespace `spark.pseudonym.*`) |
-| **App kiểm chứng** `pseudonym-verify-app` (`vai.lakehouse.pseudonym.verify.*`) | Bài toán 4: sinh dữ liệu tổng hợp có đáp án, áp `pseudonym-udf`, chạy bộ check đo được (`full` / `selftest` / `guard`) → verdict + `report.json` + exit code. Có Dockerfile + manifest riêng — xem `pseudonym-verify-app/README.md` |
+| **App kiểm chứng** `pseudonym-verify-app` (`vai.lakehouse.pseudonymverify.*`) | Bài toán 4: sinh dữ liệu tổng hợp có đáp án, áp `pseudonym-udf`, chạy bộ check đo được (`full` / `selftest` / `guard`) → verdict + `report.json` + exit code. Có Dockerfile + manifest riêng — xem `pseudonym-verify-app/README.md` |
 | **docs/**                                                                | Tài liệu kỹ thuật chi tiết (mục 10)                                                                                                                                                                                                                                       |
 
 `mvn package` (mặc định, không profile) build `key-prefix-lib` + `column-crypto-lib` + `spark-app` (**4 artifact** ở bảng
@@ -206,6 +206,14 @@ build mặc định — cần jar đối tác cài cục bộ trước và bật
 │   └── spark-history-server-hdfs-hkh-kerberos.md
 ├── pseudonym-udf/                  # BÀI TOÁN 4: lib giả danh (jar thuần, phụ thuộc key-prefix-lib)
 │   └── src/main/scala/vai/lakehouse/pseudonym/
+│       ├── PseudonymMode.scala, PseudonymException.scala   # API gốc: 3 chế độ + hệ lỗi có kiểu
+│       ├── core/      # thuần JVM, KHÔNG Spark: HmacPseudonymizer, AesSivPseudonymizer, PseudonymKey, KeyProvider
+│       ├── policy/    # PseudonymPolicy (YAML) -> TablePolicy / ColumnRule
+│       └── spark/     # Pseudonymizer, Reidentifier, MappingTable (Delta), PseudonymConf, PseudonymExtension (SQL)
+├── pseudonym-verify-app/PLAN.md             # bài toán 4: plan app kiểm chứng + định nghĩa "khử định danh thành công"
+│   └── spark-history-server-hdfs-hkh-kerberos.md
+├── pseudonym-udf/                  # BÀI TOÁN 4: lib giả danh (jar thuần, phụ thuộc key-prefix-lib)
+│   └── src/main/scala/vai/lakehouse/pseudonym/
 │       ├── HmacPseudonymizer.scala / AesSivPseudonymizer.scala / MappingTable.scala   # lõi 3 chế độ
 │       ├── Pseudonymizer.scala / Reidentifier.scala / PseudonymPolicy.scala            # DataFrame API + policy YAML
 │       ├── PseudonymKey.scala / KeyProvider.scala / PseudonymConf.scala               # khoá qua key-prefix-lib
@@ -213,7 +221,7 @@ build mặc định — cần jar đối tác cài cục bộ trước và bật
 ├── pseudonym-verify-app/           # BÀI TOÁN 4: app sinh dữ liệu + kiểm chứng khử định danh (README riêng)
 │   ├── Dockerfile                  # build context = gốc repo
 │   ├── k8s/                        # pseudonym-verify-full.yaml, pseudonym-verify-selftest.yaml, pseudonym-keys-secret.yaml
-│   └── src/main/scala/vai/lakehouse/pseudonym/verify/   # PseudoVerifyApp, SyntheticData, Pipeline, checks/, Mutations, ...
+│   └── src/main/scala/vai/lakehouse/pseudonymverify/    # app/ config/ data/ check/ job/ report/ key/ logging/
 ├── hdfs-load-stress-test/          # STRESS TEST HDFS: job sinh tải ghi vào HDFS HKH (chỉ patch block token, không crypto)
 │   ├── Dockerfile                  # build context = thư mục này
 │   ├── k8s/                        # hdfs-stress-sustained.yaml (100 GiB/ngày, 24h), hdfs-stress-burst.yaml
@@ -662,10 +670,18 @@ Không cần jar đối tác. Mọi dependency đều có trên Maven Central/Ne
 
 ```bash
 mvn -B -pl pseudonym-udf -am clean test                     # 56 test: RFC 4231, golden vector (openssl), AES-SIV, Delta, SQL
-mvn -B -pl pseudonym-verify-app -am clean package           # + 20 test của app, kể cả END-TO-END full/selftest/guard
+mvn -B -pl pseudonym-verify-app -am clean package           # + 22 test của app, kể cả END-TO-END full/selftest/guard
 # -> pseudonym-udf/target/pseudonym-udf-1.0-SNAPSHOT.jar
 # -> pseudonym-verify-app/target/pseudonym-verify-app.jar
+
+# Chạy app ở máy local (build + classpath + add-opens + tóm tắt kết quả; xem pseudonym-verify-app/README.md mục 3.2)
+pseudonym-verify-app/scripts/run-local.sh                                      # full, HASH+ENCRYPT
+PSEUDO_MODES=HASH,ENCRYPT,MAPPING pseudonym-verify-app/scripts/run-local.sh    # bật cả bảng ánh xạ
+RUN_MODE=selftest pseudonym-verify-app/scripts/run-local.sh                    # kiểm chứng chính bộ check
 ```
+
+Output theo thứ tự: **dữ liệu gốc → dữ liệu sau giả danh** (cũng ghi ra `preview.txt`, biến `PREVIEW_ROWS`) → kết quả check →
+verdict. Exit code 0 = `PASS`, 1 = `FAIL`, 2 = `ERROR`.
 
 | Spec | Nội dung |
 | --- | --- |
@@ -674,6 +690,7 @@ mvn -B -pl pseudonym-verify-app -am clean package           # + 20 test của ap
 | `MappingTableSpec` | Token ổn định qua nhiều lần chạy; 4 job MERGE song song vẫn ra 1 token/giá trị |
 | `PseudonymizerSpec` / `PseudonymExtensionSpec` | Đổi tên cột (`pseudonym_id`), null; khoá không có trong `EXPLAIN`; SQL ≡ DataFrame API; `pseudo_reveal` tách extension |
 | `ReidentifierSpec` | Luồng ưu đãi Viettel++: danh sách `pseudonym_id` → đúng `customer_id`, cả 3 chế độ |
+| `PseudoVerifyAppSpec` (app) | `main` (`execute`): cấu hình sai → exit 2; chạy `full` nhỏ → exit 0 |
 | `EndToEndSpec` (app) | `full` cả 3 chế độ → `PASS`; `selftest` → 10/10 mutation bị bắt; `guard` trên parquet + khoá từ file → `PASS` |
 
 Image, manifest và cách chạy trên K8s: [`pseudonym-verify-app/README.md`](./pseudonym-verify-app/README.md).

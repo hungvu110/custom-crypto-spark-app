@@ -20,7 +20,7 @@ spec:
   image: hub.vtcc.vn:8989/hungvt0110/pseudonym-verify-app:v0.1
   imagePullPolicy: Always
   mainApplicationFile: local:///opt/app/pseudonym-verify-app.jar
-  mainClass: vai.lakehouse.pseudonym.verify.PseudoVerifyApp
+  mainClass: vai.lakehouse.pseudonymverify.app.PseudoVerifyApp
 
   # Phép đo: lỗi thì xem log/report rồi chạy lại có chủ đích, không tự restart.
   restartPolicy:

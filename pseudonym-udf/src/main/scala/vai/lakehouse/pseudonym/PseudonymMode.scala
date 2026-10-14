@@ -19,7 +19,7 @@ object PseudonymMode {
 
   def parse(raw: String): PseudonymMode = {
     val name = Option(raw).map(_.trim.toUpperCase(Locale.ROOT)).getOrElse("")
-    All.find(_.name == name).getOrElse(throw new IllegalArgumentException(
+    All.find(_.name == name).getOrElse(throw new InvalidPolicyException(
       s"Invalid pseudonym mode '$raw': must be one of ${All.map(_.name).mkString(", ")}"))
   }
 }

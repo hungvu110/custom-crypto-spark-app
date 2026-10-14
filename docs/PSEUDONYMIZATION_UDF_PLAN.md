@@ -66,30 +66,34 @@ pseudonym-udf/
 ├── pom.xml
 └── src/
     ├── main/scala/vai/lakehouse/pseudonym/
-    │   ├── PseudonymMode.scala          # HASH | ENCRYPT | MAPPING
-    │   ├── Encoding.scala               # hex / base64url
-    │   ├── PseudonymConf.scala          # namespace spark.pseudonym.* -> nguồn khoá, version, mapping path
-    │   ├── PseudonymKey.scala           # khoá + version, parse/validate, toString che giá trị
-    │   ├── HmacPseudonymizer.scala      # HASH — thuần JVM, không Spark
-    │   ├── AesSivPseudonymizer.scala    # ENCRYPT — encrypt + decrypt, thuần JVM
-    │   ├── MappingTable.scala           # MAPPING — sinh token, MERGE vào bảng Delta, join
-    │   ├── KeyProvider.scala            # đọc khoá qua PrefixSource + cache
-    │   ├── PseudonymPolicy.scala        # cột -> (mode, output) + parse YAML
-    │   ├── Pseudonymizer.scala          # DataFrame API: apply(df, policy)
-    │   ├── Reidentifier.scala           # tái định danh có thẩm quyền (mục 6)
-    │   └── sql/
-    │       └── PseudonymExtension.scala        # PseudonymExtension: pseudo_hash, pseudo_encrypt;
-    │                                           # PseudonymRevealExtension: pseudo_reveal — nạp riêng
-    └── test/scala/vai/lakehouse/pseudonym/
-        ├── HmacPseudonymizerSpec.scala
-        ├── AesSivPseudonymizerSpec.scala
-        ├── MappingTableSpec.scala
-        ├── PseudonymKeySpec.scala
-        ├── PseudonymPolicySpec.scala
-        ├── PseudonymizerSpec.scala
-        ├── ReidentifierSpec.scala
-        └── sql/PseudonymExtensionSpec.scala
+    │   ├── PseudonymMode.scala          # HASH | ENCRYPT | MAPPING (API gốc)
+    │   ├── PseudonymException.scala     # sealed: InvalidKey / InvalidPolicy / InvalidPseudonym / Configuration
+    │   ├── core/                        # THUẦN JVM — không phụ thuộc Spark, test nhanh, dùng được ngoài Spark
+    │   │   ├── Encoding.scala           # hex / base64url (private[pseudonym])
+    │   │   ├── PseudonymKey.scala       # khoá + version, parse/validate, toString che giá trị
+    │   │   ├── HmacPseudonymizer.scala  # HASH
+    │   │   ├── AesSivPseudonymizer.scala# ENCRYPT — encrypt + decrypt
+    │   │   └── KeyProvider.scala        # KeyProvider + PrefixSourceKeyProvider (đọc khoá qua key-prefix-lib)
+    │   ├── policy/
+    │   │   └── PseudonymPolicy.scala    # YAML -> TablePolicy / ColumnRule, validate
+    │   └── spark/                       # tích hợp Spark
+    │       ├── PseudonymConf.scala      # spark.pseudonym.* -> nguồn khoá, version, mapping path (nhận SparkConf tường minh)
+    │       ├── Columns.scala            # quote + thay cột tại chỗ (nơi duy nhất)
+    │       ├── MappingTable.scala       # MAPPING — sinh token, MERGE vào bảng Delta, join
+    │       ├── Pseudonymizer.scala      # DataFrame API: pseudonymize(df, policy); Pseudonymizer.fromConf(conf)
+    │       ├── Reidentifier.scala       # tái định danh có thẩm quyền (mục 6); Reidentifier.fromConf(conf)
+    │       └── PseudonymExtension.scala # PseudonymExtension: pseudo_hash, pseudo_encrypt;
+    │                                    # PseudonymRevealExtension: pseudo_reveal — nạp riêng
+    └── test/scala/vai/lakehouse/pseudonym/   # cùng cấu trúc package; TestKeys, SparkTestSession ở gốc
 ```
+
+Quy ước thiết kế của lib:
+- **Phụ thuộc một chiều:** `core` ← `policy` ← `spark`. `core` không import Spark; ranh giới được trình biên dịch giữ
+  (`private[pseudonym]`: app kiểm chứng nằm ở package `vai.lakehouse.pseudonymverify` nên **không** với tới được phần nội bộ).
+- **Không trạng thái toàn cục:** mọi cấu hình nhận qua tham số (`KeyProvider`, `SparkConf`). Chỗ duy nhất đọc `SparkEnv` là
+  `PseudonymExtension()` — vì Spark tự khởi tạo extension bằng constructor không tham số.
+- **Lỗi có kiểu:** mọi lỗi kế thừa `PseudonymException` (sealed, là `IllegalArgumentException`), không bao giờ chứa khoá/giá trị gốc.
+- **Điểm vào tường minh:** `new Pseudonymizer(keys, mappingPath)` hoặc `Pseudonymizer.fromConf(conf)`.
 
 Tách lõi crypto (`HmacPseudonymizer`, `AesSivPseudonymizer`) khỏi Spark giống `CdrCipherCore`: test
 nhanh, tái dùng được ngoài Spark.

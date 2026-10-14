@@ -18,7 +18,7 @@ spec:
   image: hub.vtcc.vn:8989/hungvt0110/pseudonym-verify-app:v0.1
   imagePullPolicy: Always
   mainApplicationFile: local:///opt/app/pseudonym-verify-app.jar
-  mainClass: vai.lakehouse.pseudonym.verify.PseudoVerifyApp
+  mainClass: vai.lakehouse.pseudonymverify.app.PseudoVerifyApp
 
   restartPolicy:
     type: Never

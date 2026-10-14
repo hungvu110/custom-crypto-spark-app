@@ -1,5 +1,7 @@
 package vai.lakehouse.pseudonym
 
+import vai.lakehouse.pseudonym.core.{AesSivPseudonymizer, HmacPseudonymizer, KeyProvider, PseudonymKey}
+
 /** Khoá cố định cho test: HMAC = byte 0x00..0x1f, AES-SIV = byte 0x00..0x3f (khớp golden vector tính bằng openssl). */
 object TestKeys {
 

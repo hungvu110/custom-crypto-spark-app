@@ -331,29 +331,21 @@ pseudonym-verify-app/
 ├── k8s/pseudonym-keys-secret.yaml   # mẫu Secret khoá cho KEY_SOURCE=file (chỉ chỗ trống)
 └── src/
     ├── main/resources/{demo-policy.yaml, log4j2.properties}
-    ├── main/scala/vai/lakehouse/pseudonym/verify/
-    │   ├── PseudoVerifyApp.scala     # main: đọc config, dựng session (Delta + PseudonymExtension), verdict -> exit code
-    │   ├── VerifyConfig.scala
-    │   ├── IdentityFormats.scala     # hoán vị isdn/imei/customer_id
-    │   ├── SyntheticData.scala       # 4 bảng + ground truth (mục 3)
-    │   ├── KeyMaterial.scala         # khoá ephemeral (SecureRandom) hoặc qua key-prefix-lib + dạng chuỗi cho P7
-    │   ├── Pipeline.scala            # áp policy theo chế độ; hàm giả danh là tham số (Strategy, cho mutation)
-    │   ├── Runs.scala                # FullRun, SelftestRun
-    │   ├── GuardRun.scala            # RUN_MODE=guard
-    │   ├── Mutations.scala           # M1–M10
-    │   ├── Verdict.scala, ReportWriter.scala, Log.scala
-    │   └── checks/
-    │       ├── Check.scala           # Check / CheckResult / VerifyContext; exception khi đo -> ERROR
-    │       ├── CheckSupport.scala    # ghép output với đáp án, regex định dạng, mẫu định danh
-    │       ├── LinkabilityChecks.scala   # U1–U12
-    │       ├── UseCaseMetrics.scala      # chỉ số MyViettel / BTS / Viettel++ cho U7
-    │       ├── PrivacyChecks.scala       # P1–P7
-    │       └── AttackDictionary.scala    # sinh ứng viên cho P4
-    └── test/scala/vai/lakehouse/pseudonym/verify/
-        ├── SyntheticDataSpec.scala     # hoán vị song ánh, tất định theo seed, NULL_RATE đúng ±ε, đáp án khớp
-        ├── VerdictSpec.scala
-        ├── VerifyConfigSpec.scala
-        └── EndToEndSpec.scala          # full (3 chế độ) PASS, selftest 10/10, guard PASS
+    ├── main/scala/vai/lakehouse/pseudonymverify/
+    │   ├── app/      PseudoVerifyApp (main mỏng: execute -> exit code), SparkSessions (Delta + patch + PseudonymExtension)
+    │   ├── config/   VerifyConfig, RunMode
+    │   ├── data/     SyntheticData (4 bảng + ground truth, mục 3), IdentityFormats (hoán vị isdn/imei/customer_id)
+    │   ├── check/    Check (Check/CheckResult/VerifyContext), CheckSupport, LinkabilityChecks U1–U12,
+    │   │             UseCaseMetrics (U7), PrivacyChecks P1–P7, AttackDictionary (P4)
+    │   ├── job/      VerifyJob (trait) + FullJob / SelftestJob / GuardJob, VerifySession (dữ liệu dùng chung),
+    │   │             Pipeline (Strategy: lib thật hoặc mutation), Mutations M1–M10
+    │   ├── report/   Verdict, ReportWriter, Preview
+    │   ├── key/      KeyMaterial (khoá ephemeral hoặc qua key-prefix-lib + dạng chuỗi cho P7)
+    │   └── logging/  Log
+    └── test/scala/vai/lakehouse/pseudonymverify/
+        ├── config/VerifyConfigSpec, data/SyntheticDataSpec, report/VerdictSpec
+        ├── app/PseudoVerifyAppSpec     # execute: cấu hình sai -> 2; full nhỏ -> 0
+        └── job/EndToEndSpec            # full (3 chế độ) PASS, selftest 10/10, guard PASS
 ```
 
 Đường FAIL của từng check không có spec riêng: nó được kiểm bằng chính mutation self-test. Mỗi mutation phải làm đúng
