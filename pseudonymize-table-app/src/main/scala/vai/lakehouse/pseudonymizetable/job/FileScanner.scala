@@ -51,7 +51,23 @@ object FileScanner {
       .map(_.toString).sorted
   }
 
-  def scan(spark: SparkSession, input: FileInput, roots: Seq[String], parallelism: Int, deep: Boolean = false): FileScan = {
+  private val CorruptKey = "spark.sql.files.ignoreCorruptFiles"
+
+  /** Quét/giải thích phải thấy lỗi đọc: tắt tạm ignoreCorruptFiles (chế độ skip bật nó cho việc đọc thật). */
+  private def strict[T](spark: SparkSession)(body: => T): T = {
+    val previous = spark.conf.getOption(CorruptKey)
+    spark.conf.set(CorruptKey, "false")
+    try body
+    finally previous match {
+      case Some(v) => spark.conf.set(CorruptKey, v)
+      case None => spark.conf.unset(CorruptKey)
+    }
+  }
+
+  def scan(spark: SparkSession, input: FileInput, roots: Seq[String], parallelism: Int, deep: Boolean = false): FileScan =
+    strict(spark)(doScan(spark, input, roots, parallelism, deep))
+
+  private def doScan(spark: SparkSession, input: FileInput, roots: Seq[String], parallelism: Int, deep: Boolean): FileScan = {
     val files = listFiles(spark, roots)
     Log.kv("files to check", files.size)
     val pool = Executors.newFixedThreadPool(math.max(1, math.min(parallelism, math.max(files.size, 1))))
@@ -63,6 +79,51 @@ object FileScanner {
       FileScan(results.collect { case (f, None) => f }, results.collect { case (f, Some(r)) => BadFile(f, r) })
     } finally pool.shutdown()
   }
+
+  /**
+   * csv/tsv/txt không khai `INPUT_SCHEMA` và không có header: Spark sẽ suy số cột bằng cách parse dòng đầu của FILE ĐẦU TIÊN
+   * ngay lúc `load()` (trên driver, trước khi `ignoreCorruptFiles` có tác dụng) nên một file hỏng đứng đầu làm cả job fail.
+   * Ta tự dựng schema `_c0.._cN` (STRING) từ dòng đầu của file tốt đầu tiên: bỏ qua file không có dòng nào trong
+   * `ProbeBytes` đầu (rỗng, hoặc cả file dính thành một dòng). Cũng tiết kiệm một lượt suy schema.
+   */
+  def ensureSchema(spark: SparkSession, input: FileInput, roots: Seq[String]): FileInput =
+    if (input.schema.isDefined || !isDelimited(input) || option(input, "header").exists(_.trim.equalsIgnoreCase("true"))) input
+    else {
+      val delimiter = option(input, "delimiter", "sep").filter(_.nonEmpty).getOrElse(",")
+      val maxColumns = option(input, "maxColumns").flatMap(v => scala.util.Try(v.trim.toInt).toOption).getOrElse(DefaultMaxColumns)
+      val width = listFiles(spark, roots).iterator.flatMap(f => firstLineWidth(spark, f, delimiter))
+        .find(_ <= maxColumns)
+      width.fold(input)(n => input.copy(schema = Some((0 until n).map(i => s"_c$i STRING").mkString(", "))))
+    }
+
+  private val ProbeBytes = 4 * 1024 * 1024
+
+  /** Số trường của dòng đầu (trong `ProbeBytes` đầu); `None` nếu file rỗng hoặc không có ký tự xuống dòng trong đó. */
+  private def firstLineWidth(spark: SparkSession, file: String, delimiter: String): Option[Int] = {
+    val path = new Path(file)
+    val fs = path.getFileSystem(spark.sparkContext.hadoopConfiguration)
+    val in = fs.open(path)
+    try {
+      val buf = new Array[Byte](ProbeBytes)
+      var n = 0
+      var read = in.read(buf, 0, buf.length)
+      while (read > 0 && n < buf.length) {
+        n += read
+        read = if (n < buf.length) in.read(buf, n, buf.length - n) else -1
+      }
+      val end = (0 until n).indexWhere(i => buf(i) == '\n'.toByte || buf(i) == '\r'.toByte)
+      if (end <= 0) None
+      else Some(countOccurrences(new String(buf, 0, end, java.nio.charset.StandardCharsets.UTF_8), delimiter) + 1)
+    } finally in.close()
+  }
+
+  /** Lý do một file không đọc được (đọc đầy đủ bằng đúng cấu hình reader); `None` nếu đọc được bình thường. */
+  def explain(spark: SparkSession, input: FileInput, file: String): Option[String] =
+    strict(spark) {
+      // Thông báo gốc của parser thường rỗng ("ArrayIndexOutOfBounds"): thử kiểm tra nhanh trước để có lý do dễ hiểu.
+      val readable = if (isDelimited(input)) check(spark, input, file, deep = false) else None
+      readable.orElse(check(spark, input, file, deep = true))
+    }
 
   private val DefaultMaxColumns = 20480
 

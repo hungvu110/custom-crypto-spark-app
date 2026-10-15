@@ -83,7 +83,7 @@ spec:
       - name: INPUT_OPTION_nullValue
         value: "\\N"
       # File lỗi trong thư mục: fail (mặc định, job lỗi thì log liệt kê file lỗi) | report (chỉ quét, không ghi, exit 4 nếu có lỗi) |
-      # skip (bỏ file lỗi, log danh sách file đã bỏ qua, job vẫn THÀNH CÔNG exit 0).
+      # skip (KHÔNG quét trước: Spark bỏ file lỗi khi đọc, cuối job log SKIPPED <path>; job vẫn THÀNH CÔNG exit 0).
       # Chạy report một lần trên thư mục mới để biết có file hỏng không.
       # - name: INPUT_BAD_FILES
       #   value: report

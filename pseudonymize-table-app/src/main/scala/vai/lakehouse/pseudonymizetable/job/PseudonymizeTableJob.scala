@@ -58,9 +58,12 @@ object PseudonymizeTableJob {
 
   /**
    * Chạy job. `INPUT_BAD_FILES=fail` (mặc định) mà job lỗi thì quét từng file của `INPUT_PATH` để chỉ ra file lỗi rồi ném
-   * lại lỗi gốc; `skip`/`report` quét TRƯỚC (xem [[readSource]]).
+   * lại lỗi gốc. `skip` KHÔNG quét trước: đọc thẳng với ignoreCorruptFiles rồi so danh sách file với các file đã cho ra
+   * dòng để biết file nào bị bỏ. `report` chỉ quét.
    */
-  def run(spark: SparkSession, cfg: JobConfig): JobResult =
+  def run(spark: SparkSession, cfg: JobConfig): JobResult = {
+    val corruptKey = "spark.sql.files.ignoreCorruptFiles"
+    val previous = spark.conf.getOption(corruptKey)
     try doRun(spark, cfg)
     catch {
       case NonFatal(e) =>
@@ -69,13 +72,17 @@ object PseudonymizeTableJob {
           case _ =>
         }
         throw e
+    } finally previous match { // skip bật ignoreCorruptFiles: không để rò sang lần chạy sau trong cùng session
+      case Some(v) => spark.conf.set(corruptKey, v)
+      case None => spark.conf.unset(corruptKey)
     }
+  }
 
   /** Nguồn file: thư mục ngày/giờ trong khoảng (nếu có), input đã gắn `basePath` để vẫn có cột partition, và các root cần đọc. */
   private final case class FileSource(input: FileInput, roots: Seq[String], partitions: Option[Seq[InputPartition]])
 
   private def resolveFiles(spark: SparkSession, input: FileInput): FileSource = input.range match {
-    case None => FileSource(input, Seq(input.path), None)
+    case None => FileSource(FileScanner.ensureSchema(spark, input, Seq(input.path)), Seq(input.path), None)
     case Some(range) =>
       // Giữ nguyên chuỗi "05" của thư mục (mặc định Spark suy kiểu số và làm mất số 0 đầu).
       spark.conf.set("spark.sql.sources.partitionColumnTypeInference.enabled", "false")
@@ -85,7 +92,9 @@ object PseudonymizeTableJob {
           s"thuộc khoảng ${range.describe}")
       }
       // basePath = INPUT_PATH để mọi chế độ (fail/skip/report) đều có cột partition date/hour giống nhau.
-      FileSource(input.copy(options = Map("basePath" -> input.path) ++ input.options), partitions.map(_.path), Some(partitions))
+      val withBase = input.copy(options = Map("basePath" -> input.path) ++ input.options)
+      val roots = partitions.map(_.path)
+      FileSource(FileScanner.ensureSchema(spark, withBase, roots), roots, Some(partitions))
   }
 
   private def diagnose(spark: SparkSession, input: FileInput, parallelism: Int): Unit =
@@ -108,6 +117,10 @@ object PseudonymizeTableJob {
     Log.kv("source", cfg.source)
     val data = readSource(spark, cfg)
     val (source, scan) = (data.df, data.scan)
+    val tracker = cfg.input match {
+      case _: FileInput if cfg.badFiles == BadFilePolicy.Skip => Some(FileTracker.newAccumulator(spark))
+      case _ => None
+    }
     if (cfg.badFiles == BadFilePolicy.Report) {
       Log.info("INPUT_BAD_FILES=report: chỉ quét, KHÔNG ghi bảng đích")
       return JobResult(-1, -1, exact = false, Nil, scan.map(_.bad).getOrElse(Nil), written = false)
@@ -123,21 +136,30 @@ object PseudonymizeTableJob {
         "hoặc đặt OUTPUT_PARTITION_BY=none")
     }
 
+    // skip: theo dõi file đã cho ra dòng (xem FileTracker) để cuối job biết file nào bị bỏ qua.
+    val toWrite = tracker.fold(pseudonymized)(acc => FileTracker.attach(pseudonymized, cfg.pseudoColumns.head.name, acc))
+
     Log.section("4. GHI BẢNG ĐÍCH")
     Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
     Log.kv("partition by", if (cfg.outputPartitionBy.isEmpty) "(không)" else cfg.outputPartitionBy.mkString(", "))
     Log.kv("pseudonymized columns", cfg.pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "))
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
     val start = System.nanoTime()
-    write(spark, cfg, pseudonymized)
+    write(spark, cfg, toWrite)
     Log.elapsed("write duration", start)
+    val skippedInfo = tracker.map(acc => skippedFiles(spark, cfg, acc))
+    val skipped = skippedInfo.map(_.bad).getOrElse(scan.map(_.bad).getOrElse(Nil))
+    // `count()` của csv không parse nên đếm cả dòng của file hỏng: đối chiếu chỉ so với các file đã đọc được.
+    val verifySource = skippedInfo.filter(_.bad.nonEmpty).fold(source) { info =>
+      if (info.good.isEmpty) source else FileScanner.reader(spark, info.input).load(info.good: _*)
+    }
 
     Log.section("5. ĐỐI CHIẾU")
-    val result = if (cfg.verify) verify(spark, cfg, source, data.partitions) else {
+    val result = if (cfg.verify) verify(spark, cfg, verifySource, data.partitions) else {
       Log.info("VERIFY=false: bỏ qua đối chiếu nguồn/đích")
       JobResult(-1, -1, exact = false, Nil)
     }
-    result.copy(badFiles = scan.map(_.bad).getOrElse(Nil))
+    result.copy(badFiles = skipped)
   }
 
   private final case class SourceData(df: DataFrame, scan: Option[FileScan], partitions: Option[Seq[InputPartition]])
@@ -154,18 +176,41 @@ object PseudonymizeTableJob {
       fs.partitions.foreach { ps =>
         Log.kv("partitions", s"${ps.size}: ${ps.take(3).map(_.label).mkString(", ")}${if (ps.size > 3) ", …, " + ps.last.label else ""}")
       }
-      if (cfg.badFiles == BadFilePolicy.Fail) {
-        SourceData(FileScanner.reader(spark, fs.input).load(fs.roots: _*), None, fs.partitions)
-      } else {
-        // skip/report: quét từng file TRƯỚC; skip chỉ đọc các file tốt và log danh sách file đã bỏ qua ở cuối job.
-        val scan = FileScanner.scan(spark, fs.input, fs.roots, cfg.checkParallelism, deep = cfg.checkFull)
-        FileScanner.log(scan)
-        if (cfg.badFiles == BadFilePolicy.Report) SourceData(spark.emptyDataFrame, Some(scan), fs.partitions)
-        else {
-          if (scan.good.isEmpty) throw new IllegalStateException(s"Không có file nào đọc được trong ${input.path}")
-          SourceData(FileScanner.reader(spark, fs.input).load(scan.good: _*), Some(scan), fs.partitions)
-        }
+      cfg.badFiles match {
+        case BadFilePolicy.Report =>
+          // Chỉ quét (không ghi gì): nhanh theo mặc định, INPUT_CHECK_FULL=true để parse đầy đủ.
+          val scan = FileScanner.scan(spark, fs.input, fs.roots, cfg.checkParallelism, deep = cfg.checkFull)
+          FileScanner.log(scan)
+          SourceData(spark.emptyDataFrame, Some(scan), fs.partitions)
+        case BadFilePolicy.Skip =>
+          // Không quét trước: Spark bỏ qua file lỗi khi đọc; file nào bị bỏ được tìm ra sau khi ghi (xem skippedFiles).
+          spark.conf.set("spark.sql.files.ignoreCorruptFiles", "true")
+          SourceData(FileScanner.reader(spark, fs.input).load(fs.roots: _*), None, fs.partitions)
+        case BadFilePolicy.Fail =>
+          SourceData(FileScanner.reader(spark, fs.input).load(fs.roots: _*), None, fs.partitions)
       }
+  }
+
+  /**
+   * File nằm trong thư mục nguồn nhưng không cho ra dòng nào (bị bỏ vì lỗi đọc, hoặc rỗng). Lý do thật của từng file được
+   * xác định bằng cách đọc lại CHỈ file đó. Lưu ý: file hỏng GIỮA chừng vẫn đã cho ra các dòng trước chỗ hỏng nên không
+   * nằm trong danh sách này (Spark chỉ ghi WARN `Skipped the rest of the content in the corrupted file` ở log executor).
+   */
+  private final case class SkipInfo(bad: Seq[BadFile], good: Seq[String], input: FileInput)
+
+  private def skippedFiles(spark: SparkSession, cfg: JobConfig,
+                           acc: org.apache.spark.util.CollectionAccumulator[String]): SkipInfo = cfg.input match {
+    case input: FileInput =>
+      val fs = resolveFiles(spark, input)
+      val seen = FileTracker.seenPaths(acc)
+      val listed = FileScanner.listFiles(spark, fs.roots)
+      val (read, missing) = listed.partition(f => seen.contains(FileTracker.normalize(f)))
+      Log.kv("files read / skipped", s"${read.size} / ${missing.size}")
+      val bad = missing.map { f =>
+        BadFile(f, FileScanner.explain(spark, fs.input, f).getOrElse("file không có dòng dữ liệu nào (rỗng)"))
+      }
+      SkipInfo(bad, read, fs.input)
+    case _ => SkipInfo(Nil, Nil, null)
   }
 
   /**

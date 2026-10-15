@@ -226,12 +226,24 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     runFile(badFileEnv(clean, "clean_report", "report"): _*) shouldBe PseudonymizeTableApp.ExitOk
   }
 
-  it should "INPUT_CHECK_FULL=true: quét đầy đủ cũng bỏ file lỗi và vẫn exit 0" in {
-    val dir = folderWithBadFile("bad_skip_full")
+  it should "INPUT_BAD_FILES=skip không quét trước: vẫn bỏ file lỗi, ghi file tốt và liệt kê đúng file bị bỏ" in {
+    val dir = folderWithBadFile("bad_skip_list")
+    val env = badFileEnv(dir, "bad_skip_list", "skip").toMap ++ Map("OUTPUT_DB" -> "landing", "ENABLE_HIVE_SUPPORT" -> "false")
+    val cfg = vai.lakehouse.pseudonymizetable.config.JobConfig.fromEnv(env).toOption.get
 
-    runFile(badFileEnv(dir, "bad_skip_full", "skip") :+ ("INPUT_CHECK_FULL" -> "true"): _*) shouldBe PseudonymizeTableApp.ExitOk
+    val result = vai.lakehouse.pseudonymizetable.job.PseudonymizeTableJob.run(spark, cfg)
 
-    spark.table("landing.bad_skip_full").count() shouldBe 3L
+    result.badFiles.map(_.path.split("/").last) shouldBe Seq("bad.txt")
+    result.badFiles.head.reason should include("maxColumns")
+    spark.table("landing.bad_skip_list").count() shouldBe 3L
+  }
+
+  it should "INPUT_CHECK_FULL chỉ đổi mức quét của chế độ report" in {
+    val dir = folderWithBadFile("bad_report_full")
+
+    runFile(badFileEnv(dir, "bad_report_full", "report") :+ ("INPUT_CHECK_FULL" -> "true"): _*) shouldBe
+      PseudonymizeTableApp.ExitBadFiles
+    spark.catalog.tableExists("landing", "bad_report_full") shouldBe false
   }
 
   // ---- khoảng ngày/giờ + partition đầu ra ----

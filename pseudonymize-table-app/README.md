@@ -168,23 +168,31 @@ Lưu ý:
 Chọn chế độ theo nhu cầu từng cột: cột chỉ để nối/đếm (`isdn`) → `HASH`; cột cần khôi phục sau này theo quy trình được duyệt
 (`imei`) → `ENCRYPT`. Xem [ALGORITHMS.md](../docs/pseudonymization/ALGORITHMS.md).
 
-### 3.7. Tìm file lỗi trong thư mục
+### 3.7. File lỗi trong thư mục
 
 Một file hỏng (CSV dính dòng, parquet cụt, lỗi HDFS...) làm cả job fail mà log không nói là file nào. Với `INPUT_PATH`:
 
-| `INPUT_BAD_FILES` | Hành vi                                                                                                                      | Exit              |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| `fail` (mặc định) | Chạy bình thường; **nếu job lỗi** thì quét đầy đủ từng file bằng đúng cấu hình reader, log `FILE LỖI <path> — <nguyên nhân>` | 1                 |
-| `report`          | Chỉ quét, liệt kê file lỗi, **không ghi** bảng đích. Dùng để kiểm tra một thư mục trước khi chạy thật                        | 0 sạch / 4 có lỗi |
-| `skip`            | Quét trước, chỉ xử lý các file tốt, cuối job log `SKIPPED <path> — <nguyên nhân>` cho từng file bị bỏ                        | 0 (thành công)    |
+| `INPUT_BAD_FILES` | Hành vi | Exit |
+| --- | --- | --- |
+| `fail` (mặc định) | Chạy bình thường; **nếu job lỗi** thì quét đầy đủ từng file bằng đúng cấu hình reader, log `FILE LỖI <path> — <nguyên nhân>` | 1 |
+| `report` | Chỉ quét, liệt kê file lỗi, **không ghi** bảng đích. Dùng để kiểm tra một thư mục trước khi chạy thật | 0 sạch / 4 có lỗi |
+| `skip` | **Không quét trước**: đọc thẳng với `spark.sql.files.ignoreCorruptFiles=true` nên Spark bỏ file lỗi; ghi xong, job log `SKIPPED <path> — <nguyên nhân>` cho từng file bị bỏ | 0 (thành công) |
 
-Quét trước (`skip`/`report`) mặc định là **kiểm tra nhanh** cho csv/tsv/txt: đọc nguyên dòng, đếm ký tự phân tách và so với
-`maxColumns` (20 480, đổi bằng `INPUT_OPTION_maxColumns`), rẻ hơn nhiều lần parse đầy đủ; nó chỉ bắt lỗi _dòng quá nhiều cột_.
-Lỗi đọc khác (encoding, file cụt) sẽ làm job fail ở bước ghi, khi đó job tự chẩn đoán bằng quét đầy đủ để chỉ ra file lỗi
-(cả ở `fail` lẫn `skip`). Muốn bắt mọi lỗi ngay từ đầu: `INPUT_CHECK_FULL=true`. Quét chạy song song `INPUT_CHECK_PARALLELISM`.
-`skip` **mất dữ liệu của file lỗi** — danh sách file bị bỏ nằm cuối log (`SKIPPED …`); job vẫn kết thúc thành công nên nếu cần
-báo động hãy theo dõi dòng đó. Với `skip`, dữ liệu
-đọc theo danh sách file tốt nên cột partition suy ra từ path cần `INPUT_OPTION_basePath`.
+**Cách `skip` biết file nào bị bỏ.** Spark bỏ file lỗi trong im lặng (chỉ WARN ở log executor), nên job bọc một cột đầu ra
+bằng biểu thức ghi lại tên file đã cho ra dòng (accumulator). Sau khi ghi, các file trong thư mục mà không cho ra dòng nào
+là file bị bỏ; lý do thật của từng file được xác định bằng cách đọc lại **chỉ file đó**. Đối chiếu (`VERIFY`) chỉ so với các
+file đã đọc được. Không tốn thêm lượt đọc nào cho việc quét.
+
+Giới hạn cần biết:
+- File hỏng **giữa chừng**: các dòng trước chỗ hỏng đã được ghi, phần sau bị bỏ; file này **không** nằm trong danh sách
+  `SKIPPED` (chỉ có WARN `Skipped the rest of the content in the corrupted file` ở log executor).
+- File rỗng cũng được liệt kê (lý do "không có dòng dữ liệu nào").
+- `skip` **mất dữ liệu của file lỗi**; job vẫn kết thúc thành công nên nếu cần báo động hãy theo dõi dòng `SKIPPED`.
+- `INPUT_CHECK_FULL`/`INPUT_CHECK_PARALLELISM` chỉ còn ảnh hưởng `report` và bước chẩn đoán khi job lỗi.
+
+**Schema csv/txt.** Không khai `INPUT_SCHEMA` và không có header: app tự dựng schema `_c0.._cN` (STRING) từ dòng đầu của
+file tốt đầu tiên, thay vì để Spark suy schema bằng dòng đầu của file đầu tiên (một file hỏng đứng đầu sẽ làm fail cả
+job trước khi `ignoreCorruptFiles` có tác dụng).
 
 ### 3.8. Chạy theo khoảng ngày/giờ và ghi partition
 
