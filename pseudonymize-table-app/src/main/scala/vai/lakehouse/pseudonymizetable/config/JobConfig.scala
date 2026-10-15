@@ -93,7 +93,8 @@ final case class JobConfig(
     enableHiveSupport: Boolean,
     verify: Boolean,
     badFiles: BadFilePolicy = BadFilePolicy.Fail,
-    checkParallelism: Int = 4) {
+    checkParallelism: Int = 4,
+    checkFull: Boolean = false) {
 
   def source: String = input.describe
 
@@ -117,6 +118,7 @@ final case class JobConfig(
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(mặc định của Spark/metastore)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString,
     "INPUT_BAD_FILES"     -> badFiles.name,
+    "INPUT_CHECK_FULL"    -> checkFull.toString,
     "VERIFY"              -> verify.toString)
 }
 
@@ -206,14 +208,16 @@ object JobConfig {
       errors += s"INPUT_CHECK_PARALLELISM='$v': phải là số nguyên 1..64"
       4
     }).getOrElse(4)
-    if (!input.isInstanceOf[FileInput] && (raw("INPUT_BAD_FILES").isDefined || raw("INPUT_CHECK_PARALLELISM").isDefined)) {
-      errors += "INPUT_BAD_FILES/INPUT_CHECK_PARALLELISM: chỉ dùng cùng INPUT_PATH"
+    val checkFull = bool("INPUT_CHECK_FULL", default = false)
+    if (!input.isInstanceOf[FileInput] &&
+        (raw("INPUT_BAD_FILES").isDefined || raw("INPUT_CHECK_PARALLELISM").isDefined || raw("INPUT_CHECK_FULL").isDefined)) {
+      errors += "INPUT_BAD_FILES/INPUT_CHECK_PARALLELISM/INPUT_CHECK_FULL: chỉ dùng cùng INPUT_PATH"
     }
 
     if (errors.nonEmpty) Left(errors.toList)
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
       outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true),
-      badFiles, parallelism))
+      badFiles, parallelism, checkFull))
   }
 
   private val InputOptionPrefix = "INPUT_OPTION_"

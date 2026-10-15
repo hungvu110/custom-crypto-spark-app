@@ -66,7 +66,8 @@ spec:
         value: "false"
       - name: INPUT_OPTION_nullValue
         value: "\\N"
-      # File lỗi trong thư mục: fail (mặc định, job lỗi thì log liệt kê file lỗi) | report (chỉ quét, không ghi) | skip (bỏ file lỗi, exit 4).
+      # File lỗi trong thư mục: fail (mặc định, job lỗi thì log liệt kê file lỗi) | report (chỉ quét, không ghi, exit 4 nếu có lỗi) |
+      # skip (bỏ file lỗi, log danh sách file đã bỏ qua, job vẫn THÀNH CÔNG exit 0).
       # Chạy report một lần trên thư mục mới để biết có file hỏng không.
       # - name: INPUT_BAD_FILES
       #   value: report
@@ -142,13 +143,17 @@ spec:
         mountPath: /etc/pseudonym-keys
         readOnly: true
 
-  # GIẢ ĐỊNH — một thư mục giờ thường nhỏ hơn một bảng: chỉnh executor theo kích thước dữ liệu và ResourceQuota.
+  # Cỡ cho ~2,4 GB Parquet/giờ (≈ 5 triệu dòng × 447 cột txt, ~12 GB text, ~100 split 128 MB):
+  #   - tổng 24 core -> ~4 lượt split; parse txt là phần tốn CPU nên gần như tuyến tính theo số core;
+  #   - mỗi executor 4 core ghi Parquet 447 cột đồng thời: buffer ghi ~0,5-1 GB/task -> heap 8g + overhead 2g;
+  #   - 6 x (8g + 2g) = 60 GB RAM, 24 core: nếu ResourceQuota không đủ, giảm instances (4 -> 16 core, 40 GB).
+  # GIẢ ĐỊNH về ResourceQuota của namespace: kiểm tra `kubectl describe quota -n <ns>` trước khi áp dụng.
   executor:
-    instances: 2
-    cores: 2
-    coreLimit: 2000m
-    memory: 4096m
-    memoryOverhead: 1024m
+    instances: 6
+    cores: 4
+    coreLimit: 4000m
+    memory: 8192m
+    memoryOverhead: 2048m
     labels:
       version: 3.5.1
       app: pseudonymize-file
@@ -214,6 +219,8 @@ spec:
     spark.sql.sources.ignoreDataLocality.enabled: "true"
     spark.dynamicAllocation.enabled: "false"
     spark.sql.shuffle.partitions: "64"
+    # Bảng 447 cột: plan dài bị cắt khi in -> tăng giới hạn để không có WARN "Truncated the string representation".
+    spark.sql.debug.maxToStringFields: "500"
 
     # ------ Event log (Spark History Server vùng datalakehla) ------
     spark.eventLog.enabled: "true"

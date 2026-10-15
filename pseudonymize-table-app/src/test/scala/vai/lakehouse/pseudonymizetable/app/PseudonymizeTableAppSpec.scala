@@ -209,10 +209,10 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     spark.catalog.tableExists("landing", "bad_fail") shouldBe false
   }
 
-  it should "INPUT_BAD_FILES=skip: xử lý file tốt, bỏ file lỗi, exit 4" in {
+  it should "INPUT_BAD_FILES=skip: xử lý file tốt, bỏ file lỗi nhưng job vẫn THÀNH CÔNG (exit 0)" in {
     val dir = folderWithBadFile("bad_skip")
 
-    runFile(badFileEnv(dir, "bad_skip", "skip"): _*) shouldBe PseudonymizeTableApp.ExitBadFiles
+    runFile(badFileEnv(dir, "bad_skip", "skip"): _*) shouldBe PseudonymizeTableApp.ExitOk
 
     spark.table("landing.bad_skip").count() shouldBe 3L
   }
@@ -224,5 +224,13 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     val clean = Files.createDirectory(workDir.resolve("clean_report"))
     Files.write(clean.resolve("a.txt"), "84903217465|a|10\n".getBytes(UTF_8))
     runFile(badFileEnv(clean, "clean_report", "report"): _*) shouldBe PseudonymizeTableApp.ExitOk
+  }
+
+  it should "INPUT_CHECK_FULL=true: quét đầy đủ cũng bỏ file lỗi và vẫn exit 0" in {
+    val dir = folderWithBadFile("bad_skip_full")
+
+    runFile(badFileEnv(dir, "bad_skip_full", "skip") :+ ("INPUT_CHECK_FULL" -> "true"): _*) shouldBe PseudonymizeTableApp.ExitOk
+
+    spark.table("landing.bad_skip_full").count() shouldBe 3L
   }
 }

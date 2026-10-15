@@ -119,4 +119,10 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     JobConfig.fromEnv(base + ("INPUT_BAD_FILES" -> "skip")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
     JobConfig.fromEnv(file + ("INPUT_BAD_FILES" -> "ignore")).left.toOption.get.head should include("INPUT_BAD_FILES='ignore'")
   }
+
+  it should "INPUT_CHECK_FULL mặc định false và chỉ dùng với nguồn file" in {
+    JobConfig.fromEnv(file).toOption.get.checkFull shouldBe false
+    JobConfig.fromEnv(file + ("INPUT_CHECK_FULL" -> "true")).toOption.get.checkFull shouldBe true
+    JobConfig.fromEnv(base + ("INPUT_CHECK_FULL" -> "true")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
+  }
 }

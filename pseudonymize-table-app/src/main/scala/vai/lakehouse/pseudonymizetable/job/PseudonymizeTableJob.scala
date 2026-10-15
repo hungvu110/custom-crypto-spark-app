@@ -65,7 +65,7 @@ object PseudonymizeTableJob {
     catch {
       case NonFatal(e) =>
         (cfg.input, cfg.badFiles) match {
-          case (in: FileInput, BadFilePolicy.Fail) => diagnose(spark, in, cfg.checkParallelism)
+          case (in: FileInput, BadFilePolicy.Fail | BadFilePolicy.Skip) => diagnose(spark, in, cfg.checkParallelism)
           case _ =>
         }
         throw e
@@ -74,7 +74,7 @@ object PseudonymizeTableJob {
   private def diagnose(spark: SparkSession, input: FileInput, parallelism: Int): Unit =
     try {
       Log.section("CHẨN ĐOÁN: QUÉT TỪNG FILE CỦA " + input.path)
-      val scan = FileScanner.scan(spark, input, parallelism)
+      val scan = FileScanner.scan(spark, input, parallelism, deep = true)
       FileScanner.log(scan)
       if (scan.bad.isEmpty) Log.info("Mọi file đọc được riêng lẻ: lỗi không nằm ở việc đọc file (kiểm tra bước ghi/khoá).")
       else Log.info("Chạy lại với INPUT_BAD_FILES=skip để bỏ các file này, hoặc sửa/loại chúng khỏi INPUT_PATH.")
@@ -126,7 +126,7 @@ object PseudonymizeTableJob {
       (FileScanner.reader(spark, input).load(input.path), None)
     case input: FileInput =>
       // skip/report: quét từng file TRƯỚC; skip chỉ đọc các file tốt, báo file lỗi ở cuối (exit 4).
-      val scan = FileScanner.scan(spark, input, cfg.checkParallelism)
+      val scan = FileScanner.scan(spark, input, cfg.checkParallelism, deep = cfg.checkFull)
       FileScanner.log(scan)
       if (cfg.badFiles == BadFilePolicy.Report) (spark.emptyDataFrame, Some(scan))
       else {

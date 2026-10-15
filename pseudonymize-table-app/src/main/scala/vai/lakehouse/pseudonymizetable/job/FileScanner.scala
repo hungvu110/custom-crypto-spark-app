@@ -6,7 +6,7 @@ import scala.util.control.NonFatal
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import vai.lakehouse.pseudonymizetable.config.FileInput
+import vai.lakehouse.pseudonymizetable.config.{FileInput, InputFormat}
 import vai.lakehouse.pseudonymizetable.logging.Log
 
 /** Một file không đọc được theo `INPUT_FORMAT`/`INPUT_OPTION_*`, kèm nguyên nhân gốc đã rút gọn. */
@@ -16,8 +16,13 @@ final case class BadFile(path: String, reason: String)
 final case class FileScan(good: Seq[String], bad: Seq[BadFile])
 
 /**
- * Tìm file lỗi trong thư mục `INPUT_PATH`: đọc TỪNG file bằng đúng cấu hình reader của job, ép parse mọi cột. File đọc
- * lỗi (CSV vượt maxColumns, parquet hỏng, lỗi HDFS...) được ghi vào `bad`; không file nào làm dừng việc quét các file khác.
+ * Tìm file lỗi trong thư mục `INPUT_PATH`; không file nào làm dừng việc quét các file khác.
+ *
+ * Hai mức kiểm (tham số `deep`):
+ *  - nhanh (mặc định, chỉ csv/tsv/txt): đọc nguyên dòng và đếm ký tự phân tách, so với `maxColumns` (mặc định 20 480 của
+ *    parser CSV). Không tách 447 trường mỗi dòng nên rẻ hơn nhiều lần parse đầy đủ; chỉ bắt lỗi "dòng quá nhiều cột".
+ *  - đầy đủ (`deep`, và mọi định dạng khác): đọc TỪNG file bằng đúng cấu hình reader của job, ép parse mọi cột; bắt mọi
+ *    lỗi đọc (CSV vượt maxColumns, parquet hỏng, lỗi HDFS...).
  */
 object FileScanner {
 
@@ -43,28 +48,63 @@ object FileScanner {
       .map(_.toString).sorted
   }
 
-  def scan(spark: SparkSession, input: FileInput, parallelism: Int): FileScan = {
+  def scan(spark: SparkSession, input: FileInput, parallelism: Int, deep: Boolean = false): FileScan = {
     val files = listFiles(spark, input.path)
     Log.kv("files to check", files.size)
     val pool = Executors.newFixedThreadPool(math.max(1, math.min(parallelism, math.max(files.size, 1))))
     try {
       val futures = files.map { f =>
-        f -> pool.submit(new Callable[Option[String]] { override def call(): Option[String] = check(spark, input, f) })
+        f -> pool.submit(new Callable[Option[String]] { override def call(): Option[String] = check(spark, input, f, deep) })
       }
       val results = futures.map { case (f, fut) => f -> fut.get() }
       FileScan(results.collect { case (f, None) => f }, results.collect { case (f, Some(r)) => BadFile(f, r) })
     } finally pool.shutdown()
   }
 
-  /** `None` = đọc được. `.rdd` giữ nguyên mọi cột nên parser không bị cắt cột (count() trên DataFrame có thể bỏ qua parse). */
-  private def check(spark: SparkSession, input: FileInput, file: String): Option[String] =
+  private val DefaultMaxColumns = 20480
+
+  private def isDelimited(input: FileInput): Boolean =
+    input.format == InputFormat.Csv || input.format == InputFormat.Tsv
+
+  /** Tuỳ chọn reader không phân biệt hoa thường (như Spark): defaults của định dạng rồi `INPUT_OPTION_*`. */
+  private def option(input: FileInput, names: String*): Option[String] = {
+    val all = (input.format.defaults ++ input.options).map { case (k, v) => k.toLowerCase -> v }
+    names.flatMap(n => all.get(n.toLowerCase)).headOption
+  }
+
+  private[job] def countOccurrences(line: String, token: String): Int = {
+    var count = 0
+    var from = line.indexOf(token)
+    while (from >= 0) {
+      count += 1
+      from = line.indexOf(token, from + token.length)
+    }
+    count
+  }
+
+  /** `None` = đọc được. Mức nhanh chỉ cho csv/tsv/txt (xem mô tả object); còn lại luôn đọc đầy đủ. */
+  private def check(spark: SparkSession, input: FileInput, file: String, deep: Boolean): Option[String] =
     try {
-      val df: DataFrame = reader(spark, input).load(file)
-      df.rdd.map(_.length).count()
-      None
+      if (!deep && isDelimited(input)) fastCheck(spark, input, file) else fullCheck(spark, input, file)
     } catch {
       case NonFatal(e) => Some(rootCause(e))
     }
+
+  /** Số trường lớn nhất của một dòng = số ký tự phân tách + 1; vượt `maxColumns` thì parser CSV sẽ ném lỗi. */
+  private def fastCheck(spark: SparkSession, input: FileInput, file: String): Option[String] = {
+    val delimiter = option(input, "delimiter", "sep").filter(_.nonEmpty).getOrElse(",")
+    val maxColumns = option(input, "maxColumns").flatMap(v => scala.util.Try(v.trim.toInt).toOption)
+      .getOrElse(DefaultMaxColumns)
+    val widest = spark.read.text(file).rdd.map(r => countOccurrences(r.getString(0), delimiter) + 1).fold(0)(math.max)
+    if (widest > maxColumns) Some(s"dòng có $widest trường, vượt maxColumns=$maxColumns (delimiter '$delimiter')") else None
+  }
+
+  /** `.rdd` giữ nguyên mọi cột nên parser không bị cắt cột (count() trên DataFrame có thể bỏ qua parse). */
+  private def fullCheck(spark: SparkSession, input: FileInput, file: String): Option[String] = {
+    val df: DataFrame = reader(spark, input).load(file)
+    df.rdd.map(_.length).count()
+    None
+  }
 
   private def rootCause(t: Throwable): String = {
     var cur = t
