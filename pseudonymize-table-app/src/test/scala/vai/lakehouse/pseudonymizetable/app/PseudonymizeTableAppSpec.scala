@@ -233,4 +233,94 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
 
     spark.table("landing.bad_skip_full").count() shouldBe 3L
   }
+
+  // ---- khoảng ngày/giờ + partition đầu ra ----
+
+  /** base/date=D/hour=H/part.txt, mỗi file 2 dòng "isdn|<D><H>|<n>" (isdn cố định theo ngày/giờ, 2 dòng giống nhau). */
+  private def partitionedTree(name: String, cells: Seq[(String, String)], payload: String = "v1"): java.nio.file.Path = {
+    val base = Files.createDirectory(workDir.resolve(name))
+    cells.foreach { case (d, h) =>
+      val dir = Files.createDirectories(base.resolve(s"date=$d").resolve(s"hour=$h"))
+      Files.write(dir.resolve("part-0.txt"), s"9$d$h|$payload|1\n9$d$h|$payload|2\n".getBytes(UTF_8))
+    }
+    base
+  }
+
+  private def rangeEnv(base: java.nio.file.Path, table: String, extra: (String, String)*) =
+    Seq("INPUT_PATH" -> base.toString, "INPUT_FORMAT" -> "txt", "INPUT_OPTION_delimiter" -> "|",
+      "PSEUDO_COLUMNS" -> "_c0", "OUTPUT_TABLE" -> table) ++ extra
+
+  private def partitionsOf(table: String): Set[String] =
+    spark.table(s"landing.$table").select("date", "hour").distinct().collect().map(r => s"${r.getString(0)}/${r.getString(1)}").toSet
+
+  private val cells = Seq("20261012" -> "05", "20261012" -> "18", "20261013" -> "05", "20261013" -> "18", "20261014" -> "18")
+
+  it should "INPUT_FROM/INPUT_TO (yyyyMMdd): xử lý nguyên các ngày trong khoảng, ghi bảng partition date/hour" in {
+    val base = partitionedTree("tree_days", cells)
+
+    runFile(rangeEnv(base, "range_days", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261013"): _*) shouldBe 0
+
+    partitionsOf("range_days") shouldBe Set("20261012/05", "20261012/18", "20261013/05", "20261013/18")
+    spark.table("landing.range_days").count() shouldBe 8L
+    // partition vật lý trên đĩa: date=…/hour=… (giữ nguyên "05")
+    val files = spark.table("landing.range_days").inputFiles.mkString("\n")
+    files should include("date=20261012/hour=05")
+    files should include("date=20261013/hour=18")
+  }
+
+  it should "INPUT_FROM/INPUT_TO có giờ: khoảng liên tục từ ngày-giờ đến ngày-giờ" in {
+    val base = partitionedTree("tree_cont", cells)
+
+    runFile(rangeEnv(base, "range_cont", "INPUT_FROM" -> "2026101218", "INPUT_TO" -> "2026101305"): _*) shouldBe 0
+
+    partitionsOf("range_cont") shouldBe Set("20261012/18", "20261013/05")
+  }
+
+  it should "INPUT_HOURS: chỉ lấy các giờ trong ngày" in {
+    val base = partitionedTree("tree_hours", cells)
+
+    runFile(rangeEnv(base, "range_hours", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261014", "INPUT_HOURS" -> "0-6"): _*) shouldBe 0
+
+    partitionsOf("range_hours") shouldBe Set("20261012/05", "20261013/05")
+  }
+
+  it should "overwrite-partitions (mặc định khi có partition): chạy lại / chạy ngày khác không xoá partition còn lại" in {
+    val base = partitionedTree("tree_op", cells)
+    val env = (to: String) => rangeEnv(base, "range_op", "INPUT_FROM" -> "20261012", "INPUT_TO" -> to)
+
+    runFile(env("20261012"): _*) shouldBe 0
+    partitionsOf("range_op") shouldBe Set("20261012/05", "20261012/18")
+
+    runFile(rangeEnv(base, "range_op", "INPUT_FROM" -> "20261013", "INPUT_TO" -> "20261013"): _*) shouldBe 0
+    partitionsOf("range_op") shouldBe Set("20261012/05", "20261012/18", "20261013/05", "20261013/18")
+    spark.table("landing.range_op").count() shouldBe 8L
+
+    // dữ liệu ngày 12 đổi -> chạy lại ngày 12 thay đúng partition của ngày 12, ngày 13 giữ nguyên, không nhân đôi dòng
+    Files.write(base.resolve("date=20261012/hour=05/part-0.txt"), "9new|v2|1\n".getBytes(UTF_8))
+    runFile(rangeEnv(base, "range_op", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012"): _*) shouldBe 0
+
+    spark.table("landing.range_op").count() shouldBe 7L // 8 - 2 (hour=05 cũ của ngày 12) + 1 (dòng mới)
+    partitionsOf("range_op") should contain allOf ("20261012/05", "20261013/05", "20261013/18")
+  }
+
+  it should "OUTPUT_MODE=overwrite vẫn thay toàn bộ bảng; OUTPUT_PARTITION_BY=none tắt partition" in {
+    val base = partitionedTree("tree_full", cells)
+    runFile(rangeEnv(base, "full_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012"): _*) shouldBe 0
+    runFile(rangeEnv(base, "full_tbl", "INPUT_FROM" -> "20261013", "INPUT_TO" -> "20261013", "OUTPUT_MODE" -> "overwrite"): _*) shouldBe 0
+    partitionsOf("full_tbl") shouldBe Set("20261013/05", "20261013/18")
+
+    runFile(rangeEnv(base, "flat_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012", "OUTPUT_PARTITION_BY" -> "none"): _*) shouldBe 0
+    spark.table("landing.flat_tbl").inputFiles.mkString should not include "date=2026"
+  }
+
+  it should "báo lỗi (exit 1) khi không có thư mục nào trong khoảng, hoặc partition đã có khác cấu hình" in {
+    val base = partitionedTree("tree_none", cells)
+
+    runFile(rangeEnv(base, "none_tbl", "INPUT_FROM" -> "20270101", "INPUT_TO" -> "20270102"): _*) shouldBe
+      PseudonymizeTableApp.ExitRuntimeError
+
+    runFile(rangeEnv(base, "mismatch_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012", "OUTPUT_PARTITION_BY" -> "date"): _*) shouldBe 0
+    runFile(rangeEnv(base, "mismatch_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012"): _*) shouldBe
+      PseudonymizeTableApp.ExitRuntimeError
+  }
 }

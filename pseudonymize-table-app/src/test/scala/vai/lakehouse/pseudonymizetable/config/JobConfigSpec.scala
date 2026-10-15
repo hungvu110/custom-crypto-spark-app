@@ -125,4 +125,29 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     JobConfig.fromEnv(file + ("INPUT_CHECK_FULL" -> "true")).toOption.get.checkFull shouldBe true
     JobConfig.fromEnv(base + ("INPUT_CHECK_FULL" -> "true")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
   }
+
+  it should "nhận khoảng ngày/giờ và mặc định partition (date, hour) + overwrite-partitions" in {
+    val cfg = JobConfig.fromEnv(file ++ Map("INPUT_FROM" -> "20261012", "INPUT_TO" -> "2026101405", "INPUT_HOURS" -> "6-18")).toOption.get
+    val range = cfg.input.asInstanceOf[FileInput].range.get
+
+    range.from shouldBe 2026101200L
+    range.to shouldBe 2026101405L
+    range.hours shouldBe Some((6, 18))
+    cfg.outputPartitionBy shouldBe Seq("date", "hour")
+    cfg.outputMode shouldBe "overwrite-partitions"
+    JobConfig.fromEnv(file ++ Map("INPUT_FROM" -> "20261012", "OUTPUT_PARTITION_BY" -> "none")).toOption.get.outputMode shouldBe "overwrite"
+    JobConfig.fromEnv(file).toOption.get.outputPartitionBy shouldBe Nil
+  }
+
+  it should "từ chối khoảng ngày/giờ sai" in {
+    def errors(extra: (String, String)*) = JobConfig.fromEnv(file ++ extra).left.toOption.get.mkString(" | ")
+
+    errors("INPUT_FROM" -> "20261340") should include("ngày không hợp lệ")
+    errors("INPUT_FROM" -> "2026101225") should include("giờ phải 00..23")
+    errors("INPUT_FROM" -> "20261014", "INPUT_TO" -> "20261012") should include("phải ≤")
+    errors("INPUT_HOURS" -> "18-6") should include("INPUT_HOURS")
+    errors("INPUT_FROM" -> "20261012", "OUTPUT_PARTITION_BY" -> "none", "OUTPUT_MODE" -> "overwrite-partitions") should
+      include("cần OUTPUT_PARTITION_BY")
+    JobConfig.fromEnv(base + ("INPUT_FROM" -> "20261012")).left.toOption.get.mkString should include("chỉ dùng cùng INPUT_PATH")
+  }
 }

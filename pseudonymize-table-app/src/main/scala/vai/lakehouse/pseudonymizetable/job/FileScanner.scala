@@ -33,8 +33,11 @@ object FileScanner {
     r
   }
 
-  /** File dữ liệu dưới `path` (đệ quy), bỏ file ẩn/tạm (`_`, `.`) như Spark. `path` có thể là file, thư mục hoặc glob. */
-  def listFiles(spark: SparkSession, path: String): Seq[String] = {
+  /** File dữ liệu dưới mọi `roots` (đệ quy), bỏ file ẩn/tạm (`_`, `.`) như Spark. Mỗi root là file, thư mục hoặc glob. */
+  def listFiles(spark: SparkSession, roots: Seq[String]): Seq[String] =
+    roots.flatMap(listFiles(spark, _)).distinct.sorted
+
+  private def listFiles(spark: SparkSession, path: String): Seq[String] = {
     val p = new Path(path)
     val fs = p.getFileSystem(spark.sparkContext.hadoopConfiguration)
     val roots = Option(fs.globStatus(p)).map(_.toSeq).getOrElse(Nil)
@@ -48,8 +51,8 @@ object FileScanner {
       .map(_.toString).sorted
   }
 
-  def scan(spark: SparkSession, input: FileInput, parallelism: Int, deep: Boolean = false): FileScan = {
-    val files = listFiles(spark, input.path)
+  def scan(spark: SparkSession, input: FileInput, roots: Seq[String], parallelism: Int, deep: Boolean = false): FileScan = {
+    val files = listFiles(spark, roots)
     Log.kv("files to check", files.size)
     val pool = Executors.newFixedThreadPool(math.max(1, math.min(parallelism, math.max(files.size, 1))))
     try {

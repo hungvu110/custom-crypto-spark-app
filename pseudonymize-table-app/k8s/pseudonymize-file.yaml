@@ -51,10 +51,26 @@ spec:
         value: "2"
 
       # ================= NGUỒN FILE (README mục 3.5) =================
-      # Thư mục (hoặc file / glob) trên HDFS. Đường dẫn không scheme được resolve theo fs.defaultFS của hadoopConfigMap.
-      # Trỏ thẳng vào date=…/hour=… thì dữ liệu KHÔNG có cột partition date/hour.
+      # GỐC của cây thư mục <INPUT_PATH>/date=<yyyyMMdd>/hour=<HH>/ (đường dẫn không scheme resolve theo fs.defaultFS của
+      # hadoopConfigMap). Khoảng ngày/giờ cần xử lý chọn bằng INPUT_FROM / INPUT_TO / INPUT_HOURS bên dưới.
       - name: INPUT_PATH
-        value: /landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/
+        value: /landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m
+      # Khoảng THỜI GIAN LIÊN TỤC, bao gồm hai đầu: yyyyMMdd (nguyên ngày) hoặc yyyyMMddHH. FROM mặc định giờ 00, TO mặc định 23.
+      #   một giờ:        FROM=2026101218  TO=2026101218
+      #   cả ngày 12→13:  FROM=20261012    TO=20261013
+      #   qua nửa đêm:    FROM=2026101218  TO=2026101306
+      - name: INPUT_FROM
+        value: "20261012"
+      - name: INPUT_TO
+        value: "20261012"
+      # Lọc thêm các giờ TRONG NGÀY (áp cho mọi ngày của khoảng), vd 6-18 hoặc một giờ 18. Bỏ trống = mọi giờ.
+      # - name: INPUT_HOURS
+      #   value: "6-18"
+      # Tên khoá thư mục nếu khác mặc định date / hour:
+      # - name: INPUT_DATE_KEY
+      #   value: date
+      # - name: INPUT_HOUR_KEY
+      #   value: hour
       # parquet | orc | avro | json | delta | csv | tsv | txt (= csv, text phân tách ký tự) | text (nguyên dòng, cột "value")
       - name: INPUT_FORMAT
         value: txt
@@ -86,6 +102,9 @@ spec:
         value: HASH
 
       # ================= BẢNG ĐÍCH (bắt buộc khi nguồn là file; KHÔNG ghi đè nguồn) =================
+      # Khi đọc theo khoảng ngày/giờ: bảng đích tự partition theo (date, hour) và OUTPUT_MODE mặc định là
+      # overwrite-partitions — chỉ thay các partition vừa xử lý, các ngày/giờ khác của cùng bảng giữ nguyên, chạy lại
+      # cùng khoảng không nhân đôi dữ liệu. Đổi: OUTPUT_PARTITION_BY (vd date), "none" để tắt; OUTPUT_MODE=append/overwrite.
       - name: OUTPUT_DB
         value: landing
       - name: OUTPUT_TABLE

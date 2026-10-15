@@ -64,27 +64,31 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 
 ### 3.1. Biến môi trường của job (chỉ driver đọc)
 
-| Biến | Mặc định | Ý nghĩa |
-| --- | --- | --- |
-| `DB_NAME` + `TABLE_NAME` | — | **Nguồn là bảng** trong catalog. Chỉ `[A-Za-z0-9_]`. Bắt buộc nếu không dùng `INPUT_PATH` |
-| `INPUT_PATH` | — | **Nguồn là file/thư mục**, vd `/landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/` (đường dẫn tuyệt đối hoặc URI `hdfs://…`; glob được). Loại trừ với `DB_NAME`/`TABLE_NAME` (xem 3.5) |
-| `INPUT_FORMAT` | (bắt buộc khi có `INPUT_PATH`) | `parquet` / `orc` / `avro` / `json` / `delta` / `csv` / `tsv` / `txt` (= `csv`, text phân tách ký tự) / `text` (mỗi dòng 1 cột `value`) |
-| `INPUT_SCHEMA` | — | Schema DDL cho file không có schema sẵn, vd `isdn STRING, imei STRING, amount DOUBLE`. Không có thì csv/tsv/txt đặt tên cột `_c0, _c1, …` |
-| `INPUT_OPTION_<tên>` | — | Option của Spark reader, vd `INPUT_OPTION_delimiter=\|`, `INPUT_OPTION_header=true`, `INPUT_OPTION_encoding=UTF-8` |
-| `INPUT_BAD_FILES` | `fail` | Chỉ với `INPUT_PATH`. File không đọc được: `fail` dừng job rồi **liệt kê file lỗi**; `skip` bỏ file lỗi, xử lý phần còn lại, log danh sách file đã bỏ qua và job vẫn **thành công (exit 0)**; `report` chỉ quét và liệt kê, không ghi gì, exit `4` nếu có lỗi (xem 3.7) |
-| `INPUT_CHECK_FULL` | `false` | Chỉ với `INPUT_PATH`. `false`: quét nhanh csv/tsv/txt (đếm ký tự phân tách, chỉ bắt dòng quá `maxColumns`); `true`: đọc và parse đầy đủ từng file (bắt mọi lỗi đọc, tốn thêm một lượt đọc) |
-| `INPUT_CHECK_PARALLELISM` | `4` | Số file quét song song khi tìm file lỗi (1..64) |
-| `PSEUDO_COLUMNS` | (bắt buộc) | Cột cần khử định danh, phân cách bằng dấu phẩy, vd `isdn,imei`. Mỗi cột có thể kèm chế độ riêng: `isdn:HASH,imei:ENCRYPT` (xem 3.6). Không lặp, phải có trong nguồn |
-| `PSEUDO_MODE` | `HASH` | `HASH` (một chiều) / `ENCRYPT` (giải mã lại được) / `MAPPING` (bảng ánh xạ). Chế độ **mặc định** cho cột trong `PSEUDO_COLUMNS` không ghi `:MODE` |
-| `OUTPUT_DB` | `DB_NAME` (nguồn bảng); **bắt buộc** với nguồn file | Database bảng đích (tự `CREATE DATABASE IF NOT EXISTS`) |
-| `OUTPUT_TABLE` | `<TABLE_NAME>_pseudonymized` (nguồn bảng); **bắt buộc** với nguồn file | Tên bảng đích. **Không được trùng bảng nguồn** (xem 3.3) |
-| `OUTPUT_FORMAT` | `delta` | `delta` / `hive` (ghi Parquet) / `iceberg` (cần catalog Iceberg đã cấu hình) |
-| `OUTPUT_MODE` | `overwrite` | `overwrite` (thay thế bảng đích) / `append` (ghi nối) |
-| `VERIFY` | `true` | Đọc lại bảng đích và đối chiếu với nguồn (mục 5) |
-| `MAPPING_TABLE_PATH` | — | Chỉ `PSEUDO_MODE=MAPPING`: đường dẫn bảng ánh xạ Delta (hoặc dùng `spark.pseudonym.mapping.path`) |
-| `WAREHOUSE_PATH` | — | URI đầy đủ của warehouse, vd `hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse`; đặt `spark.sql.warehouse.dir` (không phụ thuộc `fs.defaultFS`) — cùng quy ước với `crawler-streaming-app` |
-| `ENABLE_HIVE_SUPPORT` | `true` | `true` để đọc bảng qua Hive metastore (như `spark-app`) |
-| `APP_NAME` | `PseudonymizeTable` | Tên trên Spark UI |
+| Biến                                | Mặc định                                                               | Ý nghĩa                                                                                                                                                                                                                                                                 |
+| ----------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_NAME` + `TABLE_NAME`            | —                                                                      | **Nguồn là bảng** trong catalog. Chỉ `[A-Za-z0-9_]`. Bắt buộc nếu không dùng `INPUT_PATH`                                                                                                                                                                               |
+| `INPUT_PATH`                        | —                                                                      | **Nguồn là file/thư mục**, vd `/landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/` (đường dẫn tuyệt đối hoặc URI `hdfs://…`; glob được). Loại trừ với `DB_NAME`/`TABLE_NAME` (xem 3.5)                                                       |
+| `INPUT_FROM` / `INPUT_TO`           | —                                                                      | Khoảng thời gian **liên tục**, bao gồm hai đầu, `yyyyMMdd` hoặc `yyyyMMddHH` (FROM mặc định giờ 00, TO mặc định 23). Khi có thì `INPUT_PATH` là **gốc** của cây `date=…/hour=…/` (xem 3.8)                                                                              |
+| `INPUT_HOURS`                       | —                                                                      | Lọc thêm giờ trong ngày cho mọi ngày của khoảng: `6-18` hoặc `18`                                                                                                                                                                                                       |
+| `INPUT_DATE_KEY` / `INPUT_HOUR_KEY` | `date` / `hour`                                                        | Tên khoá thư mục nếu khác mặc định (cũng là tên cột partition)                                                                                                                                                                                                          |
+| `INPUT_FORMAT`                      | (bắt buộc khi có `INPUT_PATH`)                                         | `parquet` / `orc` / `avro` / `json` / `delta` / `csv` / `tsv` / `txt` (= `csv`, text phân tách ký tự) / `text` (mỗi dòng 1 cột `value`)                                                                                                                                 |
+| `INPUT_SCHEMA`                      | —                                                                      | Schema DDL cho file không có schema sẵn, vd `isdn STRING, imei STRING, amount DOUBLE`. Không có thì csv/tsv/txt đặt tên cột `_c0, _c1, …`                                                                                                                               |
+| `INPUT_OPTION_<tên>`                | —                                                                      | Option của Spark reader, vd `INPUT_OPTION_delimiter=\|`, `INPUT_OPTION_header=true`, `INPUT_OPTION_encoding=UTF-8`                                                                                                                                                      |
+| `INPUT_BAD_FILES`                   | `fail`                                                                 | Chỉ với `INPUT_PATH`. File không đọc được: `fail` dừng job rồi **liệt kê file lỗi**; `skip` bỏ file lỗi, xử lý phần còn lại, log danh sách file đã bỏ qua và job vẫn **thành công (exit 0)**; `report` chỉ quét và liệt kê, không ghi gì, exit `4` nếu có lỗi (xem 3.7) |
+| `INPUT_CHECK_FULL`                  | `false`                                                                | Chỉ với `INPUT_PATH`. `false`: quét nhanh csv/tsv/txt (đếm ký tự phân tách, chỉ bắt dòng quá `maxColumns`); `true`: đọc và parse đầy đủ từng file (bắt mọi lỗi đọc, tốn thêm một lượt đọc)                                                                              |
+| `INPUT_CHECK_PARALLELISM`           | `4`                                                                    | Số file quét song song khi tìm file lỗi (1..64)                                                                                                                                                                                                                         |
+| `PSEUDO_COLUMNS`                    | (bắt buộc)                                                             | Cột cần khử định danh, phân cách bằng dấu phẩy, vd `isdn,imei`. Mỗi cột có thể kèm chế độ riêng: `isdn:HASH,imei:ENCRYPT` (xem 3.6). Không lặp, phải có trong nguồn                                                                                                     |
+| `PSEUDO_MODE`                       | `HASH`                                                                 | `HASH` (một chiều) / `ENCRYPT` (giải mã lại được) / `MAPPING` (bảng ánh xạ). Chế độ **mặc định** cho cột trong `PSEUDO_COLUMNS` không ghi `:MODE`                                                                                                                       |
+| `OUTPUT_DB`                         | `DB_NAME` (nguồn bảng); **bắt buộc** với nguồn file                    | Database bảng đích (tự `CREATE DATABASE IF NOT EXISTS`)                                                                                                                                                                                                                 |
+| `OUTPUT_TABLE`                      | `<TABLE_NAME>_pseudonymized` (nguồn bảng); **bắt buộc** với nguồn file | Tên bảng đích. **Không được trùng bảng nguồn** (xem 3.3)                                                                                                                                                                                                                |
+| `OUTPUT_FORMAT`                     | `delta`                                                                | `delta` / `hive` (ghi Parquet) / `iceberg` (cần catalog Iceberg đã cấu hình)                                                                                                                                                                                            |
+| `OUTPUT_MODE`                       | `overwrite`; **`overwrite-partitions`** khi có partition đầu ra        | `overwrite` (thay **cả** bảng đích) / `append` (ghi nối) / `overwrite-partitions` (chỉ thay các partition có trong dữ liệu lần này, xem 3.8)                                                                                                                            |
+| `OUTPUT_PARTITION_BY`               | `date,hour` khi đọc theo khoảng; không partition nếu không             | Cột partition của bảng đích, phân cách bằng dấu phẩy; `none` để tắt. Phải có trong dữ liệu, không nằm trong `PSEUDO_COLUMNS`                                                                                                                                            |
+| `VERIFY`                            | `true`                                                                 | Đọc lại bảng đích và đối chiếu với nguồn (mục 5)                                                                                                                                                                                                                        |
+| `MAPPING_TABLE_PATH`                | —                                                                      | Chỉ `PSEUDO_MODE=MAPPING`: đường dẫn bảng ánh xạ Delta (hoặc dùng `spark.pseudonym.mapping.path`)                                                                                                                                                                       |
+| `WAREHOUSE_PATH`                    | —                                                                      | URI đầy đủ của warehouse, vd `hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse`; đặt `spark.sql.warehouse.dir` (không phụ thuộc `fs.defaultFS`) — cùng quy ước với `crawler-streaming-app`                                                           |
+| `ENABLE_HIVE_SUPPORT`               | `true`                                                                 | `true` để đọc bảng qua Hive metastore (như `spark-app`)                                                                                                                                                                                                                 |
+| `APP_NAME`                          | `PseudonymizeTable`                                                    | Tên trên Spark UI                                                                                                                                                                                                                                                       |
 
 Sai cấu hình → job **không dựng Spark**, in mọi lỗi một lượt và thoát với exit code `2`.
 
@@ -95,10 +99,10 @@ Sai cấu hình → job **không dựng Spark**, in mọi lỗi một lượt v�
 - Định danh giả luôn là `STRING`: cột số (vd `BIGINT`) trong `PSEUDO_COLUMNS` sẽ thành `STRING` ở bảng đích.
 - `NULL` vẫn là `NULL`. Cùng một giá trị gốc luôn ra cùng một định danh giả (nên vẫn join/đếm/gom nhóm được).
 
-| Chế độ | Giá trị trong bảng đích |
-| --- | --- |
-| `HASH` | `k1_` + 32 ký tự hex |
-| `ENCRYPT` | `e1_` + base64url (dài hơn bản gốc 16 byte) |
+| Chế độ    | Giá trị trong bảng đích                                                      |
+| --------- | ---------------------------------------------------------------------------- |
+| `HASH`    | `k1_` + 32 ký tự hex                                                         |
+| `ENCRYPT` | `e1_` + base64url (dài hơn bản gốc 16 byte)                                  |
 | `MAPPING` | `t_` + 32 ký tự hex ngẫu nhiên; cặp `(giá trị gốc, token)` nằm ở bảng ánh xạ |
 
 ### 3.3. Vì sao không ghi đè bảng gốc
@@ -130,10 +134,10 @@ id | isdn        | imei            | province       id | isdn                   
 - name: INPUT_PATH
   value: /landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/
 - name: INPUT_FORMAT
-  value: txt                     # csv/txt đều là text phân tách; text = nguyên dòng
+  value: txt # csv/txt đều là text phân tách; text = nguyên dòng
 - name: INPUT_OPTION_delimiter
   value: "|"
-- name: INPUT_SCHEMA            # có schema thì dùng tên cột thật trong PSEUDO_COLUMNS
+- name: INPUT_SCHEMA # có schema thì dùng tên cột thật trong PSEUDO_COLUMNS
   value: "isdn STRING, imei STRING, amount DOUBLE"
 - name: PSEUDO_COLUMNS
   value: isdn:HASH,imei:ENCRYPT
@@ -144,8 +148,9 @@ id | isdn        | imei            | province       id | isdn                   
 ```
 
 Lưu ý:
+
 - Trỏ thẳng vào thư mục `date=…/hour=…/` thì **không** có cột partition `date`/`hour` trong dữ liệu (Spark chỉ suy ra
-  partition từ phần path *dưới* thư mục gốc đã cho). Cần cột đó thì trỏ vào thư mục cha hoặc dùng glob, vd
+  partition từ phần path _dưới_ thư mục gốc đã cho). Cần cột đó thì trỏ vào thư mục cha hoặc dùng glob, vd
   `INPUT_PATH=/landing/.../f016-mpre-tot-charge-m/` kèm `INPUT_OPTION_basePath=/landing/.../f016-mpre-tot-charge-m`.
 - Không có `INPUT_SCHEMA` và không `INPUT_OPTION_header=true` thì cột tên `_c0, _c1, …` và đều là `STRING`; có header thì
   dùng `INPUT_OPTION_header=true` (tên cột lấy từ dòng đầu). `PSEUDO_COLUMNS` dùng đúng tên cột đó.
@@ -167,19 +172,46 @@ Chọn chế độ theo nhu cầu từng cột: cột chỉ để nối/đếm (
 
 Một file hỏng (CSV dính dòng, parquet cụt, lỗi HDFS...) làm cả job fail mà log không nói là file nào. Với `INPUT_PATH`:
 
-| `INPUT_BAD_FILES` | Hành vi | Exit |
-| --- | --- | --- |
-| `fail` (mặc định) | Chạy bình thường; **nếu job lỗi** thì quét đầy đủ từng file bằng đúng cấu hình reader, log `FILE LỖI <path> — <nguyên nhân>` | 1 |
-| `report` | Chỉ quét, liệt kê file lỗi, **không ghi** bảng đích. Dùng để kiểm tra một thư mục trước khi chạy thật | 0 sạch / 4 có lỗi |
-| `skip` | Quét trước, chỉ xử lý các file tốt, cuối job log `SKIPPED <path> — <nguyên nhân>` cho từng file bị bỏ | 0 (thành công) |
+| `INPUT_BAD_FILES` | Hành vi                                                                                                                      | Exit              |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `fail` (mặc định) | Chạy bình thường; **nếu job lỗi** thì quét đầy đủ từng file bằng đúng cấu hình reader, log `FILE LỖI <path> — <nguyên nhân>` | 1                 |
+| `report`          | Chỉ quét, liệt kê file lỗi, **không ghi** bảng đích. Dùng để kiểm tra một thư mục trước khi chạy thật                        | 0 sạch / 4 có lỗi |
+| `skip`            | Quét trước, chỉ xử lý các file tốt, cuối job log `SKIPPED <path> — <nguyên nhân>` cho từng file bị bỏ                        | 0 (thành công)    |
 
 Quét trước (`skip`/`report`) mặc định là **kiểm tra nhanh** cho csv/tsv/txt: đọc nguyên dòng, đếm ký tự phân tách và so với
-`maxColumns` (20 480, đổi bằng `INPUT_OPTION_maxColumns`), rẻ hơn nhiều lần parse đầy đủ; nó chỉ bắt lỗi *dòng quá nhiều cột*.
+`maxColumns` (20 480, đổi bằng `INPUT_OPTION_maxColumns`), rẻ hơn nhiều lần parse đầy đủ; nó chỉ bắt lỗi _dòng quá nhiều cột_.
 Lỗi đọc khác (encoding, file cụt) sẽ làm job fail ở bước ghi, khi đó job tự chẩn đoán bằng quét đầy đủ để chỉ ra file lỗi
 (cả ở `fail` lẫn `skip`). Muốn bắt mọi lỗi ngay từ đầu: `INPUT_CHECK_FULL=true`. Quét chạy song song `INPUT_CHECK_PARALLELISM`.
 `skip` **mất dữ liệu của file lỗi** — danh sách file bị bỏ nằm cuối log (`SKIPPED …`); job vẫn kết thúc thành công nên nếu cần
 báo động hãy theo dõi dòng đó. Với `skip`, dữ liệu
 đọc theo danh sách file tốt nên cột partition suy ra từ path cần `INPUT_OPTION_basePath`.
+
+### 3.8. Chạy theo khoảng ngày/giờ và ghi partition
+
+`INPUT_PATH` là **gốc** của cây thư mục `date=<yyyyMMdd>/hour=<HH>/`; khoảng cần xử lý chọn bằng `INPUT_FROM`/`INPUT_TO`
+(liên tục, gồm hai đầu) và tuỳ chọn `INPUT_HOURS` (lọc giờ trong ngày). Job **liệt kê thư mục thật** nên `hour=5` lẫn
+`hour=05` đều đúng, ngày/giờ không tồn tại được bỏ qua; không có thư mục nào trong khoảng thì job dừng (exit 1).
+
+| Cấu hình                              | Xử lý                                   |
+| ------------------------------------- | --------------------------------------- |
+| `FROM=20261012 TO=20261012`           | Cả ngày 12 (24 giờ nếu có)              |
+| `FROM=20261012 TO=20261014`           | Ba ngày 12, 13, 14                      |
+| `FROM=2026101218 TO=2026101218`       | Đúng một giờ                            |
+| `FROM=2026101218 TO=2026101306`       | Liên tục từ 18h ngày 12 đến 06h ngày 13 |
+| `FROM=20261012 TO=20261014 HOURS=6-8` | Giờ 06–08 của mỗi ngày 12, 13, 14       |
+
+**Đầu ra.** Dữ liệu có thêm hai cột `date`, `hour` (kiểu chuỗi, giữ `05`) ở cuối và bảng đích được partition theo
+`(date, hour)`: thư mục bảng có `date=20261012/hour=05/…`. Muốn partition khác: `OUTPUT_PARTITION_BY`.
+
+| `OUTPUT_MODE`                                          | Hành vi với bảng đích đã có                                                                                                                                                               |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `overwrite-partitions` (**mặc định khi có partition**) | Chỉ thay các partition `(date, hour)` có trong lần chạy này; partition khác giữ nguyên; chạy lại cùng khoảng **không** nhân đôi. Dùng Delta `INSERT OVERWRITE` ở chế độ dynamic partition |
+| `append`                                               | Ghi nối; chạy lại sẽ nhân đôi dữ liệu                                                                                                                                                     |
+| `overwrite`                                            | Thay **toàn bộ** bảng bằng dữ liệu lần này (xoá các ngày/giờ khác)                                                                                                                        |
+
+Đối chiếu (`VERIFY`) ở `overwrite-partitions` chỉ so với các partition vừa ghi và vẫn kiểm chính xác (số dòng, null,
+distinct, không sót giá trị gốc). Lưu ý: bảng đã tồn tại với partition khác cấu hình sẽ bị từ chối (exit 1) — đổi
+`OUTPUT_TABLE` hoặc xoá bảng cũ; `OUTPUT_PARTITION_BY` chưa hỗ trợ `OUTPUT_FORMAT=iceberg`.
 
 ## 4. Env của `pseudonym-udf` cần truyền vào
 
@@ -199,38 +231,38 @@ Hai cách tương đương; dùng biến môi trường nếu muốn đồng nh�
 
 ### 4.2. Tối thiểu cần gì theo từng chế độ
 
-| `PSEUDO_MODE` | Phải có | Không cần |
-| --- | --- | --- |
-| `HASH` | nguồn khoá + khoá **`pseudonym.hmac_v<N>`** (32 byte) | khoá AES, bảng ánh xạ |
-| `ENCRYPT` | nguồn khoá + khoá **`pseudonym.aes_siv_v<N>`** (64 byte) | khoá HMAC, bảng ánh xạ |
-| `MAPPING` (bất kỳ cột nào) | **`MAPPING_TABLE_PATH`** (hoặc `spark.pseudonym.mapping.path`) + session có Delta (app đã tự bật) | nguồn khoá, khoá |
+| `PSEUDO_MODE`              | Phải có                                                                                           | Không cần              |
+| -------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------- |
+| `HASH`                     | nguồn khoá + khoá **`pseudonym.hmac_v<N>`** (32 byte)                                             | khoá AES, bảng ánh xạ  |
+| `ENCRYPT`                  | nguồn khoá + khoá **`pseudonym.aes_siv_v<N>`** (64 byte)                                          | khoá HMAC, bảng ánh xạ |
+| `MAPPING` (bất kỳ cột nào) | **`MAPPING_TABLE_PATH`** (hoặc `spark.pseudonym.mapping.path`) + session có Delta (app đã tự bật) | nguồn khoá, khoá       |
 
 Chỉ khoá của chế độ đang dùng mới bị đọc: chạy `HASH` mà thiếu khoá AES vẫn thành công.
 
 ### 4.3. Bảng env / conf
 
-| Tham số | Biến môi trường (driver) | Spark conf | Mặc định | Ý nghĩa |
-| --- | --- | --- | --- | --- |
-| nguồn khoá | `CRYPTO_PREFIX_SOURCE` | `spark.pseudonym.source` | `file` | `file` / `vault` / `dak`. Ghép `file,vault` được (thử lần lượt); **`dak` không được ghép** với nguồn khác |
-| **File** — thư mục khoá | `CRYPTO_KEY_PREFIX_DIR` | `spark.pseudonym.file.dir` | `conf/key-prefix` | Thư mục mount Secret; mỗi khoá 1 file đúng tên khoá |
-| **Vault** — địa chỉ | `VAULT_ADDR` | `spark.pseudonym.vault.addr` | — (bắt buộc khi dùng vault) | URL Vault |
-| Vault — kiểu xác thực | `VAULT_AUTH_METHOD` | `spark.pseudonym.vault.authMethod` | `kubernetes` | `kubernetes` / `token` |
-| Vault — token tĩnh | `VAULT_TOKEN` | `spark.pseudonym.vault.token` | — | Bắt buộc khi `authMethod=token` (nên lấy từ `secretKeyRef`) |
-| Vault — role | `VAULT_ROLE` | `spark.pseudonym.vault.role` | — | Bắt buộc khi `authMethod=kubernetes` |
-| Vault — mount xác thực | `VAULT_AUTH_MOUNT` | `spark.pseudonym.vault.authMount` | `kubernetes` | |
-| Vault — mount KV | `VAULT_KV_MOUNT` | `spark.pseudonym.vault.kvMount` | `kv` | KV v2 |
-| Vault — đường dẫn gốc | `VAULT_KV_PATH` | `spark.pseudonym.vault.kvBasePath` | — (bắt buộc) | Khoá ở `<kvMount>/data/<kvBasePath>/<tên khoá>` |
-| Vault — tên field | `VAULT_KEY_FIELD` | `spark.pseudonym.vault.keyField` | `keyPrefix` | Field trong secret chứa giá trị khoá |
-| Vault — JWT SA | `VAULT_JWT_PATH` | `spark.pseudonym.vault.jwtPath` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | |
-| **DAK** — địa chỉ | `DAK_ADDR` | `spark.pseudonym.dak.addr` | — (bắt buộc khi dùng dak) | `https://...` |
-| DAK — token endpoint | `DAK_TOKEN_URL` | `spark.pseudonym.dak.tokenUrl` | — (bắt buộc) | Keycloak của realm tenant, `https://...` |
-| DAK — client | `DAK_CLIENT_ID` | `spark.pseudonym.dak.clientId` | — (bắt buộc) | Client Keycloak của team |
-| DAK — secret | `DAK_CLIENT_SECRET` | `spark.pseudonym.dak.clientSecret` | — (bắt buộc) | **Nhạy cảm**: dùng `secretKeyRef`, không ghi thẳng giá trị |
-| DAK — cho phép http | `DAK_ALLOW_INSECURE_HTTP` | `spark.pseudonym.dak.allowInsecureHttp` | `false` | Chỉ để test với `dak-mock` |
-| cache khoá (giây) | `CRYPTO_CACHE_TTL_SECONDS` | `spark.pseudonym.cacheTtlSeconds` | `300` | `0` = tắt cache |
-| version khoá HMAC | *(không có env)* | `spark.pseudonym.hmac.version` | `1` | Đọc khoá `pseudonym.hmac_v<version>`; số nguyên ≥ 1 |
-| version khoá AES-SIV | *(không có env)* | `spark.pseudonym.aes-siv.version` | `1` | Đọc khoá `pseudonym.aes_siv_v<version>` |
-| bảng ánh xạ | `MAPPING_TABLE_PATH` *(của app)* | `spark.pseudonym.mapping.path` | — | Chỉ `MAPPING`. Nếu cả hai có mặt thì env của app thắng |
+| Tham số                 | Biến môi trường (driver)         | Spark conf                              | Mặc định                                              | Ý nghĩa                                                                                                   |
+| ----------------------- | -------------------------------- | --------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| nguồn khoá              | `CRYPTO_PREFIX_SOURCE`           | `spark.pseudonym.source`                | `file`                                                | `file` / `vault` / `dak`. Ghép `file,vault` được (thử lần lượt); **`dak` không được ghép** với nguồn khác |
+| **File** — thư mục khoá | `CRYPTO_KEY_PREFIX_DIR`          | `spark.pseudonym.file.dir`              | `conf/key-prefix`                                     | Thư mục mount Secret; mỗi khoá 1 file đúng tên khoá                                                       |
+| **Vault** — địa chỉ     | `VAULT_ADDR`                     | `spark.pseudonym.vault.addr`            | — (bắt buộc khi dùng vault)                           | URL Vault                                                                                                 |
+| Vault — kiểu xác thực   | `VAULT_AUTH_METHOD`              | `spark.pseudonym.vault.authMethod`      | `kubernetes`                                          | `kubernetes` / `token`                                                                                    |
+| Vault — token tĩnh      | `VAULT_TOKEN`                    | `spark.pseudonym.vault.token`           | —                                                     | Bắt buộc khi `authMethod=token` (nên lấy từ `secretKeyRef`)                                               |
+| Vault — role            | `VAULT_ROLE`                     | `spark.pseudonym.vault.role`            | —                                                     | Bắt buộc khi `authMethod=kubernetes`                                                                      |
+| Vault — mount xác thực  | `VAULT_AUTH_MOUNT`               | `spark.pseudonym.vault.authMount`       | `kubernetes`                                          |                                                                                                           |
+| Vault — mount KV        | `VAULT_KV_MOUNT`                 | `spark.pseudonym.vault.kvMount`         | `kv`                                                  | KV v2                                                                                                     |
+| Vault — đường dẫn gốc   | `VAULT_KV_PATH`                  | `spark.pseudonym.vault.kvBasePath`      | — (bắt buộc)                                          | Khoá ở `<kvMount>/data/<kvBasePath>/<tên khoá>`                                                           |
+| Vault — tên field       | `VAULT_KEY_FIELD`                | `spark.pseudonym.vault.keyField`        | `keyPrefix`                                           | Field trong secret chứa giá trị khoá                                                                      |
+| Vault — JWT SA          | `VAULT_JWT_PATH`                 | `spark.pseudonym.vault.jwtPath`         | `/var/run/secrets/kubernetes.io/serviceaccount/token` |                                                                                                           |
+| **DAK** — địa chỉ       | `DAK_ADDR`                       | `spark.pseudonym.dak.addr`              | — (bắt buộc khi dùng dak)                             | `https://...`                                                                                             |
+| DAK — token endpoint    | `DAK_TOKEN_URL`                  | `spark.pseudonym.dak.tokenUrl`          | — (bắt buộc)                                          | Keycloak của realm tenant, `https://...`                                                                  |
+| DAK — client            | `DAK_CLIENT_ID`                  | `spark.pseudonym.dak.clientId`          | — (bắt buộc)                                          | Client Keycloak của team                                                                                  |
+| DAK — secret            | `DAK_CLIENT_SECRET`              | `spark.pseudonym.dak.clientSecret`      | — (bắt buộc)                                          | **Nhạy cảm**: dùng `secretKeyRef`, không ghi thẳng giá trị                                                |
+| DAK — cho phép http     | `DAK_ALLOW_INSECURE_HTTP`        | `spark.pseudonym.dak.allowInsecureHttp` | `false`                                               | Chỉ để test với `dak-mock`                                                                                |
+| cache khoá (giây)       | `CRYPTO_CACHE_TTL_SECONDS`       | `spark.pseudonym.cacheTtlSeconds`       | `300`                                                 | `0` = tắt cache                                                                                           |
+| version khoá HMAC       | _(không có env)_                 | `spark.pseudonym.hmac.version`          | `1`                                                   | Đọc khoá `pseudonym.hmac_v<version>`; số nguyên ≥ 1                                                       |
+| version khoá AES-SIV    | _(không có env)_                 | `spark.pseudonym.aes-siv.version`       | `1`                                                   | Đọc khoá `pseudonym.aes_siv_v<version>`                                                                   |
+| bảng ánh xạ             | `MAPPING_TABLE_PATH` _(của app)_ | `spark.pseudonym.mapping.path`          | —                                                     | Chỉ `MAPPING`. Nếu cả hai có mặt thì env của app thắng                                                    |
 
 > **Lưu ý đã kiểm chứng:** tên khoá là `pseudonym.hmac_v1` / `pseudonym.aes_siv_v1` (dùng `_` chứ không phải `.` ở phần
 > version) vì nguồn `dak` chỉ chấp nhận tên dạng `<database>.<table>` đúng 2 phần. Version khoá **không** có biến môi
@@ -238,11 +270,11 @@ Chỉ khoá của chế độ đang dùng mới bị đọc: chạy `HASH` mà t
 
 ### 4.4. Khoá nằm ở đâu theo từng nguồn
 
-| Nguồn | Khoá `pseudonym.hmac_v1` ở đâu |
-| --- | --- |
-| `file` | File `<CRYPTO_KEY_PREFIX_DIR>/pseudonym.hmac_v1` (key của K8s Secret, xem `k8s/pseudonym-keys-secret.yaml`) |
-| `vault` | KV v2 tại `<VAULT_KV_MOUNT>/data/<VAULT_KV_PATH>/pseudonym.hmac_v1`, field `<VAULT_KEY_FIELD>` |
-| `dak` | `GET <DAK_ADDR>/api/v1/keys/pseudonym/hmac_v1` — database `pseudonym`, table `hmac_v1`; team phải được cấp quyền |
+| Nguồn   | Khoá `pseudonym.hmac_v1` ở đâu                                                                                   |
+| ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `file`  | File `<CRYPTO_KEY_PREFIX_DIR>/pseudonym.hmac_v1` (key của K8s Secret, xem `k8s/pseudonym-keys-secret.yaml`)      |
+| `vault` | KV v2 tại `<VAULT_KV_MOUNT>/data/<VAULT_KV_PATH>/pseudonym.hmac_v1`, field `<VAULT_KEY_FIELD>`                   |
+| `dak`   | `GET <DAK_ADDR>/api/v1/keys/pseudonym/hmac_v1` — database `pseudonym`, table `hmac_v1`; team phải được cấp quyền |
 
 Giá trị khoá là chuỗi `base64:<...>` hoặc `hex:<...>`; HMAC đúng **32 byte**, AES-SIV đúng **64 byte**; từ chối khoá
 toàn byte 0. Sinh khoá:
@@ -258,8 +290,8 @@ echo "base64:$(openssl rand -base64 64 | tr -d '\n')"         # pseudonym.aes_si
 
 ```yaml
 env:
-  - { name: CRYPTO_PREFIX_SOURCE,   value: file }
-  - { name: CRYPTO_KEY_PREFIX_DIR,  value: /etc/pseudonym-keys }
+  - { name: CRYPTO_PREFIX_SOURCE, value: file }
+  - { name: CRYPTO_KEY_PREFIX_DIR, value: /etc/pseudonym-keys }
 volumeMounts:
   - { name: pseudonym-keys, mountPath: /etc/pseudonym-keys, readOnly: true }
 ```
@@ -269,9 +301,9 @@ volumeMounts:
 ```yaml
 env:
   - { name: CRYPTO_PREFIX_SOURCE, value: vault }
-  - { name: VAULT_ADDR,           value: "https://vault.example.internal:8200" }
-  - { name: VAULT_ROLE,           value: pseudonymize-table }
-  - { name: VAULT_KV_PATH,        value: pseudonym }
+  - { name: VAULT_ADDR, value: "https://vault.example.internal:8200" }
+  - { name: VAULT_ROLE, value: pseudonymize-table }
+  - { name: VAULT_KV_PATH, value: pseudonym }
 ```
 
 **DAK:**
@@ -279,9 +311,12 @@ env:
 ```yaml
 env:
   - { name: CRYPTO_PREFIX_SOURCE, value: dak }
-  - { name: DAK_ADDR,             value: "https://dak.example.internal" }
-  - { name: DAK_TOKEN_URL,        value: "https://sso-lakehouse.cyberspace.vn/realms/<realm>/protocol/openid-connect/token" }
-  - { name: DAK_CLIENT_ID,        value: team-de-ws8 }
+  - { name: DAK_ADDR, value: "https://dak.example.internal" }
+  - {
+      name: DAK_TOKEN_URL,
+      value: "https://sso-lakehouse.cyberspace.vn/realms/<realm>/protocol/openid-connect/token",
+    }
+  - { name: DAK_CLIENT_ID, value: team-de-ws8 }
   - name: DAK_CLIENT_SECRET
     valueFrom: { secretKeyRef: { name: spark-dak-client, key: clientSecret } }
 ```
@@ -290,33 +325,36 @@ env:
 
 ```yaml
 env:
-  - { name: PSEUDO_MODE,         value: MAPPING }
-  - { name: MAPPING_TABLE_PATH,  value: "hdfs://<namenode>:8020/<path>/_restricted/pseudonym_map" }
+  - { name: PSEUDO_MODE, value: MAPPING }
+  - {
+      name: MAPPING_TABLE_PATH,
+      value: "hdfs://<namenode>:8020/<path>/_restricted/pseudonym_map",
+    }
 ```
 
 Bảng ánh xạ chứa **giá trị gốc** → đặt ở vùng HDFS riêng, phân quyền như dữ liệu gốc, **không** đặt cạnh bảng đích.
 
 ### 4.6. Lỗi thường gặp
 
-| Thông báo | Nguyên nhân |
-| --- | --- |
-| `Key '...' must start with 'base64:' or 'hex:'` | Giá trị khoá không có tiền tố mã hoá |
-| `Key '...' must be 32 bytes but is N bytes` | Dùng nhầm khoá HMAC (32) cho AES-SIV (64) hoặc ngược lại |
-| `PSEUDO_MODE=MAPPING cần đường dẫn bảng ánh xạ` | Thiếu `MAPPING_TABLE_PATH` / `spark.pseudonym.mapping.path` |
-| `Invalid ...: must be a comma-separated list of file, vault, dak` | `CRYPTO_PREFIX_SOURCE` sai giá trị |
-| `'dak' cannot be combined with other sources` | Khai `dak,vault` — lib từ chối vì fallback sẽ bỏ qua phân quyền DAK |
-| `Missing required setting: VAULT_ADDR` (hoặc `DAK_*`) | Chọn nguồn nhưng thiếu biến bắt buộc của nguồn đó |
+| Thông báo                                                         | Nguyên nhân                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `Key '...' must start with 'base64:' or 'hex:'`                   | Giá trị khoá không có tiền tố mã hoá                                |
+| `Key '...' must be 32 bytes but is N bytes`                       | Dùng nhầm khoá HMAC (32) cho AES-SIV (64) hoặc ngược lại            |
+| `PSEUDO_MODE=MAPPING cần đường dẫn bảng ánh xạ`                   | Thiếu `MAPPING_TABLE_PATH` / `spark.pseudonym.mapping.path`         |
+| `Invalid ...: must be a comma-separated list of file, vault, dak` | `CRYPTO_PREFIX_SOURCE` sai giá trị                                  |
+| `'dak' cannot be combined with other sources`                     | Khai `dak,vault` — lib từ chối vì fallback sẽ bỏ qua phân quyền DAK |
+| `Missing required setting: VAULT_ADDR` (hoặc `DAK_*`)             | Chọn nguồn nhưng thiếu biến bắt buộc của nguồn đó                   |
 
 ## 5. Đối chiếu nguồn ↔ đích (`VERIFY=true`)
 
 Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** trong `PSEUDO_COLUMNS` (mỗi cột theo chế độ riêng của nó):
 
-| Kiểm | `overwrite` | `append` |
-| --- | --- | --- |
-| Số dòng đích == nguồn | ✔ | đích ≥ nguồn (đích còn dữ liệu các lần trước) |
-| Số `NULL` không đổi | ✔ | — |
-| Số giá trị khác nhau không đổi (ánh xạ 1-1, không va chạm) | ✔ | — |
-| **Không còn giá trị gốc nào** trong cột đích | ✔ | ✔ |
+| Kiểm                                                       | `overwrite` | `append`                                      |
+| ---------------------------------------------------------- | ----------- | --------------------------------------------- |
+| Số dòng đích == nguồn                                      | ✔           | đích ≥ nguồn (đích còn dữ liệu các lần trước) |
+| Số `NULL` không đổi                                        | ✔           | —                                             |
+| Số giá trị khác nhau không đổi (ánh xạ 1-1, không va chạm) | ✔           | —                                             |
+| **Không còn giá trị gốc nào** trong cột đích               | ✔           | ✔                                             |
 
 Đạt → `JOB SUCCEEDED`, exit `0`. Không đạt → bảng đích **đã được ghi** nhưng job báo
 `JOB WRITTEN BUT VERIFICATION FAILED`, exit `3`: **đừng dùng** bảng đích đó.
@@ -326,13 +364,13 @@ Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** tr
 
 ### Exit code
 
-| Code | Nghĩa |
-| --- | --- |
-| 0 | Xong; đối chiếu đạt (hoặc `VERIFY=false`) |
-| 4 | `INPUT_BAD_FILES=report` tìm thấy file lỗi (không ghi gì). `skip` có file bị bỏ qua vẫn là exit `0` |
-| 1 | Lỗi khi chạy: bảng nguồn không tồn tại, cột không có trong bảng, khoá/Vault/DAK lỗi, lỗi HDFS... (kèm cây nguyên nhân) |
-| 2 | Sai cấu hình biến môi trường (mọi lỗi in một lượt, tiền tố `CONFIG`) |
-| 3 | Đã ghi bảng đích nhưng đối chiếu **không đạt** |
+| Code | Nghĩa                                                                                                                  |
+| ---- | ---------------------------------------------------------------------------------------------------------------------- |
+| 0    | Xong; đối chiếu đạt (hoặc `VERIFY=false`)                                                                              |
+| 4    | `INPUT_BAD_FILES=report` tìm thấy file lỗi (không ghi gì). `skip` có file bị bỏ qua vẫn là exit `0`                    |
+| 1    | Lỗi khi chạy: bảng nguồn không tồn tại, cột không có trong bảng, khoá/Vault/DAK lỗi, lỗi HDFS... (kèm cây nguyên nhân) |
+| 2    | Sai cấu hình biến môi trường (mọi lỗi in một lượt, tiền tố `CONFIG`)                                                   |
+| 3    | Đã ghi bảng đích nhưng đối chiếu **không đạt**                                                                         |
 
 ## 6. Chạy trên K8s
 
@@ -364,7 +402,7 @@ FROM crm.subscriber_pseudonymized;          -- so với cùng truy vấn trên c
 
 ## 7. Giới hạn cần biết
 
-- **Đồng nhất định dạng trước.** Lib băm/mã hoá *nguyên trạng* giá trị: `0903217465` và `84903217465` ra hai định danh giả
+- **Đồng nhất định dạng trước.** Lib băm/mã hoá _nguyên trạng_ giá trị: `0903217465` và `84903217465` ra hai định danh giả
   khác nhau. Cột phải được chuẩn hoá ở bước trước khi khử định danh.
 - **Chỉ khử các cột bạn liệt kê.** Cột định danh gián tiếp (ngày sinh, tỉnh, giới tính...) vẫn còn; kết hợp chúng có thể
   chỉ mặt một người. Dữ liệu giả danh **vẫn là dữ liệu cá nhân**.

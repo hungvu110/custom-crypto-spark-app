@@ -64,9 +64,33 @@ final case class TableInput(db: String, table: String) extends InputSource {
   override def describe: String = s"$db.$table"
 }
 
-final case class FileInput(path: String, format: InputFormat, schema: Option[String], options: Map[String, String])
-    extends InputSource {
-  override def describe: String = s"$path [${format.name}]"
+/**
+ * Khoảng thời gian cần xử lý trong cây thư mục `<path>/<dateKey>=<yyyyMMdd>/<hourKey>=<HH>/`.
+ *
+ * `from`/`to` là khoá liên tục `yyyyMMddHH` (bao gồm hai đầu); `hours` (tuỳ chọn) lọc thêm giờ trong NGÀY, vd 6-18.
+ * `hourConstrained` = người dùng có ràng buộc giờ (giờ trong FROM/TO hoặc INPUT_HOURS).
+ */
+final case class InputRange(from: Long, to: Long, hours: Option[(Int, Int)], dateKey: String, hourKey: String,
+                            hourConstrained: Boolean) {
+
+  def acceptsDate(date: String): Boolean = date.toLong >= from / 100 && date.toLong <= to / 100
+
+  def accepts(date: String, hour: Option[Int]): Boolean = hour match {
+    case Some(h) =>
+      val key = date.toLong * 100 + h
+      key >= from && key <= to && hours.forall { case (a, b) => h >= a && h <= b }
+    case None => acceptsDate(date) && !hourConstrained
+  }
+
+  def describe: String = {
+    def fmt(k: Long) = if (k == Long.MaxValue) "∞" else if (k == 0) "-∞" else f"$k%010d"
+    s"${fmt(from)} → ${fmt(to)}" + hours.fold("")(h => s", giờ ${h._1}-${h._2}")
+  }
+}
+
+final case class FileInput(path: String, format: InputFormat, schema: Option[String], options: Map[String, String],
+                           range: Option[InputRange] = None) extends InputSource {
+  override def describe: String = s"$path [${format.name}]" + range.fold("")(r => s" khoảng ${r.describe}")
 }
 
 /** Một cột cần giả danh kèm chế độ riêng của nó. */
@@ -94,7 +118,8 @@ final case class JobConfig(
     verify: Boolean,
     badFiles: BadFilePolicy = BadFilePolicy.Fail,
     checkParallelism: Int = 4,
-    checkFull: Boolean = false) {
+    checkFull: Boolean = false,
+    outputPartitionBy: Seq[String] = Nil) {
 
   def source: String = input.describe
 
@@ -114,6 +139,7 @@ final case class JobConfig(
     "OUTPUT_TABLE"        -> outputTable,
     "OUTPUT_FORMAT"       -> outputFormat.name,
     "OUTPUT_MODE"         -> outputMode,
+    "OUTPUT_PARTITION_BY" -> (if (outputPartitionBy.isEmpty) "(không partition)" else outputPartitionBy.mkString(", ")),
     "MAPPING_TABLE_PATH"  -> mappingTablePath.getOrElse("(spark.pseudonym.mapping.path hoặc không dùng)"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(mặc định của Spark/metastore)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString,
@@ -124,7 +150,8 @@ final case class JobConfig(
 
 object JobConfig {
 
-  val OutputModes = Seq("overwrite", "append")
+  /** `overwrite-partitions`: chỉ thay các partition có trong dữ liệu lần này, giữ nguyên partition khác (cần OUTPUT_PARTITION_BY). */
+  val OutputModes = Seq("overwrite", "append", "overwrite-partitions")
 
   private val Identifier = "^[A-Za-z0-9_]+$"
 
@@ -160,6 +187,9 @@ object JobConfig {
         if (raw("INPUT_FORMAT").isDefined || raw("INPUT_SCHEMA").isDefined || inputOptions(env).nonEmpty) {
           errors += "INPUT_FORMAT/INPUT_SCHEMA/INPUT_OPTION_*: chỉ dùng cùng INPUT_PATH"
         }
+        if (Seq("INPUT_FROM", "INPUT_TO", "INPUT_HOURS", "INPUT_DATE_KEY", "INPUT_HOUR_KEY").exists(k => raw(k).isDefined)) {
+          errors += "INPUT_FROM/INPUT_TO/INPUT_HOURS/INPUT_DATE_KEY/INPUT_HOUR_KEY: chỉ dùng cùng INPUT_PATH"
+        }
         TableInput(identifier("DB_NAME", None), identifier("TABLE_NAME", None))
     }
 
@@ -188,8 +218,33 @@ object JobConfig {
       OutputFormat.Delta
     }).getOrElse(OutputFormat.Delta)
 
-    val outputMode = raw("OUTPUT_MODE").map(_.toLowerCase(Locale.ROOT)).getOrElse("overwrite")
+    // Partition của bảng đích: mặc định (date, hour) khi đọc theo khoảng ngày/giờ; "none" để tắt.
+    val partitionBy = raw("OUTPUT_PARTITION_BY") match {
+      case Some(v) if v.equalsIgnoreCase("none") => Nil
+      case Some(v) =>
+        val cols = v.split(",").map(_.trim).filter(_.nonEmpty).toSeq
+        cols.filterNot(_.matches("^[A-Za-z_][A-Za-z0-9_]*$")).foreach(c => errors += s"OUTPUT_PARTITION_BY: tên cột không hợp lệ '$c'")
+        if (cols.diff(cols.distinct).nonEmpty) errors += "OUTPUT_PARTITION_BY: cột bị lặp"
+        cols
+      case None => input match {
+        case FileInput(_, _, _, _, Some(r)) => Seq(r.dateKey, r.hourKey)
+        case _ => Nil
+      }
+    }
+    if (partitionBy.nonEmpty && format == OutputFormat.Iceberg) {
+      errors += "OUTPUT_PARTITION_BY: chưa hỗ trợ với OUTPUT_FORMAT=iceberg"
+    }
+    partitionBy.intersect(columns.map(_.name)).foreach { c =>
+      errors += s"OUTPUT_PARTITION_BY: cột partition '$c' không được nằm trong PSEUDO_COLUMNS"
+    }
+
+    // Có partition thì mặc định chỉ thay các partition vừa xử lý (không xoá ngày/giờ khác của cùng bảng).
+    val outputMode = raw("OUTPUT_MODE").map(_.toLowerCase(Locale.ROOT))
+      .getOrElse(if (partitionBy.nonEmpty) "overwrite-partitions" else "overwrite")
     if (!OutputModes.contains(outputMode)) errors += s"OUTPUT_MODE='$outputMode': phải là ${OutputModes.mkString(" / ")}"
+    if (outputMode == "overwrite-partitions" && partitionBy.isEmpty) {
+      errors += "OUTPUT_MODE=overwrite-partitions: cần OUTPUT_PARTITION_BY (hoặc đọc theo khoảng INPUT_FROM/INPUT_TO)"
+    }
 
     // MAPPING_TABLE_PATH hoặc spark.pseudonym.mapping.path đều được: job kiểm tra lại sau khi có SparkConf.
     val mappingPath = raw("MAPPING_TABLE_PATH")
@@ -217,7 +272,7 @@ object JobConfig {
     if (errors.nonEmpty) Left(errors.toList)
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
       outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true),
-      badFiles, parallelism, checkFull))
+      badFiles, parallelism, checkFull, partitionBy))
   }
 
   private val InputOptionPrefix = "INPUT_OPTION_"
@@ -237,7 +292,51 @@ object JobConfig {
         InputFormat.Parquet
       }
     }
-    FileInput(path, format, env.get("INPUT_SCHEMA").map(_.trim).filter(_.nonEmpty), inputOptions(env))
+    FileInput(path, format, env.get("INPUT_SCHEMA").map(_.trim).filter(_.nonEmpty), inputOptions(env),
+      inputRange(env, errors))
+  }
+
+  private val DateHour = "^([0-9]{8})([0-9]{2})?$".r
+
+  /** `INPUT_FROM`/`INPUT_TO` = `yyyyMMdd` hoặc `yyyyMMddHH` (bao gồm hai đầu), `INPUT_HOURS` = `a-b` hoặc `h`. */
+  private def inputRange(env: Map[String, String], errors: ArrayBuffer[String]): Option[InputRange] = {
+    def raw(k: String) = env.get(k).map(_.trim).filter(_.nonEmpty)
+    val keys = Seq("INPUT_FROM", "INPUT_TO", "INPUT_HOURS").map(raw)
+    val dateKey = raw("INPUT_DATE_KEY").getOrElse("date")
+    val hourKey = raw("INPUT_HOUR_KEY").getOrElse("hour")
+    Seq("INPUT_DATE_KEY" -> dateKey, "INPUT_HOUR_KEY" -> hourKey).foreach { case (k, v) =>
+      if (!v.matches("^[A-Za-z_][A-Za-z0-9_]*$")) errors += s"$k='$v': tên không hợp lệ"
+    }
+    if (keys.forall(_.isEmpty)) None
+    else {
+      var constrained = false
+      def point(key: String, defaultHour: Int): Option[Long] = raw(key).flatMap {
+        case DateHour(d, h) =>
+          if (Try(java.time.LocalDate.parse(d, java.time.format.DateTimeFormatter.BASIC_ISO_DATE)).isFailure) {
+            errors += s"$key='$d': ngày không hợp lệ (yyyyMMdd)"; None
+          } else if (h != null && h.toInt > 23) {
+            errors += s"$key: giờ phải 00..23"; None
+          } else {
+            if (h != null) constrained = true
+            Some(d.toLong * 100 + (if (h == null) defaultHour else h.toInt))
+          }
+        case other => errors += s"$key='$other': phải là yyyyMMdd hoặc yyyyMMddHH"; None
+      }
+      val from = point("INPUT_FROM", 0).getOrElse(0L)
+      val to = point("INPUT_TO", 23).getOrElse(Long.MaxValue)
+      if (from > to) errors += s"INPUT_FROM ($from) phải ≤ INPUT_TO ($to)"
+      val hours = raw("INPUT_HOURS").flatMap { v =>
+        val parts = v.split("-", -1).map(_.trim)
+        val parsed = Try(parts.map(_.toInt).toSeq).toOption
+        parsed match {
+          case Some(Seq(h)) if h >= 0 && h <= 23 => Some((h, h))
+          case Some(Seq(a, b)) if a >= 0 && b <= 23 && a <= b => Some((a, b))
+          case _ => errors += s"INPUT_HOURS='$v': phải là một giờ (18) hoặc khoảng (6-18) trong 0..23"; None
+        }
+      }
+      if (hours.isDefined) constrained = true
+      Some(InputRange(from, to, hours, dateKey, hourKey, constrained))
+    }
   }
 
   /** `cột` hoặc `cột:MODE`; cột không ghi mode dùng `default` (PSEUDO_MODE). */
