@@ -367,4 +367,8 @@ FROM crm.subscriber_pseudonymized;          -- so với cùng truy vấn trên c
 - **Đổi khoá = mọi định danh giả đổi**; mất khoá `ENCRYPT`/`HASH` = mất khả năng tái định danh. Sao lưu khoá.
 - `OUTPUT_FORMAT=iceberg` chỉ chạy khi cluster đã cấu hình catalog Iceberg (app không tự cấu hình).
 - Bảng đích do `saveAsTable` tạo: không giữ partition/bucket/ràng buộc của bảng nguồn.
+- **WARN `HiveExternalCatalog: Could not alter schema … in a Hive compatible way`** khi `OUTPUT_FORMAT=delta` và overwrite bảng
+  đã có: metastore từ chối đổi schema (bảng Delta do Spark đăng ký chỉ có cột giữ chỗ `col array<string>`, schema thật nằm
+  trong table properties) nên Spark tự fallback. Vô hại với Spark/Delta; log4j2 đã hạ logger này xuống `error`. Engine đọc
+  qua connector **Hive** sẽ không thấy đủ cột: dùng `OUTPUT_FORMAT=hive` (Parquet) nếu cần.
 - Chưa kiểm chứng trên cluster thật (HDFS Isilon + Kerberos, image Docker, Vault/DAK); đã kiểm chứng bằng test local.
