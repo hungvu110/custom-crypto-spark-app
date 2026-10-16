@@ -409,4 +409,25 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     runFile(rangeEnv(base, "resume_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012"): _*) shouldBe 0
     payloads("05") shouldBe Set("CHANGED")
   }
+
+  it should "skip + OUTPUT_SKIP_EXISTING: files of partitions written earlier are not reported as skipped" in {
+    val base = partitionedTree("tree_skip_resume", Seq("20261012" -> "05"))
+    val env = rangeEnv(base, "skip_resume_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012",
+      "INPUT_BAD_FILES" -> "skip", "OUTPUT_SKIP_EXISTING" -> "true")
+    runFile(env: _*) shouldBe 0
+
+    // a rerun finds one new good partition (hour 19) and one new partition holding only a bad file (hour 20)
+    val good = Files.createDirectories(base.resolve("date=20261012").resolve("hour=19"))
+    Files.write(good.resolve("part-0.txt"), "919|v1|1\n".getBytes(UTF_8))
+    val bad = Files.createDirectories(base.resolve("date=20261012").resolve("hour=20"))
+    Files.write(bad.resolve("bad.txt"), (Seq.fill(25000)("x").mkString("|") + "\n").getBytes(UTF_8))
+    val cfg = vai.lakehouse.pseudonymizetable.config.JobConfig
+      .fromEnv(env.toMap ++ Map("OUTPUT_DB" -> "landing", "ENABLE_HIVE_SUPPORT" -> "false")).toOption.get
+
+    val result = vai.lakehouse.pseudonymizetable.job.PseudonymizeTableJob.run(spark, cfg)
+
+    // hour 05 was skipped via OUTPUT_SKIP_EXISTING (never read): its part-0.txt must not be listed as a bad file
+    result.badFiles.map(_.path.split("/").last) shouldBe Seq("bad.txt")
+    partitionsOf("skip_resume_tbl") should contain allOf ("20261012/05", "20261012/19")
+  }
 }

@@ -192,7 +192,7 @@ object PseudonymizeTableJob {
     // Spark runs read + pseudonymize + write fused in the same tasks, so they cannot be timed separately here.
     val writeSummary = Timings.time("write: read + pseudonymize + write (fused)") { write(spark, cfg, toWrite, source, transform, data.partitions, stats) }
     Log.kv("write totals", (stats.settled() - statsBefore).describe)
-    val skippedInfo = tracker.map(acc => Timings.time("detect skipped files") { skippedFiles(spark, cfg, acc) })
+    val skippedInfo = tracker.map(acc => Timings.time("detect skipped files") { skippedFiles(spark, cfg, acc, writeSummary.writtenRoots) })
     val skipped = skippedInfo.map(_.bad).getOrElse(scan.map(_.bad).getOrElse(Nil))
     // `count()` của csv không parse nên đếm cả dòng của file hỏng: đối chiếu chỉ so với các file đã đọc được.
     val verifySource = skippedInfo.filter(_.bad.nonEmpty).fold(source) { info =>
@@ -248,11 +248,13 @@ object PseudonymizeTableJob {
   private final case class SkipInfo(bad: Seq[BadFile], good: Seq[String], input: FileInput)
 
   private def skippedFiles(spark: SparkSession, cfg: JobConfig,
-                           acc: org.apache.spark.util.CollectionAccumulator[String]): SkipInfo = cfg.input match {
+                           acc: org.apache.spark.util.CollectionAccumulator[String],
+                           writtenRoots: Option[Seq[String]]): SkipInfo = cfg.input match {
     case input: FileInput =>
       val fs = resolveFiles(spark, input)
       val seen = FileTracker.seenPaths(acc)
-      val listed = FileScanner.listFiles(spark, fs.roots)
+      // Only the partitions written in this run were read; the rest (OUTPUT_SKIP_EXISTING) must not be judged here.
+      val listed = FileScanner.listFiles(spark, writtenRoots.getOrElse(fs.roots))
       val (read, missing) = listed.partition(f => seen.contains(FileTracker.normalize(f)))
       Log.kv("files read / skipped", s"${read.size} / ${missing.size}")
       val bad = missing.map { f =>
@@ -267,7 +269,7 @@ object PseudonymizeTableJob {
    * dynamic partition overwrite — chỉ các partition có trong dữ liệu lần này bị thay, partition khác giữ nguyên.
    */
   /** `skipped` = partitions left untouched because they were already in the target (OUTPUT_SKIP_EXISTING). */
-  private final case class WriteSummary(written: Int, skipped: Int)
+  private final case class WriteSummary(written: Int, skipped: Int, writtenRoots: Option[Seq[String]] = None)
 
   private def write(spark: SparkSession, cfg: JobConfig, df: DataFrame, source: DataFrame, transform: DataFrame => DataFrame,
                     known: Option[Seq[InputPartition]], stats: SparkStats): WriteSummary = {
@@ -291,11 +293,15 @@ object PseudonymizeTableJob {
           }
           val written = results.count(_.written)
           Log.kv("partitions written / skipped", s"$written / ${results.size - written}")
+          // Directories of the partitions written in THIS run: partitions skipped via OUTPUT_SKIP_EXISTING are never read,
+          // so their files must not be reported as skipped-because-bad.
+          val pathByValues = known.getOrElse(Nil).flatMap(p => p.hour.map(h => Seq(p.date, h) -> p.path)).toMap
+          val writtenRoots = results.filter(_.written).flatMap(r => pathByValues.get(r.values))
           val retried = results.filter(r => r.written && r.attempts > 1)
           if (retried.nonEmpty) {
             Log.warn(s"partitions that needed retries: ${retried.map(r => s"${r.label} (${r.attempts} attempts)").mkString(", ")}")
           }
-          WriteSummary(written, results.size - written)
+          WriteSummary(written, results.size - written, Some(writtenRoots))
         case None =>
           Log.info("partition list not known in advance: writing in a single pass")
           insertInto(spark, cfg, df, table)
@@ -319,7 +325,7 @@ object PseudonymizeTableJob {
   private[job] def partitionCondition(columns: Seq[String], values: Seq[String]): Column =
     columns.zip(values).map { case (c, v) => col(quote(c)).cast(StringType) === v }.reduce(_ && _)
 
-  private final case class PartitionResult(label: String, written: Boolean, attempts: Int)
+  private final case class PartitionResult(label: String, values: Seq[String], written: Boolean, attempts: Int)
 
   /**
    * Writes (and commits) one partition at a time: progress log, failures name the partition, small Delta commits.
@@ -332,7 +338,7 @@ object PseudonymizeTableJob {
     val condition = partitionCondition(cfg.outputPartitionBy, values)
     if (cfg.skipExisting && !spark.table(table).where(condition).isEmpty) {
       Log.info(s"[$index/$total] SKIP $label (already in target, OUTPUT_SKIP_EXISTING=true)")
-      return PartitionResult(label, written = false, attempts = 0)
+      return PartitionResult(label, values, written = false, attempts = 0)
     }
     spark.sparkContext.setJobDescription(s"write $label ($index/$total)")
     val before = stats.settled()
@@ -356,7 +362,7 @@ object PseudonymizeTableJob {
     val seconds = (System.nanoTime() - start) / 1e9
     val attemptNote = if (used > 1) s" (attempt $used/$attempts)" else ""
     Log.ok(f"[$index/$total] WRITE DONE $label$attemptNote in $seconds%,.1f s | ${(stats.settled() - before).describe}")
-    PartitionResult(label, written = true, attempts = used)
+    PartitionResult(label, values, written = true, attempts = used)
   }
 
   /**
