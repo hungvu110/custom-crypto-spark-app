@@ -20,7 +20,8 @@ có default; validate lúc khởi động, sai giá trị sẽ `exit(2)` — cù
 | `CRYPTO_KEY_FIELD` | (bắt buộc khi bật mã hoá) | tên cột | Cột KHÔNG mã hoá, giá trị của nó (theo từng dòng) dùng làm nguyên liệu sinh key; không được nằm trong `CRYPTO_ENCRYPTED_COLUMNS` |
 | `CRYPTO_PREFIX_SOURCE` | `file` | `dak` / `file` / `vault` / `file,vault`. **`dak` không được ghép** với nguồn khác (`dak,vault` bị từ chối) | **Do extension đọc, không phải app**: nguồn keyPrefix — DAK (manifest mẫu đang dùng), thư mục file (K8s Secret) hoặc HashiCorp Vault. Dùng chung cho `column_*` lẫn `cdr_*` — xem mục "Chọn nguồn keyPrefix" |
 | `CRYPTO_CACHE_TTL_SECONDS` | `300` | số nguyên ≥ 0 (`0` = tắt cache) | Thời gian cache keyPrefix theo bảng trên driver; áp dụng cho mọi nguồn |
-| `DAK_ADDR` | (bắt buộc khi `dak`) | URL `https://…`; `http://` chỉ khi `DAK_ALLOW_INSECURE_HTTP=true` | Base URL của DAK, vd `http://dak-mock:8085` (dak-mock cùng namespace). Lib gọi `GET <DAK_ADDR>/api/v1/keys/<database>/<table>` |
+| `DAK_ADDR` | (bắt buộc khi `dak`) | URL `https://…`; `http://` chỉ khi `DAK_ALLOW_INSECURE_HTTP=true` | Base URL của DAK, vd `http://dak-mock:8085` (dak-mock cùng namespace). Lib gọi `GET <DAK_ADDR>/api/v1/keys/by-request/<DAK_REQUEST_CODE>/<database>/<table>` |
+| `DAK_REQUEST_CODE` | (bắt buộc khi `dak`) | chữ, số, `.`, `_`, `-`; tối đa 128 | Mã phiếu yêu cầu cấp key trên DAK, vd `REQ-2026-000003`; DAK cấp key theo phiếu nên mã đi vào path |
 | `DAK_TOKEN_URL` | (bắt buộc khi `dak`) | URL `https://…` (`http://` như trên) | Token endpoint Keycloak của **realm của tenant**, vd `https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token` |
 | `DAK_CLIENT_ID` | (bắt buộc khi `dak`) | chuỗi | Client Keycloak của team (`client_credentials`), vd `team-de-ws8` |
 | `DAK_CLIENT_SECRET` | (bắt buộc khi `dak`) | chuỗi | **Nhạy cảm**: lấy từ K8s Secret `spark-dak-client` (key `clientSecret`) qua `secretKeyRef`, không ghi thẳng vào manifest |
