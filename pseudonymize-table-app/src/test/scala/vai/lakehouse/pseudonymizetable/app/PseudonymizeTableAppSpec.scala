@@ -335,4 +335,52 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     runFile(rangeEnv(base, "mismatch_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012"): _*) shouldBe
       PseudonymizeTableApp.ExitRuntimeError
   }
+
+  // ---- 20-minute batch folders: <base>/dt=<yyyyMMdd>/batch=<HHMM>/ ----
+
+  private def batchTree(name: String, cells: Seq[(String, String)]): java.nio.file.Path = {
+    val base = Files.createDirectory(workDir.resolve(name))
+    cells.foreach { case (d, b) =>
+      val dir = Files.createDirectories(base.resolve(s"dt=$d").resolve(s"batch=$b"))
+      Files.write(dir.resolve("part-0.csv"), s"imsi$d$b,1\nimsi$d$b,2\n".getBytes(UTF_8))
+    }
+    base
+  }
+
+  private def batchEnv(base: java.nio.file.Path, table: String, extra: (String, String)*) =
+    Seq("INPUT_PATH" -> base.toString, "INPUT_FORMAT" -> "csv", "INPUT_DATE_KEY" -> "dt", "INPUT_HOUR_KEY" -> "batch",
+      "PSEUDO_COLUMNS" -> "_c0", "OUTPUT_TABLE" -> table) ++ extra
+
+  private def batchesOf(table: String): Set[String] =
+    spark.table(s"landing.$table").select("dt", "batch").distinct().collect().map(r => s"${r.getString(0)}/${r.getString(1)}").toSet
+
+  private val batchCells = Seq("20261014" -> "0000", "20261014" -> "0020", "20261014" -> "0100", "20261014" -> "0120",
+    "20261014" -> "1740", "20261015" -> "0000")
+
+  it should "read 20-minute batch folders by minute-resolution range" in {
+    val base = batchTree("batch_minutes", batchCells)
+
+    runFile(batchEnv(base, "batch_range", "INPUT_FROM" -> "202610140020", "INPUT_TO" -> "202610140100"): _*) shouldBe 0
+
+    batchesOf("batch_range") shouldBe Set("20261014/0020", "20261014/0100")
+    spark.table("landing.batch_range").inputFiles.mkString should include("dt=20261014/batch=0020")
+  }
+
+  it should "treat an hour-only FROM/TO as the whole hour, and INPUT_HOURS as a daily hour window" in {
+    val base = batchTree("batch_hours", batchCells)
+
+    runFile(batchEnv(base, "batch_hour", "INPUT_FROM" -> "2026101401", "INPUT_TO" -> "2026101401"): _*) shouldBe 0
+    batchesOf("batch_hour") shouldBe Set("20261014/0100", "20261014/0120")
+
+    runFile(batchEnv(base, "batch_window", "INPUT_FROM" -> "20261014", "INPUT_TO" -> "20261015", "INPUT_HOURS" -> "0-0"): _*) shouldBe 0
+    batchesOf("batch_window") shouldBe Set("20261014/0000", "20261014/0020", "20261015/0000")
+  }
+
+  it should "read a whole day of batches and write one partition per batch with per-partition progress" in {
+    val base = batchTree("batch_day", batchCells)
+
+    runFile(batchEnv(base, "batch_day_tbl", "INPUT_FROM" -> "20261014", "INPUT_TO" -> "20261014"): _*) shouldBe 0
+
+    batchesOf("batch_day_tbl") shouldBe Set("20261014/0000", "20261014/0020", "20261014/0100", "20261014/0120", "20261014/1740")
+  }
 }

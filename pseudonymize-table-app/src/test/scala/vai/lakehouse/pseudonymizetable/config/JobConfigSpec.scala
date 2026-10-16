@@ -51,13 +51,13 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     JobConfig.fromEnv(base).toOption.get.warehousePath shouldBe None
 
     JobConfig.fromEnv(base + ("WAREHOUSE_PATH" -> "prod8/warehouse")).left.toOption.get.head should
-      include("URI tuyệt đối")
+      include("absolute URI")
   }
 
   it should "từ chối ghi đè bảng nguồn (bảng đích trùng nguồn)" in {
     val errors = JobConfig.fromEnv(base ++ Map("OUTPUT_TABLE" -> "subscriber")).left.toOption.get
 
-    errors.head should include("không được trùng bảng nguồn")
+    errors.head should include("must not equal the source table")
   }
 
   it should "từ chối tên không hợp lệ (chống chèn SQL qua tên DB/bảng/cột) và cột lặp" in {
@@ -65,8 +65,8 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
       "PSEUDO_COLUMNS" -> "isdn, isdn, a b")).left.toOption.get
 
     errors.exists(_.startsWith("DB_NAME")) shouldBe true
-    errors.exists(_.contains("tên cột không hợp lệ 'a b'")) shouldBe true
-    errors.exists(_.contains("cột bị lặp isdn")) shouldBe true
+    errors.exists(_.contains("invalid column name 'a b'")) shouldBe true
+    errors.exists(_.contains("duplicated column(s) isdn")) shouldBe true
   }
 
   private val file = Map("INPUT_PATH" -> "/landing/vtt/charge/date=20261012/hour=18/", "INPUT_FORMAT" -> "csv",
@@ -87,10 +87,10 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors.exists(_.startsWith("OUTPUT_DB")) shouldBe true
     errors.exists(_.startsWith("OUTPUT_TABLE")) shouldBe true
 
-    JobConfig.fromEnv(file + ("DB_NAME" -> "crm")).left.toOption.get.head should include("chỉ chọn một nguồn")
-    JobConfig.fromEnv(base + ("INPUT_FORMAT" -> "csv")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
+    JobConfig.fromEnv(file + ("DB_NAME" -> "crm")).left.toOption.get.head should include("choose exactly one source")
+    JobConfig.fromEnv(base + ("INPUT_FORMAT" -> "csv")).left.toOption.get.head should include("only valid together with INPUT_PATH")
     JobConfig.fromEnv(file + ("INPUT_FORMAT" -> "xls")).left.toOption.get.head should include("INPUT_FORMAT='xls'")
-    JobConfig.fromEnv(file + ("INPUT_PATH" -> "landing/x")).left.toOption.get.head should include("tuyệt đối")
+    JobConfig.fromEnv(file + ("INPUT_PATH" -> "landing/x")).left.toOption.get.head should include("absolute path")
   }
 
   it should "cho mỗi cột một chế độ riêng, cột không ghi mode dùng PSEUDO_MODE" in {
@@ -106,8 +106,8 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
   it should "từ chối mode sai hoặc cú pháp cột sai" in {
     val errors = JobConfig.fromEnv(base + ("PSEUDO_COLUMNS" -> "isdn:ROT13, imei:HASH:x")).left.toOption.get
 
-    errors.exists(_.contains("chế độ không hợp lệ")) shouldBe true
-    errors.exists(_.contains("cột:MODE")) shouldBe true
+    errors.exists(_.contains("invalid mode")) shouldBe true
+    errors.exists(_.contains("column:MODE")) shouldBe true
   }
 
   it should "nhận INPUT_BAD_FILES chỉ với nguồn file" in {
@@ -116,22 +116,22 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     cfg.checkParallelism shouldBe 8
     JobConfig.fromEnv(file).toOption.get.badFiles shouldBe BadFilePolicy.Fail
 
-    JobConfig.fromEnv(base + ("INPUT_BAD_FILES" -> "skip")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
+    JobConfig.fromEnv(base + ("INPUT_BAD_FILES" -> "skip")).left.toOption.get.head should include("only valid together with INPUT_PATH")
     JobConfig.fromEnv(file + ("INPUT_BAD_FILES" -> "ignore")).left.toOption.get.head should include("INPUT_BAD_FILES='ignore'")
   }
 
   it should "INPUT_CHECK_FULL mặc định false và chỉ dùng với nguồn file" in {
     JobConfig.fromEnv(file).toOption.get.checkFull shouldBe false
     JobConfig.fromEnv(file + ("INPUT_CHECK_FULL" -> "true")).toOption.get.checkFull shouldBe true
-    JobConfig.fromEnv(base + ("INPUT_CHECK_FULL" -> "true")).left.toOption.get.head should include("chỉ dùng cùng INPUT_PATH")
+    JobConfig.fromEnv(base + ("INPUT_CHECK_FULL" -> "true")).left.toOption.get.head should include("only valid together with INPUT_PATH")
   }
 
   it should "nhận khoảng ngày/giờ và mặc định partition (date, hour) + overwrite-partitions" in {
     val cfg = JobConfig.fromEnv(file ++ Map("INPUT_FROM" -> "20261012", "INPUT_TO" -> "2026101405", "INPUT_HOURS" -> "6-18")).toOption.get
     val range = cfg.input.asInstanceOf[FileInput].range.get
 
-    range.from shouldBe 2026101200L
-    range.to shouldBe 2026101405L
+    range.from shouldBe 202610120000L
+    range.to shouldBe 202610140559L
     range.hours shouldBe Some((6, 18))
     cfg.outputPartitionBy shouldBe Seq("date", "hour")
     cfg.outputMode shouldBe "overwrite-partitions"
@@ -142,12 +142,25 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
   it should "từ chối khoảng ngày/giờ sai" in {
     def errors(extra: (String, String)*) = JobConfig.fromEnv(file ++ extra).left.toOption.get.mkString(" | ")
 
-    errors("INPUT_FROM" -> "20261340") should include("ngày không hợp lệ")
-    errors("INPUT_FROM" -> "2026101225") should include("giờ phải 00..23")
-    errors("INPUT_FROM" -> "20261014", "INPUT_TO" -> "20261012") should include("phải ≤")
+    errors("INPUT_FROM" -> "20261340") should include("invalid date")
+    errors("INPUT_FROM" -> "2026101225") should include("hour must be 00..23")
+    errors("INPUT_FROM" -> "20261014", "INPUT_TO" -> "20261012") should include("must be <=")
     errors("INPUT_HOURS" -> "18-6") should include("INPUT_HOURS")
     errors("INPUT_FROM" -> "20261012", "OUTPUT_PARTITION_BY" -> "none", "OUTPUT_MODE" -> "overwrite-partitions") should
-      include("cần OUTPUT_PARTITION_BY")
-    JobConfig.fromEnv(base + ("INPUT_FROM" -> "20261012")).left.toOption.get.mkString should include("chỉ dùng cùng INPUT_PATH")
+      include("requires OUTPUT_PARTITION_BY")
+    JobConfig.fromEnv(base + ("INPUT_FROM" -> "20261012")).left.toOption.get.mkString should include("only valid together with INPUT_PATH")
+  }
+
+  it should "accept minute-resolution FROM/TO (yyyyMMddHHmm) and reject a bad minute" in {
+    val range = JobConfig.fromEnv(file ++ Map("INPUT_FROM" -> "202610140020", "INPUT_TO" -> "202610140100",
+      "INPUT_DATE_KEY" -> "dt", "INPUT_HOUR_KEY" -> "batch")).toOption.get.input.asInstanceOf[FileInput].range.get
+
+    range.from shouldBe 202610140020L
+    range.to shouldBe 202610140100L
+    range.dateKey shouldBe "dt"
+    range.hourKey shouldBe "batch"
+    range.accepts("20261014", Some(20)) shouldBe true
+    range.accepts("20261014", Some(120)) shouldBe false
+    JobConfig.fromEnv(file + ("INPUT_FROM" -> "202610140075")).left.toOption.get.mkString should include("minute must be 00..59")
   }
 }

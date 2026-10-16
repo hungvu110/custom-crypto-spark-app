@@ -4,7 +4,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import vai.lakehouse.pseudonymizetable.config.{FileInput, InputRange}
 
-/** Một thư mục `<dateKey>=<yyyyMMdd>[/<hourKey>=<HH>]` thuộc khoảng cần xử lý; `hour` giữ nguyên chuỗi trên đĩa ("05"). */
+/** A directory `<dateKey>=<yyyyMMdd>[/<hourKey>=<HH|HHMM>]` inside the range; `hour` keeps the on-disk string ("05", "0020"). */
 final case class InputPartition(date: String, hour: Option[String], path: String) {
   def label: String = hour.fold(date)(h => s"$date/$h")
 }
@@ -16,12 +16,18 @@ final case class InputPartition(date: String, hour: Option[String], path: String
 object InputPartitions {
 
   private val DatePattern = "^[0-9]{8}$".r
-  private val HourPattern = "^[0-9]{1,2}$".r
+  private val TimePattern = "^[0-9]{1,4}$".r
+
+  /** 1-2 digits = hour (`hour=05`); 3-4 digits = HHMM (`batch=0020`). `None` if hour > 23 or minute > 59. */
+  private def toTime(value: String): Option[Int] = {
+    val t = if (value.length <= 2) value.toInt * 100 else value.toInt
+    if (t / 100 <= 23 && t % 100 <= 59) Some(t) else None
+  }
 
   def resolve(spark: SparkSession, input: FileInput, range: InputRange): Seq[InputPartition] = {
     val base = new Path(input.path)
     val fs = base.getFileSystem(spark.sparkContext.hadoopConfiguration)
-    if (!fs.exists(base)) throw new IllegalArgumentException(s"INPUT_PATH không tồn tại: ${input.path}")
+    if (!fs.exists(base)) throw new IllegalArgumentException(s"INPUT_PATH does not exist: ${input.path}")
 
     def children(dir: Path, key: String): Seq[(String, Path)] =
       fs.listStatus(dir).toSeq.filter(_.isDirectory).flatMap { s =>
@@ -33,7 +39,7 @@ object InputPartitions {
       .filter { case (d, _) => range.acceptsDate(d) }.sortBy(_._1)
 
     dates.flatMap { case (date, datePath) =>
-      val hours = children(datePath, range.hourKey).collect { case (v @ HourPattern(), p) => (v, v.toInt, p) }
+      val hours = children(datePath, range.hourKey).collect { case (v @ TimePattern(), p) => toTime(v).map(t => (v, t, p)) }.flatten
       if (hours.isEmpty) {
         // Bố cục chỉ có thư mục ngày (không có thư mục giờ): chỉ nhận khi không ràng buộc giờ.
         if (range.accepts(date, None)) Seq(InputPartition(date, None, datePath.toString)) else Nil

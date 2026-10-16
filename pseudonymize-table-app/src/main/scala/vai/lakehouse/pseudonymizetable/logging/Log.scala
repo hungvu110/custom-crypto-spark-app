@@ -47,6 +47,7 @@ object Log {
     }
   }
 
+  /** Thời gian đã trôi qua kể từ `startNanos`, luôn tính bằng giây. */
   def elapsed(label: String, startNanos: Long): Unit =
-    logger.info(f"    ${pad(label, 34)} : ${(System.nanoTime() - startNanos) / 1000000L}%,d ms")
+    logger.info(f"    ${pad(label, 34)} : ${(System.nanoTime() - startNanos) / 1e9}%,.1f s")
 }

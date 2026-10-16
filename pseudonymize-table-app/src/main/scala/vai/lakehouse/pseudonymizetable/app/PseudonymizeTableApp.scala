@@ -3,7 +3,7 @@ package vai.lakehouse.pseudonymizetable.app
 import org.apache.spark.sql.SparkSession
 import vai.lakehouse.pseudonymizetable.config.JobConfig
 import vai.lakehouse.pseudonymizetable.job.PseudonymizeTableJob
-import vai.lakehouse.pseudonymizetable.logging.Log
+import vai.lakehouse.pseudonymizetable.logging.{Log, Timings}
 
 /**
  * Entry point: khử định danh 1 bảng (`DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS`) -> bảng đích.
@@ -30,7 +30,8 @@ object PseudonymizeTableApp {
    */
   def execute(env: Map[String, String], existingSession: Option[SparkSession] = None): Int = {
     val start = System.nanoTime()
-    Log.banner("PSEUDONYMIZE TABLE — KHỬ ĐỊNH DANH 1 BẢNG BẰNG pseudonym-udf")
+    Timings.reset()
+    Log.banner("PSEUDONYMIZE TABLE — PSEUDONYMIZE A TABLE OR FILES WITH pseudonym-udf")
 
     Log.section("1. CONFIG")
     val exitCode = JobConfig.fromEnv(env) match {
@@ -42,9 +43,10 @@ object PseudonymizeTableApp {
         runJob(cfg, existingSession)
     }
 
-    Log.section("KẾT THÚC")
+    Timings.summary((System.nanoTime() - start) / 1e9)
+    Log.section("FINISHED")
     Log.kv("exit code", exitCode)
-    Log.elapsed("tổng thời gian", start)
+    Log.elapsed("total duration", start)
     exitCode
   }
 
@@ -52,24 +54,26 @@ object PseudonymizeTableApp {
     try {
       Log.section("2. SPARK SESSION")
       val owned = existingSession.isEmpty
-      val spark = existingSession.getOrElse(SparkSessions.create(cfg.appName, cfg.enableHiveSupport, cfg.warehousePath))
+      val spark = Timings.time("spark session startup") {
+        existingSession.getOrElse(SparkSessions.create(cfg.appName, cfg.enableHiveSupport, cfg.warehousePath))
+      }
       Log.kv("spark version", spark.version)
       Log.kv("application id", spark.sparkContext.applicationId)
       Log.kv("master", spark.sparkContext.master)
       try {
         val result = PseudonymizeTableJob.run(spark, cfg)
         if (!result.written) {
-          if (result.badFiles.isEmpty) { Log.banner("SCAN OK — không có file lỗi"); ExitOk }
-          else { Log.banner(s"SCAN: ${result.badFiles.size} FILE LỖI"); ExitBadFiles }
+          if (result.badFiles.isEmpty) { Log.banner("SCAN OK — no bad files"); ExitOk }
+          else { Log.banner(s"SCAN: ${result.badFiles.size} BAD FILE(S)"); ExitBadFiles }
         } else if (!cfg.verify || result.verified) {
           if (result.badFiles.nonEmpty) {
-            Log.section(s"FILE ĐÃ BỎ QUA (INPUT_BAD_FILES=skip): ${result.badFiles.size}")
+            Log.section(s"SKIPPED FILES (INPUT_BAD_FILES=skip): ${result.badFiles.size}")
             result.badFiles.foreach(b => Log.warn(s"SKIPPED ${b.path} — ${b.reason}"))
           }
           Log.banner("JOB SUCCEEDED")
           ExitOk
         } else {
-          Log.banner("JOB WRITTEN BUT VERIFICATION FAILED — KHÔNG dùng bảng đích " + cfg.target)
+          Log.banner("JOB WRITTEN BUT VERIFICATION FAILED — DO NOT use target table " + cfg.target)
           ExitVerificationFailed
         }
       } finally if (owned) spark.stop()

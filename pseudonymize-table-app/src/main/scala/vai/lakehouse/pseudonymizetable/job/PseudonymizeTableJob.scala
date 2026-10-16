@@ -10,7 +10,7 @@ import vai.lakehouse.pseudonym.{ConfigurationException, PseudonymMode}
 import vai.lakehouse.pseudonym.policy.{ColumnRule, TablePolicy}
 import vai.lakehouse.pseudonym.spark.{PseudonymConf, Pseudonymizer}
 import vai.lakehouse.pseudonymizetable.config.{BadFilePolicy, FileInput, JobConfig, OutputFormat, TableInput}
-import vai.lakehouse.pseudonymizetable.logging.Log
+import vai.lakehouse.pseudonymizetable.logging.{Log, Timings}
 
 /** Kết quả đối chiếu 1 cột đã giả danh giữa bảng nguồn và bảng đích. */
 final case class ColumnVerification(
@@ -51,7 +51,7 @@ object PseudonymizeTableJob {
     val mappingPath = cfg.mappingTablePath.orElse(PseudonymConf.mappingPath(conf))
     if (cfg.modes.contains(PseudonymMode.Mapping) && mappingPath.isEmpty) {
       throw new ConfigurationException(
-        s"Có cột dùng MAPPING cần đường dẫn bảng ánh xạ: đặt MAPPING_TABLE_PATH hoặc ${PseudonymConf.MappingPathKey}")
+        s"A column uses MAPPING and needs the mapping table path: set MAPPING_TABLE_PATH or ${PseudonymConf.MappingPathKey}")
     }
     new Pseudonymizer(PseudonymConf.keyProvider(conf), mappingPath)
   }
@@ -68,13 +68,44 @@ object PseudonymizeTableJob {
     catch {
       case NonFatal(e) =>
         (cfg.input, cfg.badFiles) match {
-          case (in: FileInput, BadFilePolicy.Fail | BadFilePolicy.Skip) => diagnose(spark, in, cfg.checkParallelism)
+          case (in: FileInput, BadFilePolicy.Fail | BadFilePolicy.Skip) =>
+            if (isReadFailure(e)) diagnose(spark, in, cfg.checkParallelism)
+            else Log.info(s"Failure is not a file-read error (${rootMessage(e)}): skipping the per-file diagnostic scan. " +
+              "If you suspect source files, rerun with INPUT_BAD_FILES=report.")
           case _ =>
         }
         throw e
     } finally previous match { // skip bật ignoreCorruptFiles: không để rò sang lần chạy sau trong cùng session
       case Some(v) => spark.conf.set(corruptKey, v)
       case None => spark.conf.unset(corruptKey)
+    }
+  }
+
+  private def causes(t: Throwable): Seq[Throwable] = {
+    val seen = new java.util.IdentityHashMap[Throwable, Boolean]()
+    Iterator.iterate(t)(_.getCause).takeWhile(c => c != null && seen.put(c, true) == null).toSeq
+  }
+
+  private def rootMessage(t: Throwable): String = {
+    val root = causes(t).last
+    s"${root.getClass.getSimpleName}: ${Option(root.getMessage).getOrElse("").split("\n").headOption.getOrElse("").take(160)}"
+  }
+
+  /**
+   * Lỗi có phải do ĐỌC file nguồn không (parse CSV, Parquet hỏng, mất file, "Encountered error while reading file")?
+   * Quét chẩn đoán đọc lại toàn bộ dữ liệu (hàng giờ với thư mục lớn) nên chỉ chạy cho loại lỗi này; lỗi metastore, ghi
+   * HDFS, khoá, cấu hình... không cần quét.
+   */
+  private[job] def isReadFailure(e: Throwable): Boolean = {
+    val chain = causes(e)
+    def name(c: Throwable) = c.getClass.getName
+    def text(c: Throwable) = Option(c.getMessage).getOrElse("")
+    val metastore = chain.exists(c => name(c).contains("MetaException") || name(c).contains("HiveException"))
+    !metastore && chain.exists { c =>
+      name(c).contains("TextParsingException") || name(c).contains("ParquetDecodingException") ||
+        name(c).contains("FileNotFoundException") || name(c).contains("MalformedInputException") ||
+        text(c).contains("Encountered error while reading file") || text(c).contains("is not a Parquet file") ||
+        text(c).contains("PATH_NOT_FOUND")
     }
   }
 
@@ -88,8 +119,8 @@ object PseudonymizeTableJob {
       spark.conf.set("spark.sql.sources.partitionColumnTypeInference.enabled", "false")
       val partitions = InputPartitions.resolve(spark, input, range)
       if (partitions.isEmpty) {
-        throw new IllegalStateException(s"Không có thư mục ${range.dateKey}=…/${range.hourKey}=… nào trong ${input.path} " +
-          s"thuộc khoảng ${range.describe}")
+        throw new IllegalStateException(s"No ${range.dateKey}=…/${range.hourKey}=… directory under ${input.path} " +
+          s"within range ${range.describe}")
       }
       // basePath = INPUT_PATH để mọi chế độ (fail/skip/report) đều có cột partition date/hour giống nhau.
       val withBase = input.copy(options = Map("basePath" -> input.path) ++ input.options)
@@ -99,64 +130,71 @@ object PseudonymizeTableJob {
 
   private def diagnose(spark: SparkSession, input: FileInput, parallelism: Int): Unit =
     try {
-      Log.section("CHẨN ĐOÁN: QUÉT TỪNG FILE CỦA " + input.path)
+      Log.section("DIAGNOSIS: SCANNING EVERY FILE UNDER " + input.path)
       val fs = resolveFiles(spark, input)
       val scan = FileScanner.scan(spark, fs.input, fs.roots, parallelism, deep = true)
       FileScanner.log(scan)
-      if (scan.bad.isEmpty) Log.info("Mọi file đọc được riêng lẻ: lỗi không nằm ở việc đọc file (kiểm tra bước ghi/khoá).")
-      else Log.info("Chạy lại với INPUT_BAD_FILES=skip để bỏ các file này, hoặc sửa/loại chúng khỏi INPUT_PATH.")
+      if (scan.bad.isEmpty) Log.info("Every file is readable on its own: the failure is not in reading files (check the write step / keys).")
+      else Log.info("Rerun with INPUT_BAD_FILES=skip to skip these files, or fix/remove them from INPUT_PATH.")
     } catch {
-      case NonFatal(e) => Log.warn(s"Không quét được file để chẩn đoán: ${e.getMessage}")
+      case NonFatal(e) => Log.warn(s"Could not scan files for diagnosis: ${e.getMessage}")
     }
 
   private def doRun(spark: SparkSession, cfg: JobConfig): JobResult = {
+    val stats = new SparkStats(spark.sparkContext)
+    spark.sparkContext.addSparkListener(stats)
+    try runSteps(spark, cfg, stats) finally spark.sparkContext.removeSparkListener(stats)
+  }
+
+  private def runSteps(spark: SparkSession, cfg: JobConfig, stats: SparkStats): JobResult = {
     val pseudonymizer = pseudonymizerFor(cfg, spark.sparkContext.getConf)
     val policy = TablePolicy(cfg.source, cfg.pseudoColumns.map(c => ColumnRule(c.name, c.mode)))
 
-    Log.section("3. ĐỌC NGUỒN")
+    Log.section("3. READ SOURCE")
     Log.kv("source", cfg.source)
-    val data = readSource(spark, cfg)
+    val data = Timings.time("read: resolve source (list dirs, schema)") { readSource(spark, cfg) }
     val (source, scan) = (data.df, data.scan)
     val tracker = cfg.input match {
       case _: FileInput if cfg.badFiles == BadFilePolicy.Skip => Some(FileTracker.newAccumulator(spark))
       case _ => None
     }
     if (cfg.badFiles == BadFilePolicy.Report) {
-      Log.info("INPUT_BAD_FILES=report: chỉ quét, KHÔNG ghi bảng đích")
+      Log.info("INPUT_BAD_FILES=report: scan only, the target table is NOT written")
       return JobResult(-1, -1, exact = false, Nil, scan.map(_.bad).getOrElse(Nil), written = false)
     }
-    Log.kv("schema", s"${source.columns.length} cột")
+    Log.kv("columns", source.columns.length)
 
     // Dựng DataFrame giả danh TRƯỚC mọi thao tác ghi: cột sai/khoá thiếu thì fail sớm, chưa chạm bảng đích.
-    val pseudonymized = pseudonymizer.pseudonymize(source, policy)
+    val pseudonymized = Timings.time("pseudonymize: build plan") { pseudonymizer.pseudonymize(source, policy) }
     val missing = cfg.outputPartitionBy.filterNot(pseudonymized.columns.contains)
     if (missing.nonEmpty) {
-      throw new IllegalArgumentException(s"OUTPUT_PARTITION_BY: cột ${missing.mkString(", ")} không có trong dữ liệu " +
-        s"(có: ${pseudonymized.columns.takeRight(5).mkString(", ")}…). Đọc theo khoảng INPUT_FROM/INPUT_TO để có cột date/hour, " +
-        "hoặc đặt OUTPUT_PARTITION_BY=none")
+      throw new IllegalArgumentException(s"OUTPUT_PARTITION_BY: column(s) ${missing.mkString(", ")} not found in the data " +
+        s"(last columns: ${pseudonymized.columns.takeRight(5).mkString(", ")}…). Read by INPUT_FROM/INPUT_TO range to get " +
+        "the partition columns, or set OUTPUT_PARTITION_BY=none")
     }
 
     // skip: theo dõi file đã cho ra dòng (xem FileTracker) để cuối job biết file nào bị bỏ qua.
     val toWrite = tracker.fold(pseudonymized)(acc => FileTracker.attach(pseudonymized, cfg.pseudoColumns.head.name, acc))
 
-    Log.section("4. GHI BẢNG ĐÍCH")
+    Log.section("4. WRITE TARGET")
     Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
-    Log.kv("partition by", if (cfg.outputPartitionBy.isEmpty) "(không)" else cfg.outputPartitionBy.mkString(", "))
+    Log.kv("partition by", if (cfg.outputPartitionBy.isEmpty) "(none)" else cfg.outputPartitionBy.mkString(", "))
     Log.kv("pseudonymized columns", cfg.pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "))
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
-    val start = System.nanoTime()
-    write(spark, cfg, toWrite)
-    Log.elapsed("write duration", start)
-    val skippedInfo = tracker.map(acc => skippedFiles(spark, cfg, acc))
+    val statsBefore = stats.settled()
+    // Spark runs read + pseudonymize + write fused in the same tasks, so they cannot be timed separately here.
+    Timings.time("write: read + pseudonymize + write (fused)") { write(spark, cfg, toWrite, data.partitions, stats) }
+    Log.kv("write totals", (stats.settled() - statsBefore).describe)
+    val skippedInfo = tracker.map(acc => Timings.time("detect skipped files") { skippedFiles(spark, cfg, acc) })
     val skipped = skippedInfo.map(_.bad).getOrElse(scan.map(_.bad).getOrElse(Nil))
     // `count()` của csv không parse nên đếm cả dòng của file hỏng: đối chiếu chỉ so với các file đã đọc được.
     val verifySource = skippedInfo.filter(_.bad.nonEmpty).fold(source) { info =>
       if (info.good.isEmpty) source else FileScanner.reader(spark, info.input).load(info.good: _*)
     }
 
-    Log.section("5. ĐỐI CHIẾU")
-    val result = if (cfg.verify) verify(spark, cfg, verifySource, data.partitions) else {
-      Log.info("VERIFY=false: bỏ qua đối chiếu nguồn/đích")
+    Log.section("5. VERIFY")
+    val result = if (cfg.verify) Timings.time("verify") { verify(spark, cfg, verifySource, data.partitions) } else {
+      Log.info("VERIFY=false: skipping source/target verification")
       JobResult(-1, -1, exact = false, Nil)
     }
     result.copy(badFiles = skipped)
@@ -168,7 +206,7 @@ object PseudonymizeTableJob {
   private def readSource(spark: SparkSession, cfg: JobConfig): SourceData = cfg.input match {
     case TableInput(db, table) =>
       if (!spark.catalog.tableExists(db, table)) {
-        throw new IllegalArgumentException(s"Bảng nguồn không tồn tại: ${cfg.source}")
+        throw new IllegalArgumentException(s"Source table does not exist: ${cfg.source}")
       }
       SourceData(spark.table(quoted(db, table)), None, None)
     case input: FileInput =>
@@ -207,7 +245,7 @@ object PseudonymizeTableJob {
       val (read, missing) = listed.partition(f => seen.contains(FileTracker.normalize(f)))
       Log.kv("files read / skipped", s"${read.size} / ${missing.size}")
       val bad = missing.map { f =>
-        BadFile(f, FileScanner.explain(spark, fs.input, f).getOrElse("file không có dòng dữ liệu nào (rỗng)"))
+        BadFile(f, FileScanner.explain(spark, fs.input, f).getOrElse("file has no data rows (empty)"))
       }
       SkipInfo(bad, read, fs.input)
     case _ => SkipInfo(Nil, Nil, null)
@@ -217,15 +255,83 @@ object PseudonymizeTableJob {
    * Ghi bảng đích. `overwrite-partitions`: bảng chưa có thì tạo (có partition); đã có thì `INSERT OVERWRITE` ở chế độ
    * dynamic partition overwrite — chỉ các partition có trong dữ liệu lần này bị thay, partition khác giữ nguyên.
    */
-  private def write(spark: SparkSession, cfg: JobConfig, df: DataFrame): Unit = {
+  private def write(spark: SparkSession, cfg: JobConfig, df: DataFrame, known: Option[Seq[InputPartition]],
+                    stats: SparkStats): Unit = {
     val table = quoted(cfg.outputDb, cfg.outputTable)
     val exists = spark.catalog.tableExists(cfg.outputDb, cfg.outputTable)
-    if (cfg.outputMode == "overwrite-partitions" && exists) {
-      requireSamePartitioning(spark, cfg)
-      insertOverwriteDynamic(spark, df, table)
-    } else {
+    val partitioned = cfg.outputPartitionBy.nonEmpty &&
+      (cfg.outputMode == "overwrite-partitions" || cfg.outputMode == "append")
+    if (!partitioned) {
       val writer = df.write.format(cfg.outputFormat.sparkFormat).mode(if (cfg.outputMode == "append") "append" else "overwrite")
       (if (cfg.outputPartitionBy.isEmpty) writer else writer.partitionBy(cfg.outputPartitionBy: _*)).saveAsTable(table)
+    } else {
+      // Đăng ký bảng trong metastore TRƯỚC khi ghi: việc ghi có thể kéo dài hàng giờ và metastore chỉ còn phải xử lý ở
+      // lúc đầu (NameNode rảnh), không phải sau khi đã ghi xong như `saveAsTable` trên bảng chưa có.
+      if (!exists) createEmptyTable(spark, cfg, df, table) else requireSamePartitioning(spark, cfg)
+      val tuples = partitionTuples(cfg, known)
+      tuples match {
+        case Some(keys) => keys.zipWithIndex.foreach { case (values, i) =>
+          writePartition(spark, cfg, df, table, values, i + 1, keys.size, stats)
+        }
+        case None =>
+          Log.info("partition list not known in advance: writing in a single pass")
+          insertInto(spark, cfg, df, table)
+      }
+    }
+  }
+
+  /** Danh sách giá trị partition (theo thứ tự `OUTPUT_PARTITION_BY`) khi biết trước từ thư mục nguồn; `None` nếu không. */
+  private def partitionTuples(cfg: JobConfig, known: Option[Seq[InputPartition]]): Option[Seq[Seq[String]]] = {
+    val cols = cfg.outputPartitionBy
+    (known, cfg.input) match {
+      case (Some(ps), in: FileInput)
+          if ps.nonEmpty && ps.forall(_.hour.isDefined) && in.range.exists(r => Seq(r.dateKey, r.hourKey) == cols) =>
+        Some(ps.flatMap(p => p.hour.map(h => Seq(p.date, h))))
+      case _ => None
+    }
+  }
+
+  /** Writes (and commits) one partition at a time: progress log, failures name the partition, small Delta commits. */
+  private def writePartition(spark: SparkSession, cfg: JobConfig, df: DataFrame, table: String, values: Seq[String],
+                             index: Int, total: Int, stats: SparkStats): Unit = {
+    val label = cfg.outputPartitionBy.zip(values).map { case (c, v) => s"$c=$v" }.mkString("/")
+    val condition = cfg.outputPartitionBy.zip(values)
+      .map { case (c, v) => col(quote(c)).cast(StringType) === v }.reduce(_ && _)
+    Log.info(s"[$index/$total] WRITE START $label")
+    spark.sparkContext.setJobDescription(s"write $label ($index/$total)")
+    val before = stats.settled()
+    val start = System.nanoTime()
+    try insertInto(spark, cfg, df.where(condition), table)
+    catch {
+      case NonFatal(e) =>
+        val failedAfter = (System.nanoTime() - start) / 1e9
+        Log.fail(f"[$index/$total] WRITE FAILED $label after $failedAfter%,.1f s: ${rootMessage(e)}")
+        throw e
+    } finally spark.sparkContext.setJobDescription(null)
+    val seconds = (System.nanoTime() - start) / 1e9
+    Log.ok(f"[$index/$total] WRITE DONE $label in $seconds%,.1f s | ${(stats.settled() - before).describe}")
+  }
+
+  private def insertInto(spark: SparkSession, cfg: JobConfig, df: DataFrame, table: String): Unit =
+    if (cfg.outputMode == "append") {
+      df.select(spark.table(table).columns.map(c => col(quote(c))): _*).write.mode("append").insertInto(table)
+    } else insertOverwriteDynamic(spark, df, table)
+
+  /** Tạo bảng rỗng (đúng schema + partition) rồi mới ghi dữ liệu; thử lại vài lần khi metastore chập chờn. */
+  private def createEmptyTable(spark: SparkSession, cfg: JobConfig, df: DataFrame, table: String): Unit = {
+    val attempts = 3
+    (1 to attempts).foreach { attempt =>
+      if (!spark.catalog.tableExists(cfg.outputDb, cfg.outputTable)) {
+        try {
+          Log.info(s"registering table ${cfg.target} in the metastore (attempt $attempt/$attempts)")
+          val writer = df.limit(0).write.format(cfg.outputFormat.sparkFormat)
+          (if (cfg.outputPartitionBy.isEmpty) writer else writer.partitionBy(cfg.outputPartitionBy: _*)).saveAsTable(table)
+        } catch {
+          case NonFatal(e) if attempt < attempts =>
+            Log.warn(s"table registration failed (${rootMessage(e)}), retrying in 15 s")
+            Thread.sleep(15000L)
+        }
+      }
     }
   }
 
@@ -237,8 +343,8 @@ object PseudonymizeTableJob {
         spark.catalog.listColumns(cfg.outputDb, cfg.outputTable).collect().filter(_.isPartition).map(_.name).toSeq
       }
     if (existing != cfg.outputPartitionBy) {
-      throw new IllegalStateException(s"Bảng đích ${cfg.target} đã có với partition [${existing.mkString(", ")}] khác cấu hình " +
-        s"[${cfg.outputPartitionBy.mkString(", ")}]: dùng OUTPUT_TABLE khác hoặc xoá bảng cũ (overwrite-partitions không đổi partition)")
+      throw new IllegalStateException(s"Target table ${cfg.target} already exists with partitioning [${existing.mkString(", ")}] different from the configured " +
+        s"[${cfg.outputPartitionBy.mkString(", ")}]: use another OUTPUT_TABLE or drop the old table (overwrite-partitions does not change partitioning)")
     }
   }
 
@@ -250,8 +356,8 @@ object PseudonymizeTableJob {
       // insertInto khớp cột THEO VỊ TRÍ: xếp lại theo đúng thứ tự cột của bảng đích.
       val targetColumns = spark.table(table).columns.toSeq
       if (targetColumns.toSet != df.columns.toSet) {
-        throw new IllegalStateException(s"Schema dữ liệu khác bảng đích: thiếu ${targetColumns.diff(df.columns).mkString(",")}, " +
-          s"thừa ${df.columns.diff(targetColumns).mkString(",")}")
+        throw new IllegalStateException(s"Data schema differs from the target table: missing ${targetColumns.diff(df.columns).mkString(",")}, " +
+          s"unexpected ${df.columns.diff(targetColumns).mkString(",")}")
       }
       df.select(targetColumns.map(c => col(quote(c))): _*).write.mode("overwrite").insertInto(table)
     } finally previous match {
@@ -263,13 +369,9 @@ object PseudonymizeTableJob {
   /** Điều kiện chỉ giữ các partition vừa xử lý (target của overwrite-partitions còn partition khác không thuộc lần chạy này). */
   private def partitionFilter(cfg: JobConfig, source: DataFrame, known: Option[Seq[InputPartition]]): Column = {
     val cols = cfg.outputPartitionBy
-    val tuples: Seq[Seq[String]] = known match {
-      case Some(ps) if ps.forall(_.hour.isDefined) && cols.size == 2 && cfg.input.isInstanceOf[FileInput] &&
-          cfg.input.asInstanceOf[FileInput].range.exists(r => Seq(r.dateKey, r.hourKey) == cols) =>
-        ps.flatMap(p => p.hour.map(h => Seq(p.date, h)))
-      case _ =>
-        source.select(cols.map(c => col(quote(c)).cast(StringType)): _*).distinct().collect()
-          .map(r => cols.indices.map(r.getString)).toSeq
+    val tuples: Seq[Seq[String]] = partitionTuples(cfg, known).getOrElse {
+      source.select(cols.map(c => col(quote(c)).cast(StringType)): _*).distinct().collect()
+        .map(r => cols.indices.map(r.getString)).toSeq
     }
     tuples.map(t => cols.zip(t).map { case (c, v) => col(quote(c)).cast(StringType) === v }.reduce(_ && _)).reduce(_ || _)
   }
@@ -284,7 +386,7 @@ object PseudonymizeTableJob {
     val rowsTarget = target.count()
     Log.kv("rows source / target", s"$rowsSource / $rowsTarget")
     val exact = cfg.outputMode == "overwrite" || cfg.outputMode == "overwrite-partitions"
-    if (!exact) Log.info("OUTPUT_MODE=append: bảng đích còn dữ liệu các lần trước, chỉ đối chiếu (đích >= nguồn, không sót giá trị gốc)")
+    if (!exact) Log.info("OUTPUT_MODE=append: the target still holds earlier runs, verifying only (target >= source, no original values left)")
 
     val verifications = cfg.columns.map { c =>
       val src = source.select(col(quote(c)).cast(StringType).as("v"))
@@ -298,7 +400,7 @@ object PseudonymizeTableJob {
         originalValuesLeft = tgt.where(col("v").isNotNull).distinct()
           .join(src.where(col("v").isNotNull).distinct(), Seq("v"), "left_semi").count())
       val line = s"$c: null ${v.nullsSource}->${v.nullsTarget}, distinct ${v.distinctSource}->${v.distinctTarget}, " +
-        s"giá trị gốc còn sót=${v.originalValuesLeft}"
+        s"original values left=${v.originalValuesLeft}"
       if (v.passed(exact)) Log.ok(line) else Log.fail(line)
       v
     }

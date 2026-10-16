@@ -55,7 +55,8 @@ spec:
       # hadoopConfigMap). Khoảng ngày/giờ cần xử lý chọn bằng INPUT_FROM / INPUT_TO / INPUT_HOURS bên dưới.
       - name: INPUT_PATH
         value: /landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m
-      # Khoảng THỜI GIAN LIÊN TỤC, bao gồm hai đầu: yyyyMMdd (nguyên ngày) hoặc yyyyMMddHH. FROM mặc định giờ 00, TO mặc định 23.
+      # Khoảng THỜI GIAN LIÊN TỤC, bao gồm hai đầu: yyyyMMdd (nguyên ngày), yyyyMMddHH hoặc yyyyMMddHHmm (so với giờ BẮT ĐẦU của thư mục).
+      # Thư mục tầng 2 nhận HH (hour=05) hoặc HHMM (batch=0020). FROM thiếu thì lấy đầu kỳ, TO thiếu thì lấy cuối kỳ.
       #   một giờ:        FROM=2026101218  TO=2026101218
       #   cả ngày 12→13:  FROM=20261012    TO=20261013
       #   qua nửa đêm:    FROM=2026101218  TO=2026101306

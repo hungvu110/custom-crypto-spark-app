@@ -70,7 +70,7 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 | `INPUT_PATH`                        | —                                                                      | **Nguồn là file/thư mục**, vd `/landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/` (đường dẫn tuyệt đối hoặc URI `hdfs://…`; glob được). Loại trừ với `DB_NAME`/`TABLE_NAME` (xem 3.5)                                                       |
 | `INPUT_FROM` / `INPUT_TO`           | —                                                                      | Khoảng thời gian **liên tục**, bao gồm hai đầu, `yyyyMMdd` hoặc `yyyyMMddHH` (FROM mặc định giờ 00, TO mặc định 23). Khi có thì `INPUT_PATH` là **gốc** của cây `date=…/hour=…/` (xem 3.8)                                                                              |
 | `INPUT_HOURS`                       | —                                                                      | Lọc thêm giờ trong ngày cho mọi ngày của khoảng: `6-18` hoặc `18`                                                                                                                                                                                                       |
-| `INPUT_DATE_KEY` / `INPUT_HOUR_KEY` | `date` / `hour`                                                        | Tên khoá thư mục nếu khác mặc định (cũng là tên cột partition)                                                                                                                                                                                                          |
+| `INPUT_DATE_KEY` / `INPUT_HOUR_KEY` | `date` / `hour` | Tên khoá thư mục tầng ngày / tầng giờ-batch nếu khác mặc định, vd `dt` / `batch`; cũng là tên cột partition |
 | `INPUT_FORMAT`                      | (bắt buộc khi có `INPUT_PATH`)                                         | `parquet` / `orc` / `avro` / `json` / `delta` / `csv` / `tsv` / `txt` (= `csv`, text phân tách ký tự) / `text` (mỗi dòng 1 cột `value`)                                                                                                                                 |
 | `INPUT_SCHEMA`                      | —                                                                      | Schema DDL cho file không có schema sẵn, vd `isdn STRING, imei STRING, amount DOUBLE`. Không có thì csv/tsv/txt đặt tên cột `_c0, _c1, …`                                                                                                                               |
 | `INPUT_OPTION_<tên>`                | —                                                                      | Option của Spark reader, vd `INPUT_OPTION_delimiter=\|`, `INPUT_OPTION_header=true`, `INPUT_OPTION_encoding=UTF-8`                                                                                                                                                      |
@@ -174,9 +174,9 @@ Một file hỏng (CSV dính dòng, parquet cụt, lỗi HDFS...) làm cả job 
 
 | `INPUT_BAD_FILES` | Hành vi | Exit |
 | --- | --- | --- |
-| `fail` (mặc định) | Chạy bình thường; **nếu job lỗi** thì quét đầy đủ từng file bằng đúng cấu hình reader, log `FILE LỖI <path> — <nguyên nhân>` | 1 |
+| `fail` (mặc định) | Chạy bình thường; **nếu job lỗi** thì quét đầy đủ từng file bằng đúng cấu hình reader, log `BAD FILE <path> — <cause>` | 1 |
 | `report` | Chỉ quét, liệt kê file lỗi, **không ghi** bảng đích. Dùng để kiểm tra một thư mục trước khi chạy thật | 0 sạch / 4 có lỗi |
-| `skip` | **Không quét trước**: đọc thẳng với `spark.sql.files.ignoreCorruptFiles=true` nên Spark bỏ file lỗi; ghi xong, job log `SKIPPED <path> — <nguyên nhân>` cho từng file bị bỏ | 0 (thành công) |
+| `skip` | **Không quét trước**: đọc thẳng với `spark.sql.files.ignoreCorruptFiles=true` nên Spark bỏ file lỗi; ghi xong, job log `SKIPPED <path> — <cause>` cho từng file bị bỏ | 0 (thành công) |
 
 **Cách `skip` biết file nào bị bỏ.** Spark bỏ file lỗi trong im lặng (chỉ WARN ở log executor), nên job bọc một cột đầu ra
 bằng biểu thức ghi lại tên file đã cho ra dòng (accumulator). Sau khi ghi, các file trong thư mục mà không cho ra dòng nào
@@ -208,6 +208,17 @@ job trước khi `ignoreCorruptFiles` có tác dụng).
 | `FROM=2026101218 TO=2026101306`       | Liên tục từ 18h ngày 12 đến 06h ngày 13 |
 | `FROM=20261012 TO=20261014 HOURS=6-8` | Giờ 06–08 của mỗi ngày 12, 13, 14       |
 
+**Thư mục theo batch (vd 20 phút).** Tầng thứ hai nhận giá trị `HH` (`hour=05`) hoặc `HHMM` 3–4 chữ số (`batch=0020`,
+`batch=1740`); giá trị sai (giờ > 23, phút > 59) bị bỏ qua. Ví dụ nguồn `/landing/ebs_3g_4g/dt=20261014/batch=0020/`:
+`INPUT_DATE_KEY=dt`, `INPUT_HOUR_KEY=batch`.
+
+| Cấu hình | Batch được xử lý (trong ngày 14) |
+| --- | --- |
+| `FROM=20261014 TO=20261014` | Cả 72 batch `0000…2340` |
+| `FROM=202610140020 TO=202610140100` | `0020, 0040, 0100` |
+| `FROM=2026101401 TO=2026101401` | Cả giờ 01: `0100, 0120, 0140` |
+| `FROM=20261014 TO=20261015 HOURS=0-0` | Giờ 00 của mỗi ngày: `0000, 0020, 0040` |
+
 **Đầu ra.** Dữ liệu có thêm hai cột `date`, `hour` (kiểu chuỗi, giữ `05`) ở cuối và bảng đích được partition theo
 `(date, hour)`: thư mục bảng có `date=20261012/hour=05/…`. Muốn partition khác: `OUTPUT_PARTITION_BY`.
 
@@ -220,6 +231,37 @@ job trước khi `ignoreCorruptFiles` có tác dụng).
 Đối chiếu (`VERIFY`) ở `overwrite-partitions` chỉ so với các partition vừa ghi và vẫn kiểm chính xác (số dòng, null,
 distinct, không sót giá trị gốc). Lưu ý: bảng đã tồn tại với partition khác cấu hình sẽ bị từ chối (exit 1) — đổi
 `OUTPUT_TABLE` hoặc xoá bảng cũ; `OUTPUT_PARTITION_BY` chưa hỗ trợ `OUTPUT_FORMAT=iceberg`.
+
+**Ghi theo từng partition.** Với `overwrite-partitions`/`append` có partition `(date, hour)`, job:
+1. đăng ký bảng (rỗng, đúng schema + partition) trong metastore **trước** khi ghi, thử lại 3 lần nếu metastore chập chờn;
+2. ghi và commit **từng partition một**, mỗi partition một dòng log (thời gian luôn tính bằng **giây**):
+   ```
+   [3/72] WRITE START dt=20261013/batch=0040
+   [ OK ] [3/72] WRITE DONE dt=20261013/batch=0040 in 142.3 s | tasks=96 | rows read=5,061,240 (12,410.5 MB) | rows written=5,061,240 (11,020.3 MB) | executor run=2,140.2 s | cpu=1,830.7 s | gc=41.0 s
+   [FAIL] [3/72] WRITE FAILED dt=… after 61.0 s: <root cause>
+   ```
+   Tên partition cũng hiện ở mô tả job trong Spark UI (`write dt=…/batch=… (3/72)`). Log4j2 bật thêm
+   `Committed delta #N to …/_delta_log` của Delta cho mỗi commit.
+
+Lợi ích: lỗi chỉ rõ partition nào; mỗi commit nhỏ; partition đã ghi xong không bị mất khi một partition sau lỗi (chạy lại
+chỉ thay lại từng partition, không nhân đôi). Chế độ `overwrite` (thay cả bảng) vẫn ghi một lượt.
+
+**Chẩn đoán khi job lỗi.** Quét đầy đủ từng file chỉ chạy khi lỗi liên quan tới ĐỌC file (parse CSV, Parquet hỏng, mất
+file). Lỗi metastore/HDFS khi ghi, khoá, cấu hình... không quét (trước đây quét lại cả thư mục, có thể tốn hàng giờ).
+
+**Log thời gian từng bước (giây).** Mỗi bước in `<bước> [duration] : x.x s` và cuối job có bảng tổng kết:
+```
+STEP TIMINGS (seconds)
+  spark session startup                          : 19.0 s  (6%)
+  read: resolve source (list dirs, schema)       :  3.2 s  (1%)
+  pseudonymize: build plan                       :  0.4 s  (0%)
+  write: read + pseudonymize + write (fused)     : 270.5 s (88%)
+  detect skipped files                           :  2.1 s  (1%)
+  verify                                         : …
+  total                                          : 307.8 s
+```
+Spark chạy đọc + khử + ghi trong **cùng các task** nên không tách được thành ba mốc thời gian riêng; để biết nút thắt, mỗi
+partition (và cả bước ghi) in thêm số liệu task: số dòng/MB đọc và ghi, `executor run`, `cpu`, `gc` (giây).
 
 ## 4. Env của `pseudonym-udf` cần truyền vào
 

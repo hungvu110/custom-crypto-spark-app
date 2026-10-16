@@ -160,7 +160,7 @@ object FileScanner {
     val maxColumns = option(input, "maxColumns").flatMap(v => scala.util.Try(v.trim.toInt).toOption)
       .getOrElse(DefaultMaxColumns)
     val widest = spark.read.text(file).rdd.map(r => countOccurrences(r.getString(0), delimiter) + 1).fold(0)(math.max)
-    if (widest > maxColumns) Some(s"dòng có $widest trường, vượt maxColumns=$maxColumns (delimiter '$delimiter')") else None
+    if (widest > maxColumns) Some(s"a line has $widest fields, exceeding maxColumns=$maxColumns (delimiter '$delimiter')") else None
   }
 
   /** `.rdd` giữ nguyên mọi cột nên parser không bị cắt cột (count() trên DataFrame có thể bỏ qua parse). */
@@ -181,7 +181,7 @@ object FileScanner {
   }
 
   def log(scan: FileScan): Unit = {
-    Log.kv("files OK / lỗi", s"${scan.good.size} / ${scan.bad.size}")
-    scan.bad.foreach(b => Log.fail(s"FILE LỖI ${b.path} — ${b.reason}"))
+    Log.kv("files OK / bad", s"${scan.good.size} / ${scan.bad.size}")
+    scan.bad.foreach(b => Log.fail(s"BAD FILE ${b.path} — ${b.reason}"))
   }
 }
