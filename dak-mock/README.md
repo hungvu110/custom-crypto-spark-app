@@ -3,7 +3,7 @@
 Service Spring Boot giả lập DAK, **chỉ** phục vụ API mà sql-engine và SparkApplication gọi để lấy `keyPrefix`:
 
 ```
-GET /api/v1/keys/{database}/{table}      Authorization: Bearer <access token Keycloak của team>
+GET /api/v1/keys/by-request/{requestCode}/{database}/{table}      Authorization: Bearer <access token Keycloak của team>
 ```
 
 Hợp đồng API đầy đủ: [docs/key-access/DAK_API_SPEC.md](../docs/key-access/DAK_API_SPEC.md). Phía client (`key-prefix-lib`, nguồn `source=dak`):
@@ -45,7 +45,7 @@ dak-mock/
 └── src/main/java/vai/lakehouse/dakmock/
     ├── config/DakProperties.java            cấu hình `dak.*` (realm, client, Vault), kiểm tra ngay lúc khởi động
     ├── web/RequestIdFilter.java             X-Request-Id + Cache-Control: no-store cho MỌI response
-    ├── web/KeyController.java               GET /api/v1/keys/{database}/{table}: kiểm tên → xác minh token → lấy key
+    ├── web/KeyController.java               GET /api/v1/keys/by-request/{requestCode}/{database}/{table}: kiểm tên → xác minh token → lấy key
     ├── auth/TokenVerifier.java              xác minh JWT bằng JWKS của realm, tra client đã đăng ký
     ├── key/KeyService.java                  lấy key cho team + ghi log audit (không ghi prefix)
     ├── key/VaultKeyReader.java              GET {vault}/v1/{kvMount}/data/{path} với X-Vault-Token
@@ -61,7 +61,7 @@ sequenceDiagram
     participant J as sso-lakehouse (JWKS)
     participant V as Vault KV v2
 
-    C->>M: GET http://dak-mock:8085/api/v1/keys/demo_db/users_cdr (Bearer)
+    C->>M: GET http://dak-mock:8085/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr (Bearer)
     Note over M: Kiểm tên database/table, chuẩn hoá chữ thường — sai → 400
     Note over M: iss (chưa tin) → realm vlp-tenantw1xjixm trong ConfigMap; không có → 401
     M->>J: tải JWKS (có cache)
@@ -207,7 +207,7 @@ TOKEN=$(printf '%s' "$CS" | curl -s \
   | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'); unset CS
 
 # 2. Gọi mock
-curl -s -i http://dak-mock:8085/api/v1/keys/demo_db/users_cdr -H "Authorization: Bearer $TOKEN"
+curl -s -i http://dak-mock:8085/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr -H "Authorization: Bearer $TOKEN"
 ```
 
 Pod tạm tự xoá khi thoát (`--rm`).
@@ -285,6 +285,8 @@ SparkApplication: [k8s/spark-application-cdr.yaml](../k8s/spark-application-cdr.
   value: "true"
 - name: DAK_TOKEN_URL
   value: "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"
+- name: DAK_REQUEST_CODE
+  value: REQ-2026-000003   # mã phiếu yêu cầu cấp key
 - name: DAK_CLIENT_ID
   value: "<client_id của team>" # PHẢI SỬA, trùng client-id trong ConfigMap của mock
 # DAK_CLIENT_SECRET lấy từ Secret spark-dak-client (key clientSecret)
@@ -297,6 +299,7 @@ spark.columncrypto.source=dak
 spark.columncrypto.dak.addr=http://dak-mock:8085
 spark.columncrypto.dak.tokenUrl=https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token
 spark.columncrypto.dak.clientId=<client_id của team>
+spark.columncrypto.dak.requestCode=<mã phiếu yêu cầu, vd REQ-2026-000003>
 spark.columncrypto.dak.clientSecret=<client secret>
 spark.columncrypto.dak.allowInsecureHttp=true
 ```

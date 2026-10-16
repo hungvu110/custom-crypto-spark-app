@@ -44,7 +44,7 @@ class ColumnCryptoExtensionDakSpec extends AnyFlatSpec with Matchers with Before
     server.createContext("/api/v1/keys/", (ex: HttpExchange) => {
       keyRequests.incrementAndGet()
       ex.getRequestURI.getPath match {
-        case "/api/v1/keys/demo_db/customers" =>
+        case "/api/v1/keys/by-request/REQ-2026-000003/demo_db/customers" =>
           respond(ex, 200, s"""{"database":"demo_db","table":"customers","keyPrefix":"$Prefix","keyVersion":1}""")
         case _ =>
           respond(ex, 403, """{"error":"access_denied","message":"denied","requestId":"req-denied"}""")
@@ -61,6 +61,7 @@ class ColumnCryptoExtensionDakSpec extends AnyFlatSpec with Matchers with Before
       .set(s"${ns}dak.clientId", "dak.w1.team-a")
       .set(s"${ns}dak.clientSecret", "client-secret-xyz")
       .set(s"${ns}dak.allowInsecureHttp", "true")
+      .set(s"${ns}dak.requestCode", "REQ-2026-000003")
       // Cấu hình Vault giữ sẵn cho fallback thủ công: có mặt nhưng không được dùng khi source=dak.
       .set(s"${ns}vault.addr", "http://127.0.0.1:1")
       .set(s"${ns}vault.authMethod", "token")

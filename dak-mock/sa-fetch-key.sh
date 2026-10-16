@@ -3,9 +3,9 @@
 # asks dak for the key of one table — exactly the way the real caller does, per the agreed
 # contract (docs/SA-docs/PHAN-HOI-DAK.md §6, docs/SA-docs/DAK_API_SPEC.md §5):
 #
-#   GET /api/v1/keys/{database}/{table}   with a client_credentials bearer token
+#   GET /api/v1/keys/by-request/{requestCode}/{database}/{table}   with a client_credentials bearer token
 #
-#   ./sa-fetch-key.sh --table demo_db.users_cdr
+#   ./sa-fetch-key.sh --request REQ-2026-000003 --table demo_db.users_cdr   (or env DAK_REQUEST_CODE)
 #   ./sa-fetch-key.sh --team billing --table demo_db.invoices
 #   ./sa-fetch-key.sh --table demo_db.users_cdr --reveal   # prints the key prefix
 #
@@ -25,16 +25,19 @@ set -a; . ./.env; set +a
 TEAM=analytics
 TABLE_ARG=""
 REVEAL=0
+REQUEST_CODE="${DAK_REQUEST_CODE:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --team)   TEAM="$2"; shift 2 ;;
     --table)  TABLE_ARG="$2"; shift 2 ;;
+    --request) REQUEST_CODE="$2"; shift 2 ;;
     --reveal) REVEAL=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
+printf '%s' "$REQUEST_CODE" | grep -Eq '^[A-Za-z0-9._-]{1,128}$' || { echo "LOI: thieu/sai ma phieu yeu cau (--request hoac DAK_REQUEST_CODE)" >&2; exit 2; }
 [ -n "$TABLE_ARG" ] || { echo "LOI: thieu --table database.table" >&2; exit 2; }
 
 # Step 1 of the caller's behaviour (spec §6): split, lowercase, validate — exactly one dot,
@@ -78,13 +81,14 @@ print("   azp=" + str(claims.get("azp")) + "  iss=" + str(claims.get("iss")))
 print(f"   het han luc {exp:%H:%M:%S}")'
 
 echo
-echo "== Goi dak xin key (GET /api/v1/keys/{database}/{table})"
+echo "== Goi dak xin key (GET /api/v1/keys/by-request/{requestCode}/{database}/{table})"
+echo "   request  $REQUEST_CODE"
 echo "   database $DATABASE"
 echo "   table    $TABLE"
 
 RESP=$(mktemp); HDRS=$(mktemp); trap 'rm -f "$RESP" "$HDRS"' EXIT
 CODE=$(curl -s -o "$RESP" -D "$HDRS" -w '%{http_code}' \
-  "$DAK/api/v1/keys/$DATABASE/$TABLE" \
+  "$DAK/api/v1/keys/by-request/$REQUEST_CODE/$DATABASE/$TABLE" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Accept: application/json')
 

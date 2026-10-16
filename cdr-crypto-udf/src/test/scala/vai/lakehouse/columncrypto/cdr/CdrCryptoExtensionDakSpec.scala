@@ -40,7 +40,7 @@ class CdrCryptoExtensionDakSpec extends AnyFlatSpec with Matchers with BeforeAnd
     server.createContext("/api/v1/keys/", (ex: HttpExchange) => {
       keyRequests.incrementAndGet()
       ex.getRequestURI.getPath match {
-        case "/api/v1/keys/demo_db/users_cdr" =>
+        case "/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr" =>
           respond(ex, 200, s"""{"database":"demo_db","table":"users_cdr","keyPrefix":"$Prefix","keyVersion":1}""")
         case _ =>
           respond(ex, 403, """{"error":"access_denied","message":"denied","requestId":"req-denied"}""")
@@ -57,6 +57,7 @@ class CdrCryptoExtensionDakSpec extends AnyFlatSpec with Matchers with BeforeAnd
       .set(s"${ns}dak.clientId", "dak.w1.team-a")
       .set(s"${ns}dak.clientSecret", "client-secret-xyz")
       .set(s"${ns}dak.allowInsecureHttp", "true")
+      .set(s"${ns}dak.requestCode", "REQ-2026-000003")
     val source = PrefixSourceFactory.create(new SparkConfSource(conf, ns))
 
     SparkSession.clearActiveSession()

@@ -128,7 +128,7 @@ class KeyApiTest {
 
   @Test
   void returnsKeyPrefixFromVaultForAValidToken() throws Exception {
-    ResponseEntity<String> res = get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token(c -> {}), "req-1");
+    ResponseEntity<String> res = get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token(c -> {}), "req-1");
 
     assertThat(res.getStatusCode().value()).isEqualTo(200);
     JsonNode body = json.readTree(res.getBody());
@@ -145,7 +145,7 @@ class KeyApiTest {
 
   @Test
   void normalizesDatabaseAndTableToLowerCase() throws Exception {
-    ResponseEntity<String> res = get("/api/v1/keys/Demo_DB/Users_CDR", "Bearer " + token(c -> {}), null);
+    ResponseEntity<String> res = get("/api/v1/keys/by-request/REQ-2026-000003/Demo_DB/Users_CDR", "Bearer " + token(c -> {}), null);
 
     assertThat(res.getStatusCode().value()).isEqualTo(200);
     assertThat(json.readTree(res.getBody()).path("database").asText()).isEqualTo("demo_db");
@@ -156,7 +156,7 @@ class KeyApiTest {
 
   @Test
   void rejectsInvalidTableNameBeforeCheckingTheToken() throws Exception {
-    ResponseEntity<String> res = get("/api/v1/keys/demo-db/users_cdr", null, null);
+    ResponseEntity<String> res = get("/api/v1/keys/by-request/REQ-2026-000003/demo-db/users_cdr", null, null);
 
     assertError(res, 400, "invalid_table");
     assertThat(vaultRequests()).isEmpty();
@@ -166,7 +166,7 @@ class KeyApiTest {
 
   @Test
   void rejectsMissingToken() throws Exception {
-    ResponseEntity<String> res = get("/api/v1/keys/demo_db/users_cdr", null, null);
+    ResponseEntity<String> res = get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", null, null);
 
     assertError(res, 401, "invalid_token");
     assertThat(res.getHeaders().getFirst("X-Request-Id")).isNotBlank();
@@ -176,7 +176,7 @@ class KeyApiTest {
   void rejectsTokenSignedWithAnotherKeyUsingTheSameKid() throws Exception {
     RSAKey other = new RSAKeyGenerator(2048).keyID("k1").generate();
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + sign(claims(c -> {}), other, null), null),
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + sign(claims(c -> {}), other, null), null),
         401, "invalid_token");
   }
 
@@ -184,7 +184,7 @@ class KeyApiTest {
   void rejectsUnknownIssuer() throws Exception {
     String token = token(c -> c.issuer("https://evil.example/realms/tenant-a"));
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token, null), 401, "invalid_token");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token, null), 401, "invalid_token");
   }
 
   @Test
@@ -192,14 +192,14 @@ class KeyApiTest {
     String token = token(c -> c.issueTime(Date.from(Instant.now().minusSeconds(900)))
         .expirationTime(Date.from(Instant.now().minusSeconds(120))));
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token, null), 401, "invalid_token");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token, null), 401, "invalid_token");
   }
 
   @Test
   void rejectsTokenThatIsNotAnAccessToken() throws Exception {
     String token = token(c -> c.claim("typ", "Refresh"));
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token, null), 401, "invalid_token");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token, null), 401, "invalid_token");
   }
 
   @Test
@@ -208,8 +208,8 @@ class KeyApiTest {
     SignedJWT hmac = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims(c -> {}));
     hmac.sign(new MACSigner("0123456789abcdef0123456789abcdef".getBytes()));
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + none, null), 401, "invalid_token");
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + hmac.serialize(), null), 401, "invalid_token");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + none, null), 401, "invalid_token");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + hmac.serialize(), null), 401, "invalid_token");
   }
 
   @Test
@@ -219,7 +219,7 @@ class KeyApiTest {
     String mismatched = token(c -> c.claim("client_id", "dak.w1.someone-else"));
 
     for (String t : List.of(unregistered, disabled, mismatched)) {
-      assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + t, null), 401, "invalid_token");
+      assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + t, null), 401, "invalid_token");
     }
     assertThat(vaultRequests()).isEmpty();
   }
@@ -233,7 +233,7 @@ class KeyApiTest {
       JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("attacker")
           .jwkURL(URI.create(attacker.url("/jwks").toString())).build();
 
-      ResponseEntity<String> res = get("/api/v1/keys/demo_db/users_cdr",
+      ResponseEntity<String> res = get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr",
           "Bearer " + sign(claims(c -> {}), attackerKey, header), null);
 
       assertError(res, 401, "invalid_token");
@@ -247,7 +247,7 @@ class KeyApiTest {
   void returnsAccessDeniedWhenVaultHasNoSecretForTheTable() throws Exception {
     routes.remove(VAULT_KEY_PATH);
 
-    ResponseEntity<String> res = get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token(c -> {}), null);
+    ResponseEntity<String> res = get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token(c -> {}), null);
 
     assertError(res, 403, "access_denied");
   }
@@ -256,26 +256,26 @@ class KeyApiTest {
   void returnsInternalErrorWhenTheVaultSecretHasNoKeyPrefix() throws Exception {
     routes.put(VAULT_KEY_PATH, vaultSecret("", 1));
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token(c -> {}), null), 500, "internal_error");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token(c -> {}), null), 500, "internal_error");
   }
 
   @Test
   void returnsUpstreamUnavailableWhenVaultRejectsTheDakToken() throws Exception {
     routes.put(VAULT_KEY_PATH, jsonResponse(403, "{\"errors\":[\"permission denied\"]}"));
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token(c -> {}), null), 503, "upstream_unavailable");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token(c -> {}), null), 503, "upstream_unavailable");
   }
 
   @Test
   void returnsUpstreamUnavailableWhenRealmKeysCannotBeLoaded() throws Exception {
     String token = token(c -> c.issuer(base + "/realms/tenant-down").claim("azp", "c-down").claim("client_id", "c-down"));
 
-    assertError(get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token, null), 503, "upstream_unavailable");
+    assertError(get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token, null), 503, "upstream_unavailable");
   }
 
   @Test
   void replacesAnInvalidIncomingRequestId() throws Exception {
-    ResponseEntity<String> res = get("/api/v1/keys/demo_db/users_cdr", "Bearer " + token(c -> {}), "bad id!");
+    ResponseEntity<String> res = get("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", "Bearer " + token(c -> {}), "bad id!");
 
     assertThat(res.getHeaders().getFirst("X-Request-Id")).matches("[0-9a-f-]{36}");
   }
