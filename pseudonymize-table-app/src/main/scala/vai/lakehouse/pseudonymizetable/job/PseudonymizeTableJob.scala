@@ -183,7 +183,7 @@ object PseudonymizeTableJob {
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
     val statsBefore = stats.settled()
     // Spark runs read + pseudonymize + write fused in the same tasks, so they cannot be timed separately here.
-    Timings.time("write: read + pseudonymize + write (fused)") { write(spark, cfg, toWrite, data.partitions, stats) }
+    val writeSummary = Timings.time("write: read + pseudonymize + write (fused)") { write(spark, cfg, toWrite, data.partitions, stats) }
     Log.kv("write totals", (stats.settled() - statsBefore).describe)
     val skippedInfo = tracker.map(acc => Timings.time("detect skipped files") { skippedFiles(spark, cfg, acc) })
     val skipped = skippedInfo.map(_.bad).getOrElse(scan.map(_.bad).getOrElse(Nil))
@@ -193,8 +193,12 @@ object PseudonymizeTableJob {
     }
 
     Log.section("5. VERIFY")
-    val result = if (cfg.verify) Timings.time("verify") { verify(spark, cfg, verifySource, data.partitions) } else {
-      Log.info("VERIFY=false: skipping source/target verification")
+    val verifiable = cfg.verify && writeSummary.skipped == 0
+    if (cfg.verify && !verifiable) {
+      Log.warn("some partitions were skipped (OUTPUT_SKIP_EXISTING): they hold data from earlier runs, so verification is skipped")
+    }
+    val result = if (verifiable) Timings.time("verify") { verify(spark, cfg, verifySource, data.partitions) } else {
+      if (!cfg.verify) Log.info("VERIFY=false: skipping source/target verification")
       JobResult(-1, -1, exact = false, Nil)
     }
     result.copy(badFiles = skipped)
@@ -255,8 +259,11 @@ object PseudonymizeTableJob {
    * Ghi bảng đích. `overwrite-partitions`: bảng chưa có thì tạo (có partition); đã có thì `INSERT OVERWRITE` ở chế độ
    * dynamic partition overwrite — chỉ các partition có trong dữ liệu lần này bị thay, partition khác giữ nguyên.
    */
+  /** `skipped` = partitions left untouched because they were already in the target (OUTPUT_SKIP_EXISTING). */
+  private final case class WriteSummary(written: Int, skipped: Int)
+
   private def write(spark: SparkSession, cfg: JobConfig, df: DataFrame, known: Option[Seq[InputPartition]],
-                    stats: SparkStats): Unit = {
+                    stats: SparkStats): WriteSummary = {
     val table = quoted(cfg.outputDb, cfg.outputTable)
     val exists = spark.catalog.tableExists(cfg.outputDb, cfg.outputTable)
     val partitioned = cfg.outputPartitionBy.nonEmpty &&
@@ -264,18 +271,28 @@ object PseudonymizeTableJob {
     if (!partitioned) {
       val writer = df.write.format(cfg.outputFormat.sparkFormat).mode(if (cfg.outputMode == "append") "append" else "overwrite")
       (if (cfg.outputPartitionBy.isEmpty) writer else writer.partitionBy(cfg.outputPartitionBy: _*)).saveAsTable(table)
+      WriteSummary(written = 1, skipped = 0)
     } else {
       // Đăng ký bảng trong metastore TRƯỚC khi ghi: việc ghi có thể kéo dài hàng giờ và metastore chỉ còn phải xử lý ở
       // lúc đầu (NameNode rảnh), không phải sau khi đã ghi xong như `saveAsTable` trên bảng chưa có.
       if (!exists) createEmptyTable(spark, cfg, df, table) else requireSamePartitioning(spark, cfg)
       val tuples = partitionTuples(cfg, known)
       tuples match {
-        case Some(keys) => keys.zipWithIndex.foreach { case (values, i) =>
-          writePartition(spark, cfg, df, table, values, i + 1, keys.size, stats)
-        }
+        case Some(keys) =>
+          val results = keys.zipWithIndex.map { case (values, i) =>
+            writePartition(spark, cfg, df, table, values, i + 1, keys.size, stats)
+          }
+          val written = results.count(_.written)
+          Log.kv("partitions written / skipped", s"$written / ${results.size - written}")
+          val retried = results.filter(r => r.written && r.attempts > 1)
+          if (retried.nonEmpty) {
+            Log.warn(s"partitions that needed retries: ${retried.map(r => s"${r.label} (${r.attempts} attempts)").mkString(", ")}")
+          }
+          WriteSummary(written, results.size - written)
         case None =>
           Log.info("partition list not known in advance: writing in a single pass")
           insertInto(spark, cfg, df, table)
+          WriteSummary(written = 1, skipped = 0)
       }
     }
   }
@@ -291,25 +308,84 @@ object PseudonymizeTableJob {
     }
   }
 
-  /** Writes (and commits) one partition at a time: progress log, failures name the partition, small Delta commits. */
+  private final case class PartitionResult(label: String, written: Boolean, attempts: Int)
+
+  /**
+   * Writes (and commits) one partition at a time: progress log, failures name the partition, small Delta commits.
+   * With OUTPUT_SKIP_EXISTING a partition already present in the target is left untouched (resume after a failure);
+   * transient failures are retried (OUTPUT_WRITE_RETRIES) — safe because a partition overwrite is atomic and idempotent.
+   */
   private def writePartition(spark: SparkSession, cfg: JobConfig, df: DataFrame, table: String, values: Seq[String],
-                             index: Int, total: Int, stats: SparkStats): Unit = {
+                             index: Int, total: Int, stats: SparkStats): PartitionResult = {
     val label = cfg.outputPartitionBy.zip(values).map { case (c, v) => s"$c=$v" }.mkString("/")
     val condition = cfg.outputPartitionBy.zip(values)
       .map { case (c, v) => col(quote(c)).cast(StringType) === v }.reduce(_ && _)
-    Log.info(s"[$index/$total] WRITE START $label")
+    if (cfg.skipExisting && !spark.table(table).where(condition).isEmpty) {
+      Log.info(s"[$index/$total] SKIP $label (already in target, OUTPUT_SKIP_EXISTING=true)")
+      return PartitionResult(label, written = false, attempts = 0)
+    }
     spark.sparkContext.setJobDescription(s"write $label ($index/$total)")
     val before = stats.settled()
     val start = System.nanoTime()
-    try insertInto(spark, cfg, df.where(condition), table)
-    catch {
+    val attempts = cfg.writeRetries + 1
+    var used = 1
+    try {
+      retrying(attempts, cfg.retryWaitSeconds * 1000L, isTransient,
+        (n, e) => Log.warn(s"[$index/$total] WRITE ATTEMPT $n/$attempts FAILED $label: ${rootMessage(e)}; " +
+          s"retrying in ${cfg.retryWaitSeconds} s")) { n =>
+        used = n
+        Log.info(if (n == 1) s"[$index/$total] WRITE START $label" else s"[$index/$total] WRITE START $label (attempt $n/$attempts)")
+        insertInto(spark, cfg, df.where(condition), table)
+      }
+    } catch {
       case NonFatal(e) =>
         val failedAfter = (System.nanoTime() - start) / 1e9
         Log.fail(f"[$index/$total] WRITE FAILED $label after $failedAfter%,.1f s: ${rootMessage(e)}")
         throw e
     } finally spark.sparkContext.setJobDescription(null)
     val seconds = (System.nanoTime() - start) / 1e9
-    Log.ok(f"[$index/$total] WRITE DONE $label in $seconds%,.1f s | ${(stats.settled() - before).describe}")
+    val attemptNote = if (used > 1) s" (attempt $used/$attempts)" else ""
+    Log.ok(f"[$index/$total] WRITE DONE $label$attemptNote in $seconds%,.1f s | ${(stats.settled() - before).describe}")
+    PartitionResult(label, written = true, attempts = used)
+  }
+
+  /**
+   * Runs `body(attempt)` up to `attempts` times, retrying (after `waitMillis`) only failures `transient` accepts.
+   * `onRetry(attempt, error)` is called before each wait.
+   */
+  private[job] def retrying[T](attempts: Int, waitMillis: Long, transient: Throwable => Boolean,
+                               onRetry: (Int, Throwable) => Unit, sleep: Long => Unit = Thread.sleep(_))(body: Int => T): T = {
+    var attempt = 1
+    var result: Option[T] = None
+    while (result.isEmpty) {
+      try result = Some(body(attempt))
+      catch {
+        case NonFatal(e) if attempt < attempts && transient(e) =>
+          onRetry(attempt, e)
+          sleep(waitMillis)
+          attempt += 1
+      }
+    }
+    result.get
+  }
+
+  /**
+   * Is this failure worth retrying (flaky NameNode/metastore/executor, timeouts) rather than a permanent error (bad
+   * configuration, keys, schema, unreadable source file)? Permanent markers win over transient ones.
+   */
+  private[job] def isTransient(e: Throwable): Boolean = {
+    val chain = causes(e)
+    def name(c: Throwable) = c.getClass.getName
+    def text(c: Throwable) = Option(c.getMessage).getOrElse("").toLowerCase
+    val permanent = isReadFailure(e) || chain.exists(c =>
+      Seq("InvalidPolicyException", "ConfigurationException", "InvalidKeyException", "IllegalArgumentException",
+        "IllegalStateException").exists(name(c).contains))
+    val markers = Seq("timed out", "timeout", "connection reset", "connection refused", "executorlostfailure", "lost executor",
+      "unable to connect", "broken pipe")
+    val transientSignal = chain.exists(c =>
+      c.isInstanceOf[java.io.IOException] || name(c).contains("MetaException") || name(c).contains("HiveException") ||
+        markers.exists(text(c).contains))
+    !permanent && transientSignal
   }
 
   private def insertInto(spark: SparkSession, cfg: JobConfig, df: DataFrame, table: String): Unit =

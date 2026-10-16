@@ -84,6 +84,9 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 | `OUTPUT_FORMAT`                     | `delta`                                                                | `delta` / `hive` (ghi Parquet) / `iceberg` (cần catalog Iceberg đã cấu hình)                                                                                                                                                                                            |
 | `OUTPUT_MODE`                       | `overwrite`; **`overwrite-partitions`** khi có partition đầu ra        | `overwrite` (thay **cả** bảng đích) / `append` (ghi nối) / `overwrite-partitions` (chỉ thay các partition có trong dữ liệu lần này, xem 3.8)                                                                                                                            |
 | `OUTPUT_PARTITION_BY`               | `date,hour` khi đọc theo khoảng; không partition nếu không             | Cột partition của bảng đích, phân cách bằng dấu phẩy; `none` để tắt. Phải có trong dữ liệu, không nằm trong `PSEUDO_COLUMNS`                                                                                                                                            |
+| `OUTPUT_SKIP_EXISTING` | `false` | Chỉ khi ghi từng partition (`overwrite-partitions`, hoặc `append` + partition). `true`: partition đã có trong bảng đích thì **bỏ qua**, là cách "chạy tiếp" sau khi lỗi giữa chừng (xem 3.9) |
+| `OUTPUT_WRITE_RETRIES` | `2` với `overwrite-partitions`, `0` với chế độ khác | Số lần thử lại thêm cho **từng partition** khi gặp lỗi tạm, 0..5. Chỉ cho phép với `overwrite-partitions` (thử lại `append` có thể nhân đôi dữ liệu) |
+| `OUTPUT_RETRY_WAIT_SECONDS` | `30` | Giây chờ giữa các lần thử lại, 0..600 |
 | `VERIFY`                            | `true`                                                                 | Đọc lại bảng đích và đối chiếu với nguồn (mục 5)                                                                                                                                                                                                                        |
 | `MAPPING_TABLE_PATH`                | —                                                                      | Chỉ `PSEUDO_MODE=MAPPING`: đường dẫn bảng ánh xạ Delta (hoặc dùng `spark.pseudonym.mapping.path`)                                                                                                                                                                       |
 | `WAREHOUSE_PATH`                    | —                                                                      | URI đầy đủ của warehouse, vd `hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse`; đặt `spark.sql.warehouse.dir` (không phụ thuộc `fs.defaultFS`) — cùng quy ước với `crawler-streaming-app`                                                           |
@@ -262,6 +265,34 @@ STEP TIMINGS (seconds)
 ```
 Spark chạy đọc + khử + ghi trong **cùng các task** nên không tách được thành ba mốc thời gian riêng; để biết nút thắt, mỗi
 partition (và cả bước ghi) in thêm số liệu task: số dòng/MB đọc và ghi, `executor run`, `cpu`, `gc` (giây).
+
+### 3.9. Phục hồi khi lỗi giữa chừng
+
+Job ghi nhiều partition (ví dụ 72 batch/ngày, có thể hàng giờ). Mỗi partition được ghi và commit **nguyên tử** và có thể
+ghi đè lại mà không nhân đôi dữ liệu, nên có ba lớp phục hồi:
+
+| Lớp | Làm gì | Cấu hình |
+| --- | --- | --- |
+| 1. Task | Spark tự thử lại task lỗi | `spark.task.maxFailures` (mặc định 4) |
+| 2. Partition | App thử lại **từng partition** khi lỗi tạm: timeout, `IOException`, `MetaException`/`HiveException`, mất executor. Lỗi cố định (cấu hình, khoá, schema, file nguồn hỏng) **không** thử lại | `OUTPUT_WRITE_RETRIES`, `OUTPUT_RETRY_WAIT_SECONDS` |
+| 3. Ứng dụng | Operator chạy lại **cả app** khi driver chết/pod bị đuổi; app mới **bỏ qua partition đã ghi** nên chỉ làm phần còn thiếu | `restartPolicy: OnFailure` + `OUTPUT_SKIP_EXISTING=true` |
+
+Log khi thử lại và khi chạy tiếp:
+```
+[WARN ] [37/72] WRITE ATTEMPT 1/3 FAILED dt=20261014/batch=1240: Read timed out; retrying in 30 s
+[37/72] WRITE START dt=20261014/batch=1240 (attempt 2/3)
+[ OK ] [37/72] WRITE DONE dt=20261014/batch=1240 (attempt 2/3) in 151.2 s | …
+[1/72] SKIP dt=20261014/batch=0000 (already in target, OUTPUT_SKIP_EXISTING=true)
+partitions written / skipped : 36 / 36
+```
+
+Lưu ý quan trọng:
+- **Batch đến muộn:** `OUTPUT_SKIP_EXISTING=true` giữ nguyên partition đã có, nên dữ liệu đến sau khi partition được ghi **không** được làm mới. Muốn làm mới, chạy riêng khoảng đó với `OUTPUT_SKIP_EXISTING=false`.
+- **`VERIFY`** tự bị bỏ qua khi có partition bị bỏ qua (bảng đích còn dữ liệu của lần chạy trước).
+- **Không dùng `restartPolicy: OnFailure` với `OUTPUT_MODE=append` khi chưa bật `OUTPUT_SKIP_EXISTING`**: các partition đã ghi sẽ bị ghi thêm lần nữa.
+- Operator chạy lại cả khi app thoát với exit `2` (sai cấu hình) cho đến hết `onFailureRetries`; hãy kiểm tra cấu hình trước khi apply.
+- **Chạy tay lại phần còn thiếu** (không cần cờ nào): đặt `INPUT_FROM` bằng batch bị lỗi đầu tiên; `overwrite-partitions` an toàn kể cả khi khoảng chồng lấn.
+- Thử lại chỉ áp dụng khi biết trước danh sách partition (đọc theo `INPUT_FROM`/`INPUT_TO`); ghi một lượt (`overwrite` cả bảng) không có thử lại hay bỏ qua.
 
 ## 4. Env của `pseudonym-udf` cần truyền vào
 

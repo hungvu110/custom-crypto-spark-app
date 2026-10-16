@@ -383,4 +383,30 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
 
     batchesOf("batch_day_tbl") shouldBe Set("20261014/0000", "20261014/0020", "20261014/0100", "20261014/0120", "20261014/1740")
   }
+
+  // ---- resume (OUTPUT_SKIP_EXISTING) ----
+
+  it should "OUTPUT_SKIP_EXISTING: a rerun leaves already-written partitions untouched and writes only the missing ones" in {
+    val base = partitionedTree("tree_resume", Seq("20261012" -> "05", "20261012" -> "18"))
+    val env = rangeEnv(base, "resume_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012", "OUTPUT_SKIP_EXISTING" -> "true")
+    def payloads(hour: String) = spark.table("landing.resume_tbl").where(s"hour = '$hour'").select("_c1").distinct()
+      .collect().map(_.getString(0)).toSet
+
+    runFile(env: _*) shouldBe 0
+    partitionsOf("resume_tbl") shouldBe Set("20261012/05", "20261012/18")
+
+    // simulate a restart after a partial run: the source changed for hour 05, and hour 19 is new
+    Files.write(base.resolve("date=20261012/hour=05/part-0.txt"), "9new|CHANGED|1\n".getBytes(UTF_8))
+    val newDir = Files.createDirectories(base.resolve("date=20261012").resolve("hour=19"))
+    Files.write(newDir.resolve("part-0.txt"), "919|v1|1\n".getBytes(UTF_8))
+
+    runFile(env: _*) shouldBe 0
+
+    partitionsOf("resume_tbl") shouldBe Set("20261012/05", "20261012/18", "20261012/19")
+    payloads("05") shouldBe Set("v1")        // skipped: the earlier data is kept, not replaced by CHANGED
+    payloads("19") shouldBe Set("v1")        // written by the rerun
+    // without the flag the changed partition is rewritten
+    runFile(rangeEnv(base, "resume_tbl", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012"): _*) shouldBe 0
+    payloads("05") shouldBe Set("CHANGED")
+  }
 }

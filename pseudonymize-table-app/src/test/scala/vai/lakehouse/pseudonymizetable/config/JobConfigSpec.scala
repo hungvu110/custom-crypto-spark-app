@@ -163,4 +163,29 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     range.accepts("20261014", Some(120)) shouldBe false
     JobConfig.fromEnv(file + ("INPUT_FROM" -> "202610140075")).left.toOption.get.mkString should include("minute must be 00..59")
   }
+
+  it should "default to 2 write retries for overwrite-partitions and none otherwise" in {
+    val ranged = file ++ Map("INPUT_FROM" -> "20261012")
+
+    JobConfig.fromEnv(ranged).toOption.get.writeRetries shouldBe 2
+    JobConfig.fromEnv(ranged).toOption.get.retryWaitSeconds shouldBe 30
+    JobConfig.fromEnv(file).toOption.get.writeRetries shouldBe 0
+    val tuned = JobConfig.fromEnv(ranged ++ Map("OUTPUT_WRITE_RETRIES" -> "4", "OUTPUT_RETRY_WAIT_SECONDS" -> "5",
+      "OUTPUT_SKIP_EXISTING" -> "true")).toOption.get
+    tuned.writeRetries shouldBe 4
+    tuned.retryWaitSeconds shouldBe 5
+    tuned.skipExisting shouldBe true
+  }
+
+  it should "reject unsafe or invalid resume/retry settings" in {
+    val ranged = file ++ Map("INPUT_FROM" -> "20261012")
+    def errors(extra: (String, String)*) = JobConfig.fromEnv(ranged ++ extra).left.toOption.get.mkString(" | ")
+
+    errors("OUTPUT_MODE" -> "append", "OUTPUT_WRITE_RETRIES" -> "2") should include("only safe with OUTPUT_MODE=overwrite-partitions")
+    errors("OUTPUT_WRITE_RETRIES" -> "9") should include("integer in 0..5")
+    errors("OUTPUT_RETRY_WAIT_SECONDS" -> "-1") should include("integer in 0..600")
+    JobConfig.fromEnv(file + ("OUTPUT_SKIP_EXISTING" -> "true")).left.toOption.get.mkString should
+      include("OUTPUT_SKIP_EXISTING: requires")
+    JobConfig.fromEnv(ranged ++ Map("OUTPUT_MODE" -> "append", "OUTPUT_SKIP_EXISTING" -> "true")).isRight shouldBe true
+  }
 }

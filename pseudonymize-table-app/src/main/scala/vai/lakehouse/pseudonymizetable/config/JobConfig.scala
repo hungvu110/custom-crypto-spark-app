@@ -121,7 +121,10 @@ final case class JobConfig(
     badFiles: BadFilePolicy = BadFilePolicy.Fail,
     checkParallelism: Int = 4,
     checkFull: Boolean = false,
-    outputPartitionBy: Seq[String] = Nil) {
+    outputPartitionBy: Seq[String] = Nil,
+    skipExisting: Boolean = false,
+    writeRetries: Int = 0,
+    retryWaitSeconds: Int = 30) {
 
   def source: String = input.describe
 
@@ -141,6 +144,8 @@ final case class JobConfig(
     "OUTPUT_TABLE"        -> outputTable,
     "OUTPUT_FORMAT"       -> outputFormat.name,
     "OUTPUT_MODE"         -> outputMode,
+    "OUTPUT_SKIP_EXISTING" -> skipExisting.toString,
+    "OUTPUT_WRITE_RETRIES" -> s"$writeRetries (wait $retryWaitSeconds s between attempts)",
     "OUTPUT_PARTITION_BY" -> (if (outputPartitionBy.isEmpty) "(no partitioning)" else outputPartitionBy.mkString(", ")),
     "MAPPING_TABLE_PATH"  -> mappingTablePath.getOrElse("(spark.pseudonym.mapping.path or not used)"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
@@ -248,6 +253,26 @@ object JobConfig {
       errors += "OUTPUT_MODE=overwrite-partitions: requires OUTPUT_PARTITION_BY (or a date/hour range via INPUT_FROM/INPUT_TO)"
     }
 
+    // Resume / retry controls for partition-by-partition writes.
+    val skipExisting = bool("OUTPUT_SKIP_EXISTING", default = false)
+    if (skipExisting && !(partitionBy.nonEmpty && (outputMode == "overwrite-partitions" || outputMode == "append"))) {
+      errors += "OUTPUT_SKIP_EXISTING: requires OUTPUT_MODE=overwrite-partitions or append together with OUTPUT_PARTITION_BY"
+    }
+    // Retrying a partition is only safe when its write is an idempotent overwrite (append could duplicate rows).
+    val writeRetries = raw("OUTPUT_WRITE_RETRIES").map { v =>
+      Try(v.toInt).toOption.filter(n => n >= 0 && n <= 5).getOrElse {
+        errors += s"OUTPUT_WRITE_RETRIES='$v': must be an integer in 0..5"; 0
+      }
+    }.getOrElse(if (outputMode == "overwrite-partitions") 2 else 0)
+    if (writeRetries > 0 && outputMode != "overwrite-partitions") {
+      errors += "OUTPUT_WRITE_RETRIES: retries are only safe with OUTPUT_MODE=overwrite-partitions (append could duplicate data)"
+    }
+    val retryWaitSeconds = raw("OUTPUT_RETRY_WAIT_SECONDS").map { v =>
+      Try(v.toInt).toOption.filter(n => n >= 0 && n <= 600).getOrElse {
+        errors += s"OUTPUT_RETRY_WAIT_SECONDS='$v': must be an integer in 0..600"; 30
+      }
+    }.getOrElse(30)
+
     // MAPPING_TABLE_PATH hoặc spark.pseudonym.mapping.path đều được: job kiểm tra lại sau khi có SparkConf.
     val mappingPath = raw("MAPPING_TABLE_PATH")
 
@@ -274,7 +299,7 @@ object JobConfig {
     if (errors.nonEmpty) Left(errors.toList)
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
       outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true),
-      badFiles, parallelism, checkFull, partitionBy))
+      badFiles, parallelism, checkFull, partitionBy, skipExisting, writeRetries, retryWaitSeconds))
   }
 
   private val InputOptionPrefix = "INPUT_OPTION_"

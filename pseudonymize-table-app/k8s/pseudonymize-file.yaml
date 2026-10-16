@@ -8,7 +8,8 @@
 #
 # Chạy thư mục/giờ khác: sửa INPUT_PATH (và OUTPUT_TABLE nếu muốn bảng riêng) rồi xoá SparkApplication cũ trước
 # (kubectl delete sparkapplication pseudonymize-file -n ...) — Operator không chạy lại một app đã kết thúc.
-# Muốn gộp nhiều giờ vào cùng bảng đích: giữ OUTPUT_TABLE, đặt OUTPUT_MODE=append.
+# Muốn gộp nhiều ngày/giờ vào cùng bảng đích: giữ OUTPUT_TABLE; OUTPUT_MODE mặc định overwrite-partitions chỉ thay đúng các
+# partition vừa xử lý (KHÔNG dùng append cho việc chạy lại: sẽ nhân đôi dữ liệu).
 # Exit code driver: 0 xong + đối chiếu đạt / 1 lỗi khi chạy / 2 sai cấu hình / 3 đã ghi nhưng đối chiếu KHÔNG đạt.
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
@@ -26,9 +27,22 @@ spec:
   mainApplicationFile: local:///opt/app/pseudonymize-table-app.jar
   mainClass: vai.lakehouse.pseudonymizetable.app.PseudonymizeTableApp
 
-  # Job ghi bảng đích: lỗi thì xem log rồi chạy lại có chủ đích, không tự restart.
+  # ---- PHỤC HỒI KHI LỖI GIỮA CHỪNG (job ghi nhiều partition, có thể chạy hàng giờ) ----
+  # Ba lớp, từ trong ra ngoài:
+  #   1. Spark tự thử lại từng task (spark.task.maxFailures, mặc định 4).
+  #   2. App thử lại TỪNG PARTITION khi lỗi tạm (OUTPUT_WRITE_RETRIES, env bên dưới): NameNode/metastore timeout, mất executor.
+  #   3. Operator chạy lại CẢ APP khi driver chết/pod bị đuổi (restartPolicy OnFailure dưới đây). Driver mới đọc lại nguồn
+  #      nhưng OUTPUT_SKIP_EXISTING=true khiến nó bỏ qua các partition đã ghi xong, nên chỉ làm phần còn thiếu.
+  # Chỉ an toàn vì mỗi partition được ghi đè NGUYÊN TỬ (overwrite-partitions): chạy lại không nhân đôi dữ liệu.
+  # KHÔNG bật OnFailure khi OUTPUT_MODE=append mà không có OUTPUT_SKIP_EXISTING (sẽ nhân đôi các partition đã ghi).
+  # Lưu ý: app thoát khác 0 cũng bị chạy lại, kể cả exit 2 (sai cấu hình) — sẽ tự dừng sau onFailureRetries lần; muốn lỗi cấu
+  # hình dừng ngay thì kiểm tra manifest trước khi apply.
   restartPolicy:
-    type: Never
+    type: OnFailure
+    onFailureRetries: 3              # số lần chạy lại sau khi app lỗi
+    onFailureRetryInterval: 60       # giây chờ giữa các lần
+    onSubmissionFailureRetries: 3    # số lần thử lại khi submit (spark-submit) lỗi
+    onSubmissionFailureRetryInterval: 60
   timeToLiveSeconds: 86400
 
   # ConfigMap chứa core-site.xml + hdfs-site.xml (+ hive-site.xml nếu dùng Hive metastore) của cụm datalakehla. Operator mount
@@ -110,7 +124,19 @@ spec:
         value: landing
       - name: OUTPUT_TABLE
         value: f016_mpre_tot_charge_m_pseudonymized
-      # delta (mặc định) | hive (Parquet) | iceberg ; overwrite (mặc định) | append
+      # ---- Chạy lại / phục hồi (chỉ áp dụng khi ghi từng partition: OUTPUT_MODE=overwrite-partitions hoặc append + partition) ----
+      # true: partition đã có trong bảng đích thì BỎ QUA (không đọc, không ghi lại). Đây là cách "chạy tiếp" sau khi lỗi giữa
+      # chừng, kể cả khi Operator tự chạy lại cả app. Muốn làm mới một batch đến muộn: chạy riêng khoảng đó với false.
+      # Khi có partition bị bỏ qua thì VERIFY tự tắt (bảng đích còn dữ liệu của lần chạy trước).
+      - name: OUTPUT_SKIP_EXISTING
+        value: "true"
+      # Số lần thử lại thêm cho TỪNG partition khi gặp lỗi tạm (timeout, IOException, mất executor), 0..5. Mặc định 2 với
+      # overwrite-partitions. Lỗi cố định (cấu hình, khoá, schema, file nguồn hỏng) KHÔNG được thử lại.
+      - name: OUTPUT_WRITE_RETRIES
+        value: "2"
+      - name: OUTPUT_RETRY_WAIT_SECONDS    # chờ giữa các lần thử, 0..600 giây
+        value: "30"
+      # delta (mặc định) | hive (Parquet) | iceberg ; overwrite (thay CẢ bảng) | append | overwrite-partitions (mặc định khi có partition)
       # - name: OUTPUT_FORMAT
       #   value: delta
       # - name: OUTPUT_MODE
