@@ -175,6 +175,13 @@ object PseudonymizeTableJob {
 
     // skip: theo dõi file đã cho ra dòng (xem FileTracker) để cuối job biết file nào bị bỏ qua.
     val toWrite = tracker.fold(pseudonymized)(acc => FileTracker.attach(pseudonymized, cfg.pseudoColumns.head.name, acc))
+    // Each partition job rebuilds the plan from `source.where(partition)`. The partition filter MUST sit below the
+    // transformations: the tracker expression is nondeterministic, so a filter placed above it is not pushed down, partition
+    // pruning is lost and every partition job would scan ALL selected partitions.
+    val transform: DataFrame => DataFrame = df => {
+      val p = pseudonymizer.pseudonymize(df, policy)
+      tracker.fold(p)(acc => FileTracker.attach(p, cfg.pseudoColumns.head.name, acc))
+    }
 
     Log.section("4. WRITE TARGET")
     Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
@@ -183,7 +190,7 @@ object PseudonymizeTableJob {
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
     val statsBefore = stats.settled()
     // Spark runs read + pseudonymize + write fused in the same tasks, so they cannot be timed separately here.
-    val writeSummary = Timings.time("write: read + pseudonymize + write (fused)") { write(spark, cfg, toWrite, data.partitions, stats) }
+    val writeSummary = Timings.time("write: read + pseudonymize + write (fused)") { write(spark, cfg, toWrite, source, transform, data.partitions, stats) }
     Log.kv("write totals", (stats.settled() - statsBefore).describe)
     val skippedInfo = tracker.map(acc => Timings.time("detect skipped files") { skippedFiles(spark, cfg, acc) })
     val skipped = skippedInfo.map(_.bad).getOrElse(scan.map(_.bad).getOrElse(Nil))
@@ -262,8 +269,8 @@ object PseudonymizeTableJob {
   /** `skipped` = partitions left untouched because they were already in the target (OUTPUT_SKIP_EXISTING). */
   private final case class WriteSummary(written: Int, skipped: Int)
 
-  private def write(spark: SparkSession, cfg: JobConfig, df: DataFrame, known: Option[Seq[InputPartition]],
-                    stats: SparkStats): WriteSummary = {
+  private def write(spark: SparkSession, cfg: JobConfig, df: DataFrame, source: DataFrame, transform: DataFrame => DataFrame,
+                    known: Option[Seq[InputPartition]], stats: SparkStats): WriteSummary = {
     val table = quoted(cfg.outputDb, cfg.outputTable)
     val exists = spark.catalog.tableExists(cfg.outputDb, cfg.outputTable)
     val partitioned = cfg.outputPartitionBy.nonEmpty &&
@@ -280,7 +287,7 @@ object PseudonymizeTableJob {
       tuples match {
         case Some(keys) =>
           val results = keys.zipWithIndex.map { case (values, i) =>
-            writePartition(spark, cfg, df, table, values, i + 1, keys.size, stats)
+            writePartition(spark, cfg, source, transform, table, values, i + 1, keys.size, stats)
           }
           val written = results.count(_.written)
           Log.kv("partitions written / skipped", s"$written / ${results.size - written}")
@@ -308,6 +315,10 @@ object PseudonymizeTableJob {
     }
   }
 
+  /** `col1 = v1 AND col2 = v2` on the partition columns (as strings, matching the on-disk directory names). */
+  private[job] def partitionCondition(columns: Seq[String], values: Seq[String]): Column =
+    columns.zip(values).map { case (c, v) => col(quote(c)).cast(StringType) === v }.reduce(_ && _)
+
   private final case class PartitionResult(label: String, written: Boolean, attempts: Int)
 
   /**
@@ -315,11 +326,10 @@ object PseudonymizeTableJob {
    * With OUTPUT_SKIP_EXISTING a partition already present in the target is left untouched (resume after a failure);
    * transient failures are retried (OUTPUT_WRITE_RETRIES) — safe because a partition overwrite is atomic and idempotent.
    */
-  private def writePartition(spark: SparkSession, cfg: JobConfig, df: DataFrame, table: String, values: Seq[String],
-                             index: Int, total: Int, stats: SparkStats): PartitionResult = {
+  private def writePartition(spark: SparkSession, cfg: JobConfig, source: DataFrame, transform: DataFrame => DataFrame,
+                             table: String, values: Seq[String], index: Int, total: Int, stats: SparkStats): PartitionResult = {
     val label = cfg.outputPartitionBy.zip(values).map { case (c, v) => s"$c=$v" }.mkString("/")
-    val condition = cfg.outputPartitionBy.zip(values)
-      .map { case (c, v) => col(quote(c)).cast(StringType) === v }.reduce(_ && _)
+    val condition = partitionCondition(cfg.outputPartitionBy, values)
     if (cfg.skipExisting && !spark.table(table).where(condition).isEmpty) {
       Log.info(s"[$index/$total] SKIP $label (already in target, OUTPUT_SKIP_EXISTING=true)")
       return PartitionResult(label, written = false, attempts = 0)
@@ -335,7 +345,7 @@ object PseudonymizeTableJob {
           s"retrying in ${cfg.retryWaitSeconds} s")) { n =>
         used = n
         Log.info(if (n == 1) s"[$index/$total] WRITE START $label" else s"[$index/$total] WRITE START $label (attempt $n/$attempts)")
-        insertInto(spark, cfg, df.where(condition), table)
+        insertInto(spark, cfg, transform(source.where(condition)), table)
       }
     } catch {
       case NonFatal(e) =>
