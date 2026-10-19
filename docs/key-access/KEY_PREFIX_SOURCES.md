@@ -7,11 +7,11 @@
 
 Jar của `spark-app` **không chứa lib crypto nào**. Mã hoá là plugin nạp lúc deploy, gồm 3 mảnh khớp nhau:
 
-| Mảnh                | Ở đâu                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------- |
-| Jar lib crypto      | `Dockerfile` COPY vào `/opt/app/` theo target (`column-crypto` hoặc `cdr-crypto`, xem BUILD_AND_TEST.md)    |
-| Nạp + đăng ký hàm   | `sparkConf` trong manifest: `spark.jars` (đường dẫn jar) + `spark.sql.extensions` (class extension) |
-| App gọi hàm nào     | env `CRYPTO_ENCRYPT_FUNCTION`/`CRYPTO_DECRYPT_FUNCTION`/`CRYPTO_ENCRYPTED_COLUMNS`/`CRYPTO_KEY_FIELD` |
+| Mảnh              | Ở đâu                                                                                                    |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| Jar lib crypto    | `Dockerfile` COPY vào `/opt/app/` theo target (`column-crypto` hoặc `cdr-crypto`, xem BUILD_AND_TEST.md) |
+| Nạp + đăng ký hàm | `sparkConf` trong manifest: `spark.jars` (đường dẫn jar) + `spark.sql.extensions` (class extension)      |
+| App gọi hàm nào   | env `CRYPTO_ENCRYPT_FUNCTION`/`CRYPTO_DECRYPT_FUNCTION`/`CRYPTO_ENCRYPTED_COLUMNS`/`CRYPTO_KEY_FIELD`    |
 
 App (`CryptoStep`) chỉ gọi `fn('<tên bảng>', <cột>, <cột keyField>)` theo TÊN hàm SQL — hàm nào có mặt phụ thuộc
 extension nào được nạp; app không biết và không biên dịch với lib nào. (Bản thân các lib vẫn hỗ trợ thêm DataFrame API —
@@ -19,11 +19,11 @@ extension nào được nạp; app không biết và không biên dịch với l
 Muốn đổi loại crypto: đổi target image + manifest tương ứng. Không nạp extension
 mà vẫn đặt tên hàm thì job fail sớm với `AnalysisException: Undefined function`.
 
-| Biến thể        | Image target    | Manifest                             | Jar nạp (`spark.jars`)                                        | Hàm SQL app gọi                       |
-| --------------- | --------------- | ------------------------------------ | ------------------------------------------------------------- | ------------------------------------ |
-| Không mã hoá    | `no-crypto`     | (bỏ các biến `CRYPTO_*_FUNCTION`)    | không                                                         | —                                    |
-| column-crypto   | `column-crypto` | `k8s/spark-application-column.yaml`  | `key-prefix-lib` + `column-crypto-lib`                        | SQL `column_encrypt` / `column_decrypt` |
-| cdr-crypto      | `cdr-crypto`    | `k8s/spark-application-cdr.yaml`     | `key-prefix-lib` + `cdr-crypto-udf` + `DataLakeSecurity_jv8`  | SQL `cdr_encrypt` / `cdr_decrypt` |
+| Biến thể      | Image target    | Manifest                            | Jar nạp (`spark.jars`)                                       | Hàm SQL app gọi                         |
+| ------------- | --------------- | ----------------------------------- | ------------------------------------------------------------ | --------------------------------------- |
+| Không mã hoá  | `no-crypto`     | (bỏ các biến `CRYPTO_*_FUNCTION`)   | không                                                        | —                                       |
+| column-crypto | `column-crypto` | `k8s/spark-application-column.yaml` | `key-prefix-lib` + `column-crypto-lib`                       | SQL `column_encrypt` / `column_decrypt` |
+| cdr-crypto    | `cdr-crypto`    | `k8s/spark-application-cdr.yaml`    | `key-prefix-lib` + `cdr-crypto-udf` + `DataLakeSecurity_jv8` | SQL `cdr_encrypt` / `cdr_decrypt`       |
 
 Cả hai hàm cùng hợp đồng 3 tham số `fn(tableName, value, keyValue)`: `tableName` là hằng chuỗi (nơi extension tra keyPrefix),
 `value` là cột cần xử lý, `keyValue` là giá trị cột `CRYPTO_KEY_FIELD` của chính dòng đó.
@@ -95,12 +95,12 @@ giá trị `keyPrefix`.
 
 ## Chọn nguồn keyPrefix (`CRYPTO_PREFIX_SOURCE`)
 
-| Giá trị      | Hành vi                                                                                  |
-| ------------ | ---------------------------------------------------------------------------------------- |
+| Giá trị      | Hành vi                                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------------------------- |
 | `dak`        | **(đang triển khai)** lấy key qua DAK: token Keycloak `client_credentials` (`DAK_*`), tên key `'database.table'` |
-| `file`       | (mặc định) đọc `<CRYPTO_KEY_PREFIX_DIR>/<tên bảng>` — K8s Secret mount                   |
-| `vault`      | gọi Vault KV v2 (`VAULT_*`); giữ lại làm **fallback thủ công** khi DAK sự cố             |
-| `file,vault` | thử `file` trước, không có/lỗi thì fallback sang `vault`; lỗi gộp lý do của cả hai nguồn |
+| `file`       | (mặc định) đọc `<CRYPTO_KEY_PREFIX_DIR>/<tên bảng>` — K8s Secret mount                                           |
+| `vault`      | gọi Vault KV v2 (`VAULT_*`); giữ lại làm **fallback thủ công** khi DAK sự cố                                     |
+| `file,vault` | thử `file` trước, không có/lỗi thì fallback sang `vault`; lỗi gộp lý do của cả hai nguồn                         |
 
 `dak` **không được ghép** với nguồn khác (`dak,vault` bị từ chối): fallback tự động chạy cả khi DAK trả 403, tức là
 bỏ qua phân quyền. Khi DAK sự cố, vận hành đổi `CRYPTO_PREFIX_SOURCE=vault`, thêm lại các env `VAULT_*` rồi chạy lại job
@@ -118,14 +118,14 @@ Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncr
 (Keycloak, realm của tenant), cache token tới gần hết hạn, rồi gọi `GET <DAK_ADDR>/api/v1/keys/by-request/<DAK_REQUEST_CODE>/<database>/<table>`.
 DAK trả 401 thì xin token mới và thử lại đúng 1 lần; 403 và mọi lỗi khác báo ngay, kèm `requestId` để tra audit của DAK.
 
-| Biến                      | Bắt buộc | Ghi chú                                                                          |
-| ------------------------- | -------- | -------------------------------------------------------------------------------- |
-| `DAK_ADDR`                | Có       | `https://` (http chỉ khi `DAK_ALLOW_INSECURE_HTTP=true`, dùng cho test local)     |
-| `DAK_TOKEN_URL`           | Có       | `https://<keycloak>/realms/<realm của tenant>/protocol/openid-connect/token`     |
-| `DAK_CLIENT_ID`           | Có       | Client Keycloak của team, vận hành cấp                                           |
-| `DAK_CLIENT_SECRET`       | Có       | Lấy từ K8s Secret `spark-dak-client` (key `clientSecret`) qua `secretKeyRef`     |
-| `DAK_ALLOW_INSECURE_HTTP` | Không    | `true` cho phép `http://` — chỉ khi test với dak-mock (`DAK_ADDR=http://dak-mock:8085`) |
-| `CRYPTO_CACHE_TTL_SECONDS`| Không    | Cache keyPrefix (mặc định 300 s); token Keycloak được cache riêng tới gần hết hạn |
+| Biến                       | Bắt buộc | Ghi chú                                                                                 |
+| -------------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `DAK_ADDR`                 | Có       | `https://` (http chỉ khi `DAK_ALLOW_INSECURE_HTTP=true`, dùng cho test local)           |
+| `DAK_TOKEN_URL`            | Có       | `https://<keycloak>/realms/<realm của tenant>/protocol/openid-connect/token`            |
+| `DAK_CLIENT_ID`            | Có       | Client Keycloak của team, vận hành cấp                                                  |
+| `DAK_CLIENT_SECRET`        | Có       | Lấy từ K8s Secret `spark-dak-client` (key `clientSecret`) qua `secretKeyRef`            |
+| `DAK_ALLOW_INSECURE_HTTP`  | Không    | `true` cho phép `http://` — chỉ khi test với dak-mock (`DAK_ADDR=http://dak-mock:8085`) |
+| `CRYPTO_CACHE_TTL_SECONDS` | Không    | Cache keyPrefix (mặc định 300 s); token Keycloak được cache riêng tới gần hết hạn       |
 
 Keycloak nội bộ (`sso-lakehouse.cyberspace.vn`) dùng cert tự ký, nên pod driver cần thêm `hostAliases` (IP `10.221.148.42`),
 initContainer `build-truststore` (ConfigMap `keycloak-ca`, key `ca.pem`) và `-Djavax.net.ssl.trustStore=…` trong
