@@ -3,8 +3,10 @@ package vai.lakehouse.columncrypto.cdr
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{Column, DataFrame}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.types.StringType
+import vai.lakehouse.columncrypto.cdr.audit.{AuditMeter, CdrAudit, CdrAuditRuntime}
 import vai.lakehouse.keyprefix.{ChainedConfigSource, EnvConfigSource, PrefixSource, PrefixSourceFactory, SparkConfSource}
 
 /**
@@ -50,13 +52,22 @@ object CdrCrypto {
         if (encryptMode) CdrCipherCore.encrypt(value, keyInput) else CdrCipherCore.decrypt(value, keyInput)
       }
 
+  /** Như [[transform]], kèm đếm số dòng cho audit khi có `meter` (cộng trên executor qua accumulator). */
+  def transform(prefix: String, encryptMode: Boolean, meter: Option[AuditMeter]): (String, String) => String = {
+    val base = transform(prefix, encryptMode)
+    meter match {
+      case None => base
+      case Some(m) => (value, fieldValue) => { m.record(value, fieldValue); base(value, fieldValue) }
+    }
+  }
+
   /** Tra keyPrefix của `datasetName` từ `prefixSource` (mặc định [[sharedPrefixSource]]) rồi dựng config. */
   def loadConfig(
     datasetName: String,
     keyField: String,
     encryptedColumns: Seq[String],
     prefixSource: PrefixSource = sharedPrefixSource
-  ): CdrCryptoConfig = CdrCryptoConfig(prefixSource.read(datasetName), keyField, encryptedColumns)
+  ): CdrCryptoConfig = CdrCryptoConfig(prefixSource.read(datasetName), keyField, encryptedColumns, datasetName)
 
   def encryptColumns(df: DataFrame, cfg: CdrCryptoConfig): DataFrame = apply(df, cfg, encryptMode = true)
 
@@ -82,13 +93,24 @@ object CdrCrypto {
   // Tên cột là 1 phần duy nhất (không tách theo dấu '.').
   private def attr(name: String): Column = new Column(UnresolvedAttribute.quoted(name))
 
-  private def apply(df: DataFrame, cfg: CdrCryptoConfig, encryptMode: Boolean): DataFrame = {
+  private def apply(df: DataFrame, cfg: CdrCryptoConfig, encryptMode: Boolean): DataFrame =
+    applyWith(df, cfg, encryptMode, CdrAudit.shared)
+
+  /** Tách khỏi [[apply]] để test truyền runtime audit riêng thay cho runtime dùng chung của tiến trình. */
+  private[cdr] def applyWith(df: DataFrame, cfg: CdrCryptoConfig, encryptMode: Boolean,
+                             audit: Option[CdrAuditRuntime]): DataFrame = {
     require(compatibilityVerified)
     validate(df, cfg)
-    val fn = udf(transform(cfg.keyPrefix, encryptMode))
-    val keyCol = attr(cfg.keyField).cast(StringType)
+    val function = if (encryptMode) CdrCryptoExtension.EncryptFunction else CdrCryptoExtension.DecryptFunction
+    val keyAttr = attr(cfg.keyField)
     cfg.encryptedColumns.foldLeft(df) { (acc, c) =>
-      acc.withColumn(c, fn(attr(c).cast(StringType), keyCol))
+      def udfExpr(meter: Option[AuditMeter]): Expression =
+        udf(transform(cfg.keyPrefix, encryptMode, meter)).apply(attr(c).cast(StringType), keyAttr.cast(StringType)).expr
+      val expr = audit match {
+        case Some(runtime) => runtime.tag(function, cfg.datasetName, attr(c).expr, keyAttr.expr, udfExpr)
+        case None => udfExpr(None)
+      }
+      acc.withColumn(c, new Column(expr))
     }
   }
 }
