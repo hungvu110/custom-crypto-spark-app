@@ -476,14 +476,14 @@ flowchart TD
 
 ### Phase 2: Tích hợp sql-engine và SparkApplication
 
-| #    | Việc                                                                                                                                                                        | Nghiệm thu                                                                           |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| P2.1 | Test tích hợp: `SparkSession` local + 2 extension + stub Keycloak/DAK, cấu hình qua `spark.<ns>.dak.*`                                                                      | `column_encrypt('demo_db.t', ...)`/`cdr_decrypt` chạy; tên một phần và 403 ra lỗi rõ |
-| P2.2 | `spark-app`: truyền `db.table` chữ thường (mục 5.6) + test                                                                                                                  | Test mục 9.5 xanh                                                                    |
-| P2.3 | Manifest SparkApplication: `DAK_*`, Secret `spark-dak-client`, giữ `VAULT_*` (mục 5.6)                                                                                      | Manifest review xong                                                                 |
-| P2.4 | Engine thử và job thử trên dev, chạy checklist mục 9.6                                                                                                                      | Checklist pass                                                                       |
+| #    | Việc                                                                                                                                                                                         | Nghiệm thu                                                                           |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| P2.1 | Test tích hợp: `SparkSession` local + 2 extension + stub Keycloak/DAK, cấu hình qua `spark.<ns>.dak.*`                                                                                       | `column_encrypt('demo_db.t', ...)`/`cdr_decrypt` chạy; tên một phần và 403 ra lỗi rõ |
+| P2.2 | `spark-app`: truyền `db.table` chữ thường (mục 5.6) + test                                                                                                                                   | Test mục 9.5 xanh                                                                    |
+| P2.3 | Manifest SparkApplication: `DAK_*`, Secret `spark-dak-client`, giữ `VAULT_*` (mục 5.6)                                                                                                       | Manifest review xong                                                                 |
+| P2.4 | Engine thử và job thử trên dev, chạy checklist mục 9.6                                                                                                                                       | Checklist pass                                                                       |
 | P2.5 | Cập nhật [COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md) và README: cấu hình `dak`, cú pháp `'db.table'`, xử lý sự cố, **runbook fallback thủ công** | Tài liệu được review                                                                 |
-| P2.6 | Build và đưa jar `key-prefix-lib` mới lên HDFS (thư mục phiên bản mới), build image `spark-app` mới                                                                         | Jar và image mới có sẵn, bản cũ còn nguyên                                           |
+| P2.6 | Build và đưa jar `key-prefix-lib` mới lên HDFS (thư mục phiên bản mới), build image `spark-app` mới                                                                                          | Jar và image mới có sẵn, bản cũ còn nguyên                                           |
 
 ### Phase 3: Migration và cutover
 
