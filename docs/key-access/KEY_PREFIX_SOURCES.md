@@ -118,6 +118,11 @@ Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncr
 (Keycloak, realm của tenant), cache token tới gần hết hạn, rồi gọi `GET <DAK_ADDR>/api/v1/keys/by-request/<DAK_REQUEST_CODE>/<database>/<table>`.
 DAK trả 401 thì xin token mới và thử lại đúng 1 lần; 403 và mọi lỗi khác báo ngay, kèm `requestId` để tra audit của DAK.
 
+DAK kiểm tra quyền ở mỗi request, nhưng prefix đã cache vẫn được dùng tới hết `CRYPTO_CACHE_TTL_SECONDS`, nên thu hồi quyền chỉ có
+hiệu lực sau tối đa TTL đó. Đặt `0` để lần lấy prefix kế tiếp lỗi ngay. Với SparkApplication, prefix được lấy một lần lúc job phân tích
+câu lệnh, nên job đang chạy không bị dừng khi quyền bị thu hồi. Chi tiết và đánh đổi trên sql-engine:
+[`CDR_CRYPTO_SQL_ENGINE_GUIDE.md`](../cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md#26-thu-hồi-quyền-trên-dak-và-cachettlseconds) mục 2.6.
+
 | Biến                       | Bắt buộc | Ghi chú                                                                                 |
 | -------------------------- | -------- | --------------------------------------------------------------------------------------- |
 | `DAK_ADDR`                 | Có       | `https://` (http chỉ khi `DAK_ALLOW_INSECURE_HTTP=true`, dùng cho test local)           |

@@ -62,7 +62,8 @@ spark.cdrcrypto.dak.tokenUrl=https://keycloak.<domain>/realms/<realm của tenan
 spark.cdrcrypto.dak.clientId=<client_id của team>
 spark.cdrcrypto.dak.clientSecret=<client_secret của team>
 spark.cdrcrypto.dak.requestCode=<mã phiếu, vd REQ-2026-000003>
-spark.cdrcrypto.cacheTtlSeconds=300
+# 0 = không cache keyPrefix: DAK thu hồi quyền thì query kế tiếp lỗi ngay (mục 2.6)
+spark.cdrcrypto.cacheTtlSeconds=0
 
 # --- 3. Audit log ---
 spark.cdrcrypto.audit.enabled=true
@@ -96,7 +97,7 @@ bằng dấu phẩy, không ghi đè).
 | `spark.cdrcrypto.dak.clientId` | Có | Client Keycloak của team, do vận hành cấp |
 | `spark.cdrcrypto.dak.clientSecret` | Có | Spark che giá trị này trên UI và `SET` |
 | `spark.cdrcrypto.dak.requestCode` | Có | Mã phiếu yêu cầu cấp key trên DAK; chỉ gồm chữ, số, `.`, `_`, `-`. Một engine dùng một phiếu; đổi phiếu phải restart |
-| `spark.cdrcrypto.cacheTtlSeconds` | Không | Cache `keyPrefix` trong bộ nhớ, mặc định `300`; `0` = tắt |
+| `spark.cdrcrypto.cacheTtlSeconds` | Không | Cache `keyPrefix` trong bộ nhớ, mặc định `300`; `0` = tắt. Quyết định thu hồi quyền trên DAK có hiệu lực sau bao lâu (mục 2.6) |
 
 **Nhóm 3 — audit log** (mặc định tắt)
 
@@ -152,7 +153,41 @@ spark.cdrcrypto.vault.kvBasePath=hla-datalake/datalake/spark-application
 
 Khi `source=vault`, audit không ghi `dakRequestCode`.
 
-### 2.6. Ngoài Spark conf
+### 2.6. Thu hồi quyền trên DAK và `cacheTtlSeconds`
+
+DAK kiểm tra quyền ở **mỗi** request và không cache. Nhưng engine cache `keyPrefix` theo bảng trong `cacheTtlSeconds`, và trong
+khoảng đó `cdr_*` dùng prefix trong cache mà không hỏi lại DAK. Vì vậy khi DAK thu hồi quyền của team (hoặc quyền hết hạn, key bị khoá):
+
+| `cacheTtlSeconds` | Query chạy sau khi thu hồi |
+|---|---|
+| `300` (mặc định) | Vẫn chạy được tới khi cache của bảng đó hết hạn, **tối đa 300 giây**, rồi mới lỗi |
+| `N` | Như trên, tối đa `N` giây |
+| `0` | **Lỗi ngay** ở query kế tiếp, vì mỗi lần dùng hàm đều hỏi DAK |
+
+Lỗi khi đó có dạng `DAK denied key for 'demo_db.sub_rel_product' (HTTP 403 access_denied, requestId=...)`; gửi `requestId` cho admin
+DAK để tra nguyên nhân. Kết quả lỗi không bị cache: mọi query sau đều lỗi cho tới khi quyền được cấp lại, và chạy lại được ngay khi
+DAK cấp lại quyền.
+
+**"Query kế tiếp" là câu query được phân tích sau lúc thu hồi.** Kể cả với `0`:
+
+- `keyPrefix` được lấy trên driver lúc phân tích câu query rồi gửi kèm hàm xuống executor. Query **đang chạy** lúc thu hồi vẫn chạy
+  tới hết, không bị dừng giữa chừng.
+- DataFrame đã tạo và giữ lại trong session (vd `df = spark.sql(...)` rồi gọi `df.show()` nhiều lần) dùng lại plan cũ, không hỏi lại
+  DAK. Câu SQL gửi qua query console/JDBC thì lần nào cũng được phân tích lại; view cũng vậy.
+- Dữ liệu đã giải mã rồi lưu lại (`CACHE TABLE ... AS SELECT cdr_decrypt(...)`, `df.cache()`, đã ghi ra bảng) không bị ảnh hưởng.
+
+**Đánh đổi khi giảm TTL:**
+
+- Mỗi lần hàm xuất hiện trong một câu query là khoảng 1 request tới DAK lúc phân tích, và DAK đọc Vault ở mỗi request. Executor
+  không gọi DAK nên số dòng không làm tăng số request.
+- DAK chậm thì query chậm theo. DAK sập thì mọi query `cdr_*` lỗi ngay, không còn khoảng đệm như khi có cache. Keycloak sập thì
+  query vẫn chạy tới khi token hiện tại hết hạn (token được cache riêng, không phụ thuộc `cacheTtlSeconds`).
+
+Chọn giá trị: cần thu hồi có hiệu lực ngay thì đặt `0` (cấu hình ở mục 2.2). Nếu chấp nhận trễ vài chục giây để giảm tải lên DAK
+thì đặt `10`–`30`. Đổi giá trị phải restart engine. Engine dùng cả `column_*` thì `spark.columncrypto.cacheTtlSeconds` là key riêng,
+đặt cả hai nếu muốn cùng hành vi.
+
+### 2.7. Ngoài Spark conf
 
 - Pod sql-engine phải gọi được Keycloak và DAK: `hostAliases` + truststore chứa CA nội bộ —
   [mục 4.7 của hướng dẫn chung](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md#47-gọi-được-keycloak-nội-bộ-từ-sql-engine-hostaliases--ca-nội-bộ).

@@ -142,6 +142,10 @@ Nhóm cấu hình dùng chung, áp dụng cho cách xác thực **token tĩnh** 
 
 Ví dụ khi `<ns>` là `spark.cdrcrypto.`: `spark.cdrcrypto.source`, `spark.cdrcrypto.vault.addr`, `spark.cdrcrypto.vault.token`, ...
 
+Với `source=dak`, `<ns>cacheTtlSeconds` quyết định thu hồi quyền trên DAK có hiệu lực sau bao lâu: prefix đã cache vẫn được dùng
+tới hết TTL; `0` thì query kế tiếp lỗi ngay. Đánh đổi và giới hạn:
+[mục 2.6 của hướng dẫn `cdr_*`](../cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md#26-thu-hồi-quyền-trên-dak-và-cachettlseconds).
+
 3 config dưới đây **chỉ dùng cho `authMethod=kubernetes`** (login bằng JWT của ServiceAccount) —
 **không cần đặt và bị lib bỏ qua hoàn toàn khi `authMethod=token`** (không login nên không đọc tới):
 
