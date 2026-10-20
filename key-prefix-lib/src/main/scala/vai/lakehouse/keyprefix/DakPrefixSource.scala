@@ -7,23 +7,9 @@ import java.util.{Locale, UUID}
 import org.slf4j.LoggerFactory
 
 /** Cấu hình nguồn `dak`. `toString` che secret để không lộ ra log khi in nguyên case class. */
-final case class DakConfig(addr: String, tokenUrl: String, clientId: String, clientSecret: String,
-                           requestCode: String) {
+final case class DakConfig(addr: String, tokenUrl: String, clientId: String, clientSecret: String) {
   override def toString: String =
-    s"DakConfig(addr=$addr, tokenUrl=$tokenUrl, clientId=$clientId, clientSecret=***, requestCode=$requestCode)"
-}
-
-object DakConfig {
-
-  // Mã phiếu yêu cầu (vd REQ-2026-000003) được đặt thẳng vào path URL nên chỉ nhận bộ ký tự an toàn.
-  private val RequestCodePattern = "^[A-Za-z0-9._-]{1,128}$".r
-
-  /** Kiểm tra mã phiếu; ném `IllegalArgumentException` (không in lại giá trị) nếu sai dạng. */
-  def validateRequestCode(code: String): String = Option(code).getOrElse("") match {
-    case RequestCodePattern() => code
-    case _ => throw new IllegalArgumentException(
-      "DAK request code must be 1-128 characters of letters, digits, '.', '_' or '-' (e.g. REQ-2026-000003)")
-  }
+    s"DakConfig(addr=$addr, tokenUrl=$tokenUrl, clientId=$clientId, clientSecret=***)"
 }
 
 /** Định danh bảng gửi lên DAK: `database.table`, luôn chữ thường. */
@@ -50,8 +36,7 @@ object DakTableRef {
 
 /**
  * Lấy keyPrefix qua DAK: xin access token `client_credentials` từ Keycloak (realm của tenant), rồi gọi
- * `GET {addr}/api/v1/keys/by-request/{requestCode}/{database}/{table}` — DAK cấp key theo phiếu yêu cầu nên
- * mã phiếu (`DakConfig.requestCode`) là một phần của path. DAK tự suy ra tenant/workspace/team từ token, nên request không
+ * `GET {addr}/api/v1/keys/{database}/{table}`. DAK tự suy ra tenant/workspace/team từ token, nên request không
  * mang thông tin đó. Hợp đồng API: docs/key-access/DAK_API_SPEC.md.
  *
  *  - 401: bỏ token đang cache, xin token mới, thử lại đúng 1 lần.
@@ -83,14 +68,14 @@ class DakPrefixSource(cfg: DakConfig, tokens: KeycloakTokenProvider, http: JsonH
 
   private def fetch(ref: DakTableRef, token: String): Attempt = {
     val requestId = UUID.randomUUID().toString
-    val request = HttpRequest.newBuilder(URI.create(s"$base/api/v1/keys/by-request/${cfg.requestCode}/${ref.database}/${ref.table}"))
+    val request = HttpRequest.newBuilder(URI.create(s"$base/api/v1/keys/${ref.database}/${ref.table}"))
       .timeout(JsonHttp.RequestTimeout)
       .header("Authorization", s"Bearer $token")
       .header("Accept", "application/json")
       .header("X-Request-Id", requestId)
       .GET()
       .build()
-    Attempt(http.execute(request, s"DAK key request for '${ref.qualified}' (request ${cfg.requestCode})", base), requestId)
+    Attempt(http.execute(request, s"DAK key request for '${ref.qualified}'", base), requestId)
   }
 
   private def prefixFrom(ref: DakTableRef, attempt: Attempt): String = {

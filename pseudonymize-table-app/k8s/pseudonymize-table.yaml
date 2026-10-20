@@ -115,8 +115,6 @@ spec:
       #   value: https://dak.example.internal
       # - name: DAK_TOKEN_URL
       #   value: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token
-      # - name: DAK_REQUEST_CODE
-      #   value: REQ-2026-000003   # mã phiếu yêu cầu cấp key trên DAK
       # - name: DAK_CLIENT_ID
       #   value: team-de-ws8
       # - name: DAK_CLIENT_SECRET

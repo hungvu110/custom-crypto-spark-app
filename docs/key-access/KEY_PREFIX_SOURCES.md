@@ -110,12 +110,12 @@ Kết quả được cache trong bộ nhớ theo bảng, `CRYPTO_CACHE_TTL_SECON
 Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncrypto.<key>` (hoặc `spark.cdrcrypto.<key>`) thay vì env
 (`source`, `file.dir`, `vault.addr`, `vault.role`, `vault.kvBasePath`, `vault.authMount`,
 `vault.kvMount`, `vault.keyField`, `vault.jwtPath`, `vault.authMethod`, `vault.token`, `cacheTtlSeconds`,
-`dak.addr`, `dak.tokenUrl`, `dak.clientId`, `dak.clientSecret`, `dak.requestCode`, `dak.allowInsecureHttp`).
+`dak.addr`, `dak.tokenUrl`, `dak.clientId`, `dak.clientSecret`, `dak.allowInsecureHttp`).
 
 ## Lấy keyPrefix từ DAK (`CRYPTO_PREFIX_SOURCE=dak`)
 
 `DakPrefixSource` (module `key-prefix-lib`) chạy trên driver: xin access token `client_credentials` tại `DAK_TOKEN_URL`
-(Keycloak, realm của tenant), cache token tới gần hết hạn, rồi gọi `GET <DAK_ADDR>/api/v1/keys/by-request/<DAK_REQUEST_CODE>/<database>/<table>`.
+(Keycloak, realm của tenant), cache token tới gần hết hạn, rồi gọi `GET <DAK_ADDR>/api/v1/keys/<database>/<table>`.
 DAK trả 401 thì xin token mới và thử lại đúng 1 lần; 403 và mọi lỗi khác báo ngay, kèm `requestId` để tra audit của DAK.
 
 DAK kiểm tra quyền ở mỗi request, nhưng prefix đã cache vẫn được dùng tới hết `CRYPTO_CACHE_TTL_SECONDS`, nên thu hồi quyền chỉ có

@@ -93,7 +93,7 @@ spec:
         value: "created_at"
       # Nguồn keyPrefix do extension tự đọc từ các biến môi trường dưới đây (CHỈ driver cần).
       #    CRYPTO_PREFIX_SOURCE=dak -> xin access token client_credentials ở DAK_TOKEN_URL (Keycloak, realm của
-      #    tenant) bằng DAK_CLIENT_ID/DAK_CLIENT_SECRET, rồi gọi DAK: GET /api/v1/keys/by-request/<DAK_REQUEST_CODE>/<DB_NAME>/<TABLE_NAME>.
+      #    tenant) bằng DAK_CLIENT_ID/DAK_CLIENT_SECRET, rồi gọi DAK: GET /api/v1/keys/<DB_NAME>/<TABLE_NAME>.
       #    Tên key là DB_NAME.TABLE_NAME chữ thường (app tự ghép). Secret lấy từ K8s Secret "spark-dak-client"
       #    (key "clientSecret") — tạo TRƯỚC khi apply, xem chú thích ở cuối file.
       #    CHỈ dùng DAK: manifest không còn VAULT_* nên job không đọc được Vault cũ. Fallback thủ công khi DAK sự
@@ -118,9 +118,6 @@ spec:
           secretKeyRef:
             name: spark-dak-client
             key: clientSecret
-      # Mã phiếu yêu cầu cấp key trên DAK (vd REQ-2026-000003); đi vào path /api/v1/keys/by-request/<mã>/...
-      - name: DAK_REQUEST_CODE
-        value: "REQ-2026-000003"
       # Mặc định "false" — bật "true" CHỈ khi cần trace lỗi wire encryption
       # (in ra hex dump SASL wrap/unwrap rất dài, xem SPARK_HDFS_WIRE_ENCRYPTION_TASK.md mục 14.2).
       - name: HDFS_SASL_DEBUG

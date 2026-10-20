@@ -39,15 +39,13 @@ class EnvConfigSourceSpec extends AnyFlatSpec with Matchers {
       "DAK_TOKEN_URL"           -> "https://kc.example/realms/t/protocol/openid-connect/token",
       "DAK_CLIENT_ID"           -> "dak.w1.team-a",
       "DAK_CLIENT_SECRET"       -> "sec",
-      "DAK_ALLOW_INSECURE_HTTP" -> "true",
-      "DAK_REQUEST_CODE"        -> "REQ-2026-000003"))
+      "DAK_ALLOW_INSECURE_HTTP" -> "true"))
 
     env.get(Keys.DakAddr) shouldBe Some("https://dak.example")
     env.get(Keys.DakTokenUrl) shouldBe Some("https://kc.example/realms/t/protocol/openid-connect/token")
     env.get(Keys.DakClientId) shouldBe Some("dak.w1.team-a")
     env.get(Keys.DakClientSecret) shouldBe Some("sec")
     env.get(Keys.DakAllowInsecureHttp) shouldBe Some("true")
-    env.get(Keys.DakRequestCode) shouldBe Some("REQ-2026-000003")
   }
 
   it should "báo thiếu đúng tên biến DAK_* khi CRYPTO_PREFIX_SOURCE=dak" in {

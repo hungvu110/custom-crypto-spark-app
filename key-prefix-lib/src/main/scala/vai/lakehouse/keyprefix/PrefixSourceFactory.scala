@@ -53,8 +53,6 @@ class ChainedConfigSource(sources: Seq[ConfigSource]) extends ConfigSource {
  * dak.tokenUrl      (bắt buộc khi dùng dak) token endpoint Keycloak của realm của tenant, https://
  * dak.clientId      (bắt buộc khi dùng dak) client Keycloak của team
  * dak.clientSecret  (bắt buộc khi dùng dak)
- * dak.requestCode   (bắt buộc khi dùng dak) mã phiếu yêu cầu cấp key, vd REQ-2026-000003; đi vào path
- *                   /api/v1/keys/by-request/{requestCode}/{database}/{table}
  * dak.allowInsecureHttp  mặc định false; true cho phép http:// (chỉ dùng khi test local)
  * vault.addr        (bắt buộc khi dùng vault)
  * vault.authMethod  kubernetes | token   (mặc định kubernetes)
@@ -88,7 +86,6 @@ object PrefixSourceFactory {
     val DakClientId          = "dak.clientId"
     val DakClientSecret      = "dak.clientSecret"
     val DakAllowInsecureHttp = "dak.allowInsecureHttp"
-    val DakRequestCode       = "dak.requestCode"
   }
 
   val FileSource  = "file"
@@ -142,17 +139,9 @@ object PrefixSourceFactory {
       addr         = httpsUrl(cfg, Keys.DakAddr, allowHttp),
       tokenUrl     = httpsUrl(cfg, Keys.DakTokenUrl, allowHttp),
       clientId     = required(cfg, Keys.DakClientId),
-      clientSecret = required(cfg, Keys.DakClientSecret),
-      requestCode  = requestCode(cfg))
+      clientSecret = required(cfg, Keys.DakClientSecret))
     val hint = Seq(Keys.DakTokenUrl, Keys.DakClientId, Keys.DakClientSecret).map(cfg.describe).mkString(", ")
     new DakPrefixSource(dak, KeycloakTokenProvider.shared(dak.tokenUrl, dak.clientId, dak.clientSecret, hint))
-  }
-
-  private def requestCode(cfg: ConfigSource): String = {
-    val raw = required(cfg, Keys.DakRequestCode)
-    try DakConfig.validateRequestCode(raw)
-    catch { case e: IllegalArgumentException => throw new IllegalArgumentException(
-      s"Invalid ${cfg.describe(Keys.DakRequestCode)}: ${e.getMessage}") }
   }
 
   /** URL tuyệt đối có host; bắt buộc https:// trừ khi bật allowInsecureHttp. Không in lại giá trị (URL có thể chứa user:pass). */

@@ -28,8 +28,7 @@ class EnvConfigSource(env: Map[String, String] = sys.env) extends ConfigSource {
     Keys.DakTokenUrl          -> "DAK_TOKEN_URL",
     Keys.DakClientId          -> "DAK_CLIENT_ID",
     Keys.DakClientSecret      -> "DAK_CLIENT_SECRET",
-    Keys.DakAllowInsecureHttp -> "DAK_ALLOW_INSECURE_HTTP",
-    Keys.DakRequestCode       -> "DAK_REQUEST_CODE"
+    Keys.DakAllowInsecureHttp -> "DAK_ALLOW_INSECURE_HTTP"
   )
 
   override def describe(key: String): String = names.getOrElse(key, key)

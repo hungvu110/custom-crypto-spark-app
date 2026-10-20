@@ -33,7 +33,7 @@ mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package
 ```
 
 Đưa cả 3 jar lên HDFS, ví dụ `hdfs:///libs/column-crypto-lib/`. Khi cập nhật bản mới phải thay **cả** `key-prefix-lib` và `cdr-crypto-udf`
-cùng lúc (bản `cdr-crypto-udf` có audit cần `key-prefix-lib` bản gọi DAK theo mã phiếu).
+cùng lúc (bản `cdr-crypto-udf` mới cần `key-prefix-lib` bản gọi DAK theo `/api/v1/keys/{database}/{table}`, không còn mã phiếu).
 
 ## 2. Cấu hình cần truyền vào sql-engine
 
@@ -61,7 +61,6 @@ spark.cdrcrypto.dak.addr=https://dak.<domain>
 spark.cdrcrypto.dak.tokenUrl=https://keycloak.<domain>/realms/<realm của tenant>/protocol/openid-connect/token
 spark.cdrcrypto.dak.clientId=<client_id của team>
 spark.cdrcrypto.dak.clientSecret=<client_secret của team>
-spark.cdrcrypto.dak.requestCode=<mã phiếu, vd REQ-2026-000003>
 # 0 = không cache keyPrefix: DAK thu hồi quyền thì query kế tiếp lỗi ngay (mục 2.6)
 spark.cdrcrypto.cacheTtlSeconds=0
 
@@ -96,7 +95,6 @@ bằng dấu phẩy, không ghi đè).
 | `spark.cdrcrypto.dak.tokenUrl` | Có | Token endpoint của realm Keycloak của tenant, `https://` |
 | `spark.cdrcrypto.dak.clientId` | Có | Client Keycloak của team, do vận hành cấp |
 | `spark.cdrcrypto.dak.clientSecret` | Có | Spark che giá trị này trên UI và `SET` |
-| `spark.cdrcrypto.dak.requestCode` | Có | Mã phiếu yêu cầu cấp key trên DAK; chỉ gồm chữ, số, `.`, `_`, `-`. Một engine dùng một phiếu; đổi phiếu phải restart |
 | `spark.cdrcrypto.cacheTtlSeconds` | Không | Cache `keyPrefix` trong bộ nhớ, mặc định `300`; `0` = tắt. Quyết định thu hồi quyền trên DAK có hiệu lực sau bao lâu (mục 2.6) |
 
 **Nhóm 3 — audit log** (mặc định tắt)
@@ -150,8 +148,6 @@ spark.cdrcrypto.vault.authMethod=token
 spark.cdrcrypto.vault.token=<token Vault chỉ đọc>
 spark.cdrcrypto.vault.kvBasePath=hla-datalake/datalake/spark-application
 ```
-
-Khi `source=vault`, audit không ghi `dakRequestCode`.
 
 ### 2.6. Thu hồi quyền trên DAK và `cacheTtlSeconds`
 
@@ -240,7 +236,7 @@ Mỗi câu query có dùng `cdr_encrypt`/`cdr_decrypt` sinh **hai dòng**:
 
 | Dòng | Khi nào | Nội dung chính |
 |---|---|---|
-| `START` | Ngay khi query bắt đầu, trước khi dữ liệu được xử lý | Ai chạy (`user` = tên đăng nhập JDBC/Keycloak), hàm, bảng, cột, mã phiếu DAK |
+| `START` | Ngay khi query bắt đầu, trước khi dữ liệu được xử lý | Ai chạy (`user` = tên đăng nhập JDBC/Keycloak), hàm, bảng, cột |
 | `END` | Ngay khi query kết thúc | `SUCCEEDED`/`FAILED`, thời lượng, số dòng đã xử lý, số dòng có giá trị NULL |
 
 Hiếm hơn: `EXPIRED` — hàm đã vào plan nhưng không có query nào chạy nó (chỉ `EXPLAIN`, hoặc chạy ngoài SQL execution như `df.rdd`).
@@ -262,7 +258,7 @@ Việc thu log về hệ thống audit do team DAK đảm nhiệm.
 Layout của log4j2 thêm thời gian và tên logger vào trước, nên `CDR_AUDIT` nằm **giữa dòng**; phần sau `CDR_AUDIT ` là một object JSON:
 
 ```text
-26/10/19 15:15:30 INFO audit: CDR_AUDIT {"auditVersion":1,"eventId":"0b1f...","event":"START","ts":"2026-10-19T08:15:30.123Z","appId":"spark-application-...","executionId":7,"user":"alice","userSource":"thrift","statementId":"c3a1...","tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"en-sqlzqfu6n7","usages":[{"usageId":"u9f3a1c2b4d5e","function":"cdr_decrypt","dataset":"demo_db.sub_rel_product","valueExpr":"spark_catalog.demo_db.sub_rel_product.isdn","keyFieldExpr":"spark_catalog.demo_db.sub_rel_product.start_datetime","dakRequestCode":"REQ-2026-000003"}]}
+26/10/19 15:15:30 INFO audit: CDR_AUDIT {"auditVersion":1,"eventId":"0b1f...","event":"START","ts":"2026-10-19T08:15:30.123Z","appId":"spark-application-...","executionId":7,"user":"alice","userSource":"thrift","statementId":"c3a1...","tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"en-sqlzqfu6n7","usages":[{"usageId":"u9f3a1c2b4d5e","function":"cdr_decrypt","dataset":"demo_db.sub_rel_product","valueExpr":"spark_catalog.demo_db.sub_rel_product.isdn","keyFieldExpr":"spark_catalog.demo_db.sub_rel_product.start_datetime"}]}
 26/10/19 15:23:02 INFO audit: CDR_AUDIT {"auditVersion":1,"eventId":"7d02...","event":"END","ts":"2026-10-19T08:23:02.456Z","appId":"spark-application-...","executionId":7,"tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"en-sqlzqfu6n7","status":"SUCCEEDED","durationMs":452333,"usages":[{"usageId":"u9f3a1c2b4d5e","rows":1200000000,"nullRows":3400}]}
 ```
 
@@ -276,7 +272,7 @@ Layout của log4j2 thêm thời gian và tên logger vào trước, nên `CDR_A
 | `statementId` | Id câu lệnh của Thrift Server |
 | `tenant`, `workspace`, `team`, `engineId` | Định danh engine (mục 2.4) |
 | `status`, `durationMs` | Chỉ có ở `END` |
-| `usages[]` | Mỗi lần dùng hàm trong query: `function`, `dataset` (tham số đầu), `valueExpr`, `keyFieldExpr`, `dakRequestCode`; ở `END` là `rows`, `nullRows` |
+| `usages[]` | Mỗi lần dùng hàm trong query: `function`, `dataset` (tham số đầu), `valueExpr`, `keyFieldExpr`; ở `END` là `rows`, `nullRows` |
 | `part`, `parts` | Có khi một query dùng nhiều hàm hơn `maxUsagesPerEvent` và bị tách thành nhiều dòng |
 | `dropped` | Có khi hàng đợi audit từng đầy và phải bỏ event |
 

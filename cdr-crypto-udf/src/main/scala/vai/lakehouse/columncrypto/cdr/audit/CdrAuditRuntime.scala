@@ -51,7 +51,7 @@ final class CdrAuditRuntime private[audit] (
   def registerUsage(function: String, dataset: String, valueExpr: String, keyFieldExpr: String,
                     statementId: Option[String], ugiUser: Option[String], counts: Option[CountSource]): Usage = {
     val info = UsageInfo(AuditTag.newUsageId(), function, dataset,
-      AuditText.describeExpr(valueExpr), AuditText.describeExpr(keyFieldExpr), config.dakRequestCode)
+      AuditText.describeExpr(valueExpr), AuditText.describeExpr(keyFieldExpr))
     val usage = new Usage(info, statementId, ugiUser, counts, nanoTime())
     expire(registry.register(usage))
     usage

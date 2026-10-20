@@ -114,8 +114,7 @@ class PrefixSourceFactorySpec extends AnyFlatSpec with Matchers {
 
   private val dakSettings = Seq(
     Keys.DakAddr -> "https://dak.example", Keys.DakTokenUrl -> "https://kc.example/realms/t/protocol/openid-connect/token",
-    Keys.DakClientId -> "dak.w1.team-a", Keys.DakClientSecret -> "SECRET-VALUE-42",
-    Keys.DakRequestCode -> "REQ-2026-000003")
+    Keys.DakClientId -> "dak.w1.team-a", Keys.DakClientSecret -> "SECRET-VALUE-42")
 
   "create với source=dak" should "dựng DakPrefixSource bọc cache" in {
     PrefixSourceFactory.create(cfg((dakSettings :+ (Keys.Source -> "dak")): _*)) shouldBe a[CachedPrefixSource]
@@ -133,7 +132,7 @@ class PrefixSourceFactorySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "báo tên vật lý của từng setting bắt buộc còn thiếu" in {
-    Seq(Keys.DakAddr, Keys.DakTokenUrl, Keys.DakClientId, Keys.DakClientSecret, Keys.DakRequestCode).foreach { missing =>
+    Seq(Keys.DakAddr, Keys.DakTokenUrl, Keys.DakClientId, Keys.DakClientSecret).foreach { missing =>
       val settings = dakSettings.filterNot(_._1 == missing) :+ (Keys.Source -> "dak")
       val ex = intercept[IllegalArgumentException](PrefixSourceFactory.create(cfg(settings: _*)))
       ex.getMessage should include(s"TEST_$missing")
@@ -151,14 +150,6 @@ class PrefixSourceFactorySpec extends AnyFlatSpec with Matchers {
 
       PrefixSourceFactory.create(cfg((settings :+ (Keys.DakAllowInsecureHttp -> "true")): _*)) shouldBe
         a[CachedPrefixSource]
-    }
-  }
-
-  it should "từ chối mã phiếu sai dạng, không đặt được vào path" in {
-    Seq("REQ/../x", "a b", "REQ?x=1").foreach { bad =>
-      val settings = dakSettings.filterNot(_._1 == Keys.DakRequestCode) ++ Seq(Keys.DakRequestCode -> bad, Keys.Source -> "dak")
-      val ex = intercept[IllegalArgumentException](PrefixSourceFactory.create(cfg(settings: _*)))
-      ex.getMessage should include("TEST_dak.requestCode")
     }
   }
 
@@ -183,15 +174,15 @@ class PrefixSourceFactorySpec extends AnyFlatSpec with Matchers {
     val server = new StubHttpServer
     try {
       server.stub("POST", "/token", StubHttpServer.tokenResponse("tok-1"))
-      server.stub("GET", "/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr", StubHttpServer.Response(200, """{"keyPrefix":"p1"}"""))
+      server.stub("GET", "/api/v1/keys/demo_db/users_cdr", StubHttpServer.Response(200, """{"keyPrefix":"p1"}"""))
       val source = PrefixSourceFactory.create(cfg(
         Keys.Source -> "dak", Keys.DakAddr -> server.url, Keys.DakTokenUrl -> s"${server.url}/token",
-        Keys.DakClientId -> "c", Keys.DakClientSecret -> "s", Keys.DakRequestCode -> "REQ-2026-000003",
+        Keys.DakClientId -> "c", Keys.DakClientSecret -> "s",
         Keys.DakAllowInsecureHttp -> "true"))
 
       source.read("demo_db.users_cdr") shouldBe "p1"
       source.read("demo_db.users_cdr") shouldBe "p1" // lần 2 lấy từ cache prefix
-      server.requestsTo("/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr") should have size 1
+      server.requestsTo("/api/v1/keys/demo_db/users_cdr") should have size 1
     } finally server.close()
   }
 

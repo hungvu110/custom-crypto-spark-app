@@ -27,8 +27,7 @@ final case class AuditConfig(
   maxUsages: Int,
   statementUserTtlSec: Long,
   shutdownFlushTimeoutSec: Long,
-  log: LogSinkConfig,
-  dakRequestCode: Option[String])
+  log: LogSinkConfig)
 
 /**
  * Đọc cấu hình audit theo tên logic (trên sql-engine/SparkApplication là `spark.cdrcrypto.<key>`):
@@ -47,7 +46,6 @@ final case class AuditConfig(
  * audit.log.loggerName           mặc định vai.lakehouse.cdrcrypto.audit
  * audit.log.prefix               mặc định CDR_AUDIT (một dấu cách được thêm trước JSON)
  * }}}
- * `dak.requestCode` (cấu hình sẵn có của nguồn keyPrefix) được ghi kèm usage khi `source` là `dak`.
  */
 object AuditConfig {
 
@@ -68,8 +66,6 @@ object AuditConfig {
     val LogMode = "audit.log.mode"
     val LogLoggerName = "audit.log.loggerName"
     val LogPrefix = "audit.log.prefix"
-    val PrefixSource = "source"
-    val DakRequestCode = "dak.requestCode"
   }
 
   val LogSink = "log"
@@ -96,8 +92,7 @@ object AuditConfig {
       log = LogSinkConfig(
         logMode(cfg),
         cfg.get(Keys.LogLoggerName).getOrElse(LogSinkConfig.DefaultLoggerName),
-        cfg.get(Keys.LogPrefix).getOrElse(LogSinkConfig.DefaultPrefix)),
-      dakRequestCode = if (prefixFromDak(cfg)) cfg.get(Keys.DakRequestCode) else None))
+        cfg.get(Keys.LogPrefix).getOrElse(LogSinkConfig.DefaultPrefix))))
 
   private def enabled(cfg: ConfigSource): Boolean = cfg.get(Keys.Enabled).map(_.toLowerCase(Locale.ROOT)) match {
     case None | Some("false") => false
@@ -129,9 +124,6 @@ object AuditConfig {
       s"Invalid ${cfg.describe(Keys.LogMode)}: must be ${LogSinkConfig.LoggerMode} or ${LogSinkConfig.DirectMode}")
     mode
   }
-
-  private def prefixFromDak(cfg: ConfigSource): Boolean =
-    cfg.get(Keys.PrefixSource).exists(_.toLowerCase(Locale.ROOT).split(",").map(_.trim).contains("dak"))
 
   private def number(cfg: ConfigSource, key: String, default: Long, min: Long): Long =
     cfg.get(key).map { raw =>

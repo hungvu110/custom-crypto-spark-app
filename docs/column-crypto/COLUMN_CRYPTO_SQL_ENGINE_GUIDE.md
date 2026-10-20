@@ -222,8 +222,6 @@ spark.columncrypto.dak.addr=https://dak.<domain>
 spark.columncrypto.dak.tokenUrl=https://keycloak.<domain>/realms/<realm của tenant>/protocol/openid-connect/token
 spark.columncrypto.dak.clientId=<client_id của team>
 spark.columncrypto.dak.clientSecret=<client_secret của team>
-# Mã phiếu yêu cầu cấp key trên DAK (DAK cấp key theo phiếu). Đi vào path: /api/v1/keys/by-request/<mã>/<database>/<table>
-spark.columncrypto.dak.requestCode=REQ-2026-000003
 spark.columncrypto.cacheTtlSeconds=300
 
 # --- Vault cũ: giữ nguyên cho fallback thủ công, KHÔNG được đọc khi source=dak (mục 4.3) ---
@@ -241,21 +239,7 @@ spark.columncrypto.vault.kvBasePath=hla-datalake/datalake/spark-application
 | `<ns>dak.tokenUrl`        | Có       | Token endpoint của **realm của tenant** sở hữu engine, phải là `https://`                                 |
 | `<ns>dak.clientId`        | Có       | Client của team                                                                                           |
 | `<ns>dak.clientSecret`    | Có       | Spark che giá trị trên UI/`SET` (tên key khớp `spark.redaction.regex`)                                    |
-| `<ns>dak.requestCode`     | Có       | Mã phiếu yêu cầu cấp key, vd `REQ-2026-000003`; chỉ gồm chữ, số, `.`, `_`, `-` (tối đa 128). Cũng đọc được từ env `DAK_REQUEST_CODE` |
 | `<ns>dak.allowInsecureHttp` | Không  | `true` cho phép `http://` — **chỉ** dùng khi test với server giả                                          |
-
-**Truyền mã phiếu (`requestCode`) vào engine**: mã phiếu là cấu hình của engine, **không** nằm trong câu SQL. Có 2 cách,
-lib ưu tiên Spark conf, không có mới đọc biến môi trường:
-
-1. Spark conf (ConfigMap/`spark-defaults.conf` của engine): `spark.columncrypto.dak.requestCode=REQ-...` và/hoặc
-   `spark.cdrcrypto.dak.requestCode=REQ-...` cho từng nhóm hàm.
-2. Biến môi trường `DAK_REQUEST_CODE` trong StatefulSet (xem [sql-engine-statefulset.yaml](../../k8s/sql-engine-statefulset.yaml)),
-   dùng chung cho cả `column_*` lẫn `cdr_*` nếu không đặt Spark conf riêng.
-
-Mã phiếu là conf tĩnh của driver, được đọc **một lần cho cả tiến trình** (khi hàm mã hoá/giải mã được dùng lần đầu, dùng chung
-cho mọi kết nối Thrift Server). Đổi sang phiếu khác (phiếu mới, phiếu hết hạn) thì sửa cấu hình rồi **restart engine**;
-cache `keyPrefix` theo bảng nằm trong bộ nhớ nên cũng được làm mới khi restart. Một
-engine tại một thời điểm chỉ dùng 1 mã phiếu: các bảng được gọi qua engine đó phải nằm trong phạm vi phiếu.
 
 **Cú pháp với `source=dak`**: tham số đầu của hàm bắt buộc là **`'database.table'`**, được chuẩn hoá chữ thường:
 
@@ -583,12 +567,11 @@ Lưu ý:
 | `first argument must be a constant string`                                                    | Tham số đầu phải là literal `'tên_bảng'`, không phải cột hay biểu thức                                                                              |
 | `With source=dak the table must be '<database>.<table>'`                                      | Đang dùng `source=dak` mà tham số đầu là tên một phần (`'users_cdr'`) hoặc có ký tự lạ — viết lại thành `'demo_db.users_cdr'`                       |
 | `'dak' cannot be combined with other sources`                                                 | Cấu hình `source=dak,vault` / `file,dak` — đặt `source=dak`; fallback về Vault phải đổi thủ công                                                    |
-| `Missing required setting: <ns>dak.requestCode` / `Invalid <ns>dak.requestCode`              | Chưa đặt hoặc sai dạng mã phiếu — đặt `spark.columncrypto.dak.requestCode` (hoặc env `DAK_REQUEST_CODE`), chỉ gồm chữ, số, `.`, `_`, `-`             |
 | `Invalid <ns>dak.addr: must be an absolute https:// URL` (hoặc `dak.tokenUrl`)                | Sai URL hoặc dùng `http://`. `http://` chỉ được phép khi đặt `<ns>dak.allowInsecureHttp=true` (test local)                                          |
 | `Keycloak token request failed: HTTP 401 (invalid_client)`                                    | Sai `dak.clientId`/`dak.clientSecret`, hoặc `dak.tokenUrl` trỏ nhầm realm (client không tồn tại ở realm đó)                                         |
 | `Keycloak token request failed: HTTP 400 (unauthorized_client)`                               | Client của team chưa bật Service Accounts — báo vận hành sửa client theo checklist                                                                  |
 | `Keycloak token request failed: cannot reach ...`                                             | Không kết nối được Keycloak: kiểm tra mạng/DNS, truststore nếu Keycloak dùng CA nội bộ                                                              |
-| `DAK denied key for '...' (HTTP 403 access_denied, requestId=...)`                            | Phiếu `requestCode` không bao gồm bảng này, chưa được duyệt hoặc **đã hết hạn**, hoặc bảng chưa đăng ký trong workspace. Gửi `requestId` cho admin DAK để tra nguyên nhân             |
+| `DAK denied key for '...' (HTTP 403 access_denied, requestId=...)`                            | Team chưa được cấp quyền trên bảng này, quyền **đã hết hạn hoặc bị thu hồi**, hoặc bảng chưa đăng ký trong workspace. Gửi `requestId` cho admin DAK để tra nguyên nhân             |
 | `DAK key request ... failed (HTTP 403 key_disabled, ...)`                                     | Key của bảng đang bị khoá trên DAK                                                                                                                  |
 | `DAK rejected the access token ... (HTTP 401 ...)`                                            | Client chưa được đăng ký hoặc đã bị khoá trên DAK, hoặc realm chưa có trong registry của DAK                                                        |
 | `DAK key request ... failed: cannot reach ...` / `HTTP 503`                                   | DAK hoặc Vault phía DAK không phản hồi. Sự cố kéo dài: fallback thủ công (mục 4.6)                                                                  |

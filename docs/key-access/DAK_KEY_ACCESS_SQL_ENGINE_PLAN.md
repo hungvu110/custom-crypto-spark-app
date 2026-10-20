@@ -65,7 +65,7 @@ sequenceDiagram
         E->>K: POST /realms/{tenant-realm}/protocol/openid-connect/token<br/>grant_type=client_credentials, client_id, client_secret
         K-->>E: access_token (sống 300 giây)
     end
-    E->>D: GET /api/v1/keys/by-request/REQ-2026-000003/demo_db/customers<br/>Authorization: Bearer access_token
+    E->>D: GET /api/v1/keys/demo_db/customers<br/>Authorization: Bearer access_token
     Note over D: iss → realm trong registry<br/>Verify chữ ký bằng JWKS đã cache (tải lại khi gặp kid lạ)<br/>Kiểm tra exp, typ, azp
     Note over D: (realm, azp) → (tenant, workspace, team), đọc DB mỗi request<br/>Grant còn hạn trên tenant/workspace/demo_db/customers?
     alt Có quyền
@@ -136,12 +136,12 @@ grant_type=client_credentials&client_id=<id>&client_secret=<secret>
 - Client gửi credential trong body (`client_secret_post`).
 - Response cần có `access_token` và `expires_in` (giây). Không dùng refresh token; khi token sắp hết hạn thì xin token mới.
 - `tokenUrl` phải trỏ tới **realm của tenant sở hữu engine/job**.
-- `dakAddr`, `tokenUrl`, `clientId`, `clientSecret` do **vận hành** cấp; `requestCode` là mã phiếu yêu cầu cấp key trên DAK (cấu hình tĩnh `dak.requestCode` / `DAK_REQUEST_CODE`), khi tạo client cho team (mục 4.5 Q1).
+- `dakAddr`, `tokenUrl`, `clientId`, `clientSecret` do **vận hành** cấp khi tạo client cho team (mục 4.5 Q1).
 
 ### 4.2. Lấy keyPrefix (client → DAK)
 
 ```http
-GET {dakAddr}/api/v1/keys/by-request/{requestCode}/{database}/{table}
+GET {dakAddr}/api/v1/keys/{database}/{table}
 Authorization: Bearer <access_token>
 Accept: application/json
 ```
@@ -228,7 +228,7 @@ flowchart TD
     B -- Không --> X1["IllegalArgumentException<br/>hướng dẫn cú pháp 'db.table'<br/>(không gọi Keycloak/DAK)"]
     B -- Có --> N["Chuẩn hoá chữ thường<br/>database, table"]
     N --> C["token = provider.token()<br/>(từ cache, hoặc xin mới)"]
-    C --> D["GET /api/v1/keys/by-request/{requestCode}/{database}/{table}<br/>Authorization: Bearer token"]
+    C --> D["GET /api/v1/keys/{database}/{table}<br/>Authorization: Bearer token"]
     D --> E{"HTTP status"}
     E -- 200 --> F{"keyPrefix là chuỗi khác rỗng?"}
     F -- Có --> OK(["Trả keyPrefix"])
@@ -515,7 +515,7 @@ flowchart TD
 
 ### 9.3. `DakPrefixSource`
 
-- Happy path: header `Authorization: Bearer <token>`, path `/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr`, trả `keyPrefix`; bỏ qua field lạ.
+- Happy path: header `Authorization: Bearer <token>`, path `/api/v1/keys/demo_db/users_cdr`, trả `keyPrefix`; bỏ qua field lạ.
 - Tên sai định dạng: **0** request tới Keycloak/DAK.
 - 401 lần đầu, 200 lần hai: xin token mới đúng 1 lần. 401 cả hai lần: lỗi, tổng 2 request DAK.
 - 403 (`access_denied`, `key_disabled`), 400, 429, 500, 503: lỗi **không retry**, message có `db.table`, mã, `requestId`; với

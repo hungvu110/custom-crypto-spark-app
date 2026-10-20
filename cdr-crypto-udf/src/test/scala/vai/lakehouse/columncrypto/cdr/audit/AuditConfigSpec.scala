@@ -31,7 +31,6 @@ class AuditConfigSpec extends AnyFlatSpec with Matchers {
     cfg.statementUserTtlSec shouldBe 3600
     cfg.shutdownFlushTimeoutSec shouldBe 10
     cfg.log shouldBe LogSinkConfig(LogSinkConfig.LoggerMode, "vai.lakehouse.cdrcrypto.audit", "CDR_AUDIT")
-    cfg.dakRequestCode shouldBe None
   }
 
   it should "đọc các giá trị tuỳ chỉnh" in {
@@ -41,12 +40,6 @@ class AuditConfigSpec extends AnyFlatSpec with Matchers {
     cfg.coalesceMs shouldBe 200
     cfg.maxQueueSize shouldBe 50
     cfg.log shouldBe LogSinkConfig(LogSinkConfig.DirectMode, "x.y", "MY_AUDIT")
-  }
-
-  it should "lấy mã phiếu DAK chỉ khi nguồn keyPrefix là dak" in {
-    load(base ++ Seq("source" -> "dak", "dak.requestCode" -> "REQ-2026-000003"): _*).get.dakRequestCode shouldBe
-      Some("REQ-2026-000003")
-    load(base ++ Seq("source" -> "vault", "dak.requestCode" -> "REQ-2026-000003"): _*).get.dakRequestCode shouldBe None
   }
 
   it should "báo lỗi rõ ràng khi enabled không phải true/false" in {

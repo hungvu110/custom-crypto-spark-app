@@ -8,7 +8,7 @@ import vai.lakehouse.keyprefix.StubHttpServer.{Response, tokenResponse}
 class DakPrefixSourceSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach {
 
   private val TokenPath = "/realms/tenant-a/protocol/openid-connect/token"
-  private val KeyPath   = "/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr"
+  private val KeyPath   = "/api/v1/keys/demo_db/users_cdr"
   private val Secret    = "client-secret-xyz"
   private val Prefix    = "9f2c4b-prefix-value"
 
@@ -19,8 +19,7 @@ class DakPrefixSourceSpec extends AnyFlatSpec with Matchers with BeforeAndAfterE
   override def afterEach(): Unit = server.close()
 
   private def cfg(addr: String = server.url) =
-    DakConfig(addr = addr, tokenUrl = server.url + TokenPath, clientId = "dak.w1.team-a", clientSecret = Secret,
-      requestCode = "REQ-2026-000003")
+    DakConfig(addr = addr, tokenUrl = server.url + TokenPath, clientId = "dak.w1.team-a", clientSecret = Secret)
 
   private def source(c: DakConfig = cfg()) =
     new DakPrefixSource(c, new KeycloakTokenProvider(c.tokenUrl, c.clientId, c.clientSecret, "TEST_hint"))
@@ -32,7 +31,7 @@ class DakPrefixSourceSpec extends AnyFlatSpec with Matchers with BeforeAndAfterE
   private def denied(status: Int, error: String) =
     Response(status, s"""{"error":"$error","message":"denied","requestId":"req-$status"}""")
 
-  "read" should "gọi GET /api/v1/keys/by-request/{requestCode}/{database}/{table} kèm Bearer token và trả keyPrefix, bỏ qua field lạ" in {
+  "read" should "gọi GET /api/v1/keys/{database}/{table} kèm Bearer token và trả keyPrefix, bỏ qua field lạ" in {
     server.stub("POST", TokenPath, tokenResponse("tok-1"))
     server.stub("GET", KeyPath, keyOk())
 
@@ -54,7 +53,7 @@ class DakPrefixSourceSpec extends AnyFlatSpec with Matchers with BeforeAndAfterE
   it should "dùng lại access token cho các bảng khác nhau" in {
     server.stub("POST", TokenPath, tokenResponse("tok-1"))
     server.stub("GET", KeyPath, keyOk())
-    server.stub("GET", "/api/v1/keys/by-request/REQ-2026-000003/demo_db/orders", keyOk("other"))
+    server.stub("GET", "/api/v1/keys/demo_db/orders", keyOk("other"))
     val s = source()
 
     s.read("demo_db.users_cdr") shouldBe Prefix

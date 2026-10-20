@@ -13,8 +13,7 @@ final case class UsageInfo(
   function: String,
   dataset: String,
   valueExpr: String,
-  keyFieldExpr: String,
-  dakRequestCode: Option[String])
+  keyFieldExpr: String)
 
 /** Số dòng hàm đã xử lý (chỉ tính task thành công) và số dòng có đầu vào NULL. */
 final case class UsageCounts(rows: Long, nullRows: Long) {
@@ -97,7 +96,6 @@ final case class AuditEvent(
       json.str("dataset", i.dataset)
       json.str("valueExpr", i.valueExpr)
       json.str("keyFieldExpr", i.keyFieldExpr)
-      i.dakRequestCode.foreach(json.str("dakRequestCode", _))
     }
     usage.counts.foreach { c =>
       json.num("rows", c.rows)
