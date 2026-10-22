@@ -6,8 +6,15 @@
 #   kubectl create secret generic dak-mock-vault-token \
 #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$T"; unset T
 #
-# Token Vault này cần quyền read trên path key cả bảng VÀ read + create trên kv/data/dak/column-keys/* (key theo cột của
-# GET /api/v1/keys/by-column; mock ghi bằng cas=0 nên không cần quyền update).
+# Token Vault này cần quyền read trên path key cả bảng VÀ read trên kv/data/hla-datalake/datalake/column-keys/* (key theo cột
+# của GET /api/v1/keys/by-column). Thêm quyền create trên path đó nếu muốn mock tự tạo key khi fulfill YC (mock ghi bằng
+# cas=0 nên không cần quyền update).
+#
+# KEY THEO CỘT — tạo tay trước (mỗi cột một secret, field keyPrefix), cột đã có secret thì by-column trả READY ngay:
+#   vault kv put kv/hla-datalake/datalake/column-keys/<database>/<table>/<column> keyPrefix="$(openssl rand -base64 32)"
+#   vd: vault kv put kv/hla-datalake/datalake/column-keys/demo_db/users_cdr/name keyPrefix="$(openssl rand -base64 32)"
+# <database>, <table>, <column> viết CHỮ THƯỜNG, chỉ gồm a-z, 0-9, _. Không ghi đè secret đã có: key đã dùng để mã hoá
+# thì đổi giá trị là mất khả năng giải mã dữ liệu cũ.
 #
 # Token của endpoint quản trị /mock-admin/** (tạo key cho YC, từ chối YC, khoá cột). Không tạo Secret = tắt endpoint:
 #   kubectl create secret generic dak-mock-admin-token \
@@ -66,7 +73,8 @@ data:
         addr: http://vault.cyberspace.vn
         kv-mount: kv
         path-template: hla-datalake/datalake/spark-application/{database}.{table}
-        column-path-template: dak/column-keys/{database}/{table}/{column}
+        # Key theo cột: mỗi cột một secret (field keyPrefix) dưới hla-datalake/datalake/. Tạo tay hoặc để mock tạo khi fulfill YC.
+        column-path-template: hla-datalake/datalake/column-keys/{database}/{table}/{column}
         key-field: keyPrefix
       yc:
         max-open-per-table: 50

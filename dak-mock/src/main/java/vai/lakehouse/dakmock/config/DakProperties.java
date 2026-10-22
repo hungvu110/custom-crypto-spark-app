@@ -85,7 +85,7 @@ public record DakProperties(
       String token,
       @DefaultValue("kv") String kvMount,
       @DefaultValue("hla-datalake/datalake/spark-application/{database}.{table}") String pathTemplate,
-      @DefaultValue("dak/column-keys/{database}/{table}/{column}") String columnPathTemplate,
+      @DefaultValue("hla-datalake/datalake/column-keys/{database}/{table}/{column}") String columnPathTemplate,
       @DefaultValue("keyPrefix") String keyField,
       @DefaultValue("2s") Duration connectTimeout,
       @DefaultValue("5s") Duration readTimeout) {

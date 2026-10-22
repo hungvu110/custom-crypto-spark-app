@@ -44,7 +44,7 @@ dak:
     path-template: hla-datalake/datalake/spark-application/{database}.{table}
     # Key theo cột của GET /api/v1/keys/by-column. Mỗi phần là MỘT đoạn đường dẫn riêng. Mock tạo key ở đây bằng
     # cas=0 (không bao giờ ghi đè) -> token Vault cần thêm quyền create trên path này.
-    column-path-template: dak/column-keys/{database}/{table}/{column}
+    column-path-template: hla-datalake/datalake/column-keys/{database}/{table}/{column}
     key-field: keyPrefix
 
   # Grant theo cột cho client team (thay cho phiếu được duyệt của DAK). Client nội bộ (kind: internal) không cần grant.

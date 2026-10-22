@@ -60,7 +60,9 @@ Luôn `200` khi qua được kiểm tham số, token và quyền; mỗi cột c�
 (kèm `requestCode`), `MISSING` (kèm `reason`: `not_requested` hoặc `yc_limit_reached`), `REJECTED` (kèm `requestCode`,
 `reasonText`), `DISABLED`. `complete=true` khi mọi cột `READY`. Tối đa 100 cột và 4096 ký tự sau khi gộp trùng.
 
-Key cột lưu ở `kv/data/dak/column-keys/{database}/{table}/{column}` và chỉ được **tạo** bằng `cas=0`: không bao giờ ghi đè key đã có.
+Key cột lưu ở `kv/data/hla-datalake/datalake/column-keys/{database}/{table}/{column}` (đổi được bằng `dak.vault.column-path-template`)
+và chỉ được **tạo** bằng `cas=0`: không bao giờ ghi đè key đã có. Có hai cách để một cột có key: tạo tay secret trước (mục 5.1), hoặc để
+mock tạo khi `fulfill` YC (cần quyền `create`).
 
 ### 2.2. Endpoint quản trị `/mock-admin/**`
 
@@ -186,12 +188,22 @@ Token mà mock dùng cần quyền **đọc** key bảng, và **đọc + tạo**
 path "kv/data/hla-datalake/datalake/spark-application/*" {
   capabilities = ["read"]
 }
-path "kv/data/dak/column-keys/*" {
+path "kv/data/hla-datalake/datalake/column-keys/*" {
   capabilities = ["read", "create"]
 }
 ```
 
-Key cột không cần nạp trước: mock tạo khi người quản trị `fulfill` YC (mục 2.2).
+Key cột có hai cách tạo:
+
+```bash
+# Cách 1: tạo tay trước, mỗi cột một secret. Cột đã có secret thì by-column trả READY ngay, không mở YC.
+# <database>, <table>, <column> chữ thường, chỉ a-z, 0-9, _
+vault kv put kv/hla-datalake/datalake/column-keys/demo_db/users_cdr/name keyPrefix="$(openssl rand -base64 32)"
+vault kv put kv/hla-datalake/datalake/column-keys/demo_db/users_cdr/city keyPrefix="$(openssl rand -base64 32)"
+```
+
+Cách 2: để mock tạo khi người quản trị `fulfill` YC (mục 2.2); cần quyền `create` ở policy trên. Dù cách nào, **đừng ghi đè** secret đã
+có: key đã dùng để mã hoá mà đổi giá trị thì dữ liệu cũ không giải mã được.
 
 ### 5.2. Secret token Vault trên k8s
 

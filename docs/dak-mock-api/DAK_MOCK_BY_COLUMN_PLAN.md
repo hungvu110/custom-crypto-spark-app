@@ -122,7 +122,7 @@ dak:
       expires-at: 2027-10-22T00:00:00Z   # ISO-8601; để trống = không hết hạn
   vault:
     # mới: path key cột. Mỗi phần là MỘT đoạn đường dẫn riêng
-    column-path-template: dak/column-keys/{database}/{table}/{column}
+    column-path-template: hla-datalake/datalake/column-keys/{database}/{table}/{column}
   yc:
     max-open-per-table: 50      # theo (client, database, table)
     auto-fulfill: false         # true: onMissing=request tạo key ngay và trả READY (chỉ để chạy e2e nhanh)
@@ -140,7 +140,8 @@ dak:
   nghĩa là Vault chỉ cho ghi khi path **chưa tồn tại**, nên mock không thể ghi đè key đã có, giống cam kết của DAK ở vòng 6. Vault từ chối vì
   đã tồn tại thì mock dùng key đang có, không sinh key khác.
 - Giá trị sinh: 32 byte ngẫu nhiên (`SecureRandom`) mã hoá Base64. Tên cột đã qua kiểm tra `[a-z0-9_]` nên không cần escape.
-- Token Vault của mock (`VAULT_TOKEN`) cần thêm quyền `create` trên `kv/data/dak/column-keys/*`.
+- Token Vault của mock (`VAULT_TOKEN`) cần quyền `read` trên `kv/data/hla-datalake/datalake/column-keys/*`, và thêm `create` nếu muốn mock tự tạo key khi `fulfill` YC. Path nằm dưới
+`hla-datalake/datalake/` để người vận hành tạo được secret tay.
 
 ### 2.3 YC trong bộ nhớ
 
@@ -205,7 +206,7 @@ Ca test xuyên suốt: không response hay dòng log nào chứa `keyPrefix` ngo
 | Việc                                                                                     | Chi tiết                                                                                       |
 | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | [k8s/dak-mock.yaml](../../dak-mock/k8s/dak-mock.yaml) ConfigMap                          | Thêm client nội bộ (`kind: internal`), `vault.column-path-template`, `yc.*`                    |
-| Secret                                                                                   | `MOCK_ADMIN_TOKEN` mới; `VAULT_TOKEN` cần thêm quyền `create` trên `kv/data/dak/column-keys/*` |
+| Secret                                                                                   | `MOCK_ADMIN_TOKEN` mới; `VAULT_TOKEN` cần `read` (và `create` nếu mock tự tạo key) trên `kv/data/hla-datalake/datalake/column-keys/*` |
 | Keycloak                                                                                 | Tạo một client `client_credentials` đóng vai client nội bộ trong realm test                    |
 | [README.md](../../dak-mock/README.md), [sa-fetch-key.sh](../../dak-mock/sa-fetch-key.sh) | Mô tả endpoint mới, endpoint quản trị, ví dụ `curl` cho `by-column`                            |
 
