@@ -21,8 +21,12 @@ dak:
       issuer: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm
       jwks-uri: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/certs
 
-  # Client Keycloak của các team (do vận hành tạo theo docs/key-access/DAK_API_SPEC.md mục 2.3).
-  # (realm, client-id) -> workspace, team. enabled: false để khoá client.
+  # Client Keycloak (do vận hành tạo theo docs/key-access/DAK_API_SPEC.md mục 2.3).
+  # Client team: (realm, client-id) -> workspace, team. enabled: false để khoá client.
+  # Client nội bộ của by-column: kind: internal, không cần workspace/team, ví dụ
+  #   - realm: vlp-tenantw1xjixm
+  #     client-id: <client-noi-bo>
+  #     kind: internal
   clients:
     # GIẢ ĐỊNH — client-id của team teamtscauiy trong realm vlp-tenantw1xjixm, workspace wsw7vtwvi.
     - realm: vlp-tenantw1xjixm
@@ -38,4 +42,28 @@ dak:
     # Cùng path của luồng column/cdr crypto cũ, tên key hai phần <database>.<table> (chữ thường).
     # Có thể dùng thêm {tenant}, {workspace} nếu secret được tách theo namespace.
     path-template: hla-datalake/datalake/spark-application/{database}.{table}
+    # Key theo cột của GET /api/v1/keys/by-column. Mỗi phần là MỘT đoạn đường dẫn riêng. Mock tạo key ở đây bằng
+    # cas=0 (không bao giờ ghi đè) -> token Vault cần thêm quyền create trên path này.
+    column-path-template: dak/column-keys/{database}/{table}/{column}
     key-field: keyPrefix
+
+  # Grant theo cột cho client team (thay cho phiếu được duyệt của DAK). Client nội bộ (kind: internal) không cần grant.
+  # Ví dụ:
+  #   grants:
+  #     - team: teamtscauiy
+  #       database: demo_db
+  #       table: users_cdr
+  #       columns: [msisdn, imei]
+  #       expires-at: 2027-10-22T00:00:00Z   # để trống = không hết hạn
+  grants: []
+
+  # YC của luồng nội bộ.
+  yc:
+    # Số YC OPEN tối đa cho mỗi (client, database, table); vượt thì MISSING + reason=yc_limit_reached.
+    max-open-per-table: 50
+    # true: onMissing=request tạo key ngay và trả READY (chỉ để chạy thử nhanh; DAK thật luôn mở YC).
+    auto-fulfill: false
+
+  # Endpoint quản trị /mock-admin/** (tạo key cho YC, từ chối, khoá cột). Để trống = tắt (trả 404).
+  admin:
+    token: ${MOCK_ADMIN_TOKEN:}

@@ -91,14 +91,18 @@ spec:
         value: "name,city"
       - name: CRYPTO_KEY_FIELD
         value: "created_at"
-      # Nguồn keyPrefix do extension tự đọc từ các biến môi trường dưới đây (CHỈ driver cần).
+      # cdr_encrypt/cdr_decrypt dùng MỖI CỘT MỘT KEY: app gọi hàm 4 tham số
+      # cdr_encrypt('<DB_NAME>.<TABLE_NAME>', '<tên cột chữ thường>', <cột>, <CRYPTO_KEY_FIELD>).
+      - name: CRYPTO_KEY_SCOPE
+        value: "column"
+      # Nguồn key do extension tự đọc từ các biến môi trường dưới đây (CHỈ driver cần).
       #    CRYPTO_PREFIX_SOURCE=dak -> xin access token client_credentials ở DAK_TOKEN_URL (Keycloak, realm của
-      #    tenant) bằng DAK_CLIENT_ID/DAK_CLIENT_SECRET, rồi gọi DAK: GET /api/v1/keys/<DB_NAME>/<TABLE_NAME>.
-      #    Tên key là DB_NAME.TABLE_NAME chữ thường (app tự ghép). Secret lấy từ K8s Secret "spark-dak-client"
-      #    (key "clientSecret") — tạo TRƯỚC khi apply, xem chú thích ở cuối file.
-      #    CHỈ dùng DAK: manifest không còn VAULT_* nên job không đọc được Vault cũ. Fallback thủ công khi DAK sự
-      #    cố = đổi thành "vault" VÀ thêm lại khối VAULT_* (docs/column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md mục 4.6).
-      #    KHÔNG đặt "dak,vault": lib từ chối, vì fallback tự động sẽ bỏ qua phân quyền của DAK.
+      #    tenant) bằng DAK_CLIENT_ID/DAK_CLIENT_SECRET, rồi gọi DAK:
+      #    GET /api/v1/keys/by-column?database=<DB_NAME>&table=<TABLE_NAME>&columns=name,city&onMissing=...&tag=internal.
+      #    Lần mã hoá đầu tiên của một cột: DAK mở yêu cầu (YC) và job lỗi PENDING kèm mã YC; người có quyền bên DAK tạo
+      #    key (dak-mock: POST /mock-admin/yc/<mã>/fulfill) rồi chạy lại job.
+      #    Secret lấy từ K8s Secret "spark-dak-client" (key "clientSecret") — tạo TRƯỚC khi apply, xem cuối file.
+      #    Key theo cột CHỈ có ở DAK: không có fallback về Vault cũ.
       - name: CRYPTO_PREFIX_SOURCE
         value: "dak"
       # Đang trỏ tới dak-mock (Service "dak-mock" cùng namespace, HTTP). Khi có DAK thật: đổi DAK_ADDR sang
@@ -110,14 +114,22 @@ spec:
       # Token endpoint của realm tenant hiện tại.
       - name: DAK_TOKEN_URL
         value: "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"
-      # Client của team trong realm vlp-tenantw1xjixm; phải khớp client-id trong ConfigMap dak-mock-config.
+      # CLIENT NỘI BỘ của luồng by-column trong realm vlp-tenantw1xjixm (không phải client của team); trên dak-mock phải
+      # được khai trong ConfigMap dak-mock-config với "kind: internal". GIẢ ĐỊNH — thay bằng client-id thật.
+      # Client nội bộ gọi đường theo bảng sẽ nhận 403, nên job này không dùng được column_encrypt.
       - name: DAK_CLIENT_ID
-        value: "team-de-ws8"
+        value: "<client-id-noi-bo>"
       - name: DAK_CLIENT_SECRET
         valueFrom:
           secretKeyRef:
             name: spark-dak-client
             key: clientSecret
+      # Client nội bộ BẮT BUỘC gửi tag=internal (thiếu thì DAK trả 400 invalid_tag).
+      - name: DAK_TAG
+        value: "internal"
+      # Tên job gửi làm header X-Dak-Caller để DAK ghi audit. [A-Za-z0-9._-]{1,128}.
+      - name: DAK_CALLER
+        value: "vlp-test-job-hungvt-cdr"
       # Mặc định "false" — bật "true" CHỈ khi cần trace lỗi wire encryption
       # (in ra hex dump SASL wrap/unwrap rất dài, xem SPARK_HDFS_WIRE_ENCRYPTION_TASK.md mục 14.2).
       - name: HDFS_SASL_DEBUG
@@ -152,7 +164,7 @@ spec:
       - name: HDFS_SASL_DEBUG
         value: "false"
 
-  # Secret "spark-dak-client" (client secret của team trên Keycloak, NHẠY CẢM — không commit) PHẢI có trước,
+  # Secret "spark-dak-client" (client secret của CLIENT NỘI BỘ by-column trên Keycloak, NHẠY CẢM — không commit) PHẢI có trước,
   # cùng namespace với driver (secretKeyRef không đọc được Secret ở namespace khác):
   #   read -rs -p "DAK client secret: " S; echo
   #   kubectl create secret generic spark-dak-client \

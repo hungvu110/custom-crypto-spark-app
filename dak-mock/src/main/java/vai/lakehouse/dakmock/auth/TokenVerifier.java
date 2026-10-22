@@ -22,6 +22,7 @@ import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
 import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.stereotype.Component;
+import vai.lakehouse.dakmock.config.ClientKind;
 import vai.lakehouse.dakmock.config.DakProperties;
 import vai.lakehouse.dakmock.web.DakApiException;
 
@@ -37,8 +38,13 @@ import vai.lakehouse.dakmock.web.DakApiException;
 @Component
 public class TokenVerifier {
 
-  /** Danh tính bên gọi sau khi xác minh. */
-  public record Caller(String realm, String clientId, String tenant, String workspace, String team) {}
+  /** Danh tính bên gọi sau khi xác minh. Client nội bộ có {@code workspace}/{@code team} rỗng. */
+  public record Caller(String realm, String clientId, String tenant, String workspace, String team, ClientKind kind) {
+
+    public boolean isInternal() {
+      return kind == ClientKind.INTERNAL;
+    }
+  }
 
   private record RealmEntry(DakProperties.Realm realm, NimbusJwtDecoder decoder) {}
 
@@ -80,7 +86,7 @@ public class TokenVerifier {
       throw DakApiException.invalidToken("client " + azp + " is not registered or is disabled in realm "
           + entry.realm().realm());
     }
-    return new Caller(entry.realm().realm(), azp, entry.realm().tenant(), client.workspace(), client.team());
+    return new Caller(entry.realm().realm(), azp, entry.realm().tenant(), client.workspace(), client.team(), client.kind());
   }
 
   private static String bearerToken(String header) {

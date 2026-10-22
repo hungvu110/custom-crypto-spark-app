@@ -35,6 +35,16 @@ class CdrCipherCoreSpec extends AnyFlatSpec with Matchers {
     CdrCipherCore.decrypt(CdrCipherCore.encrypt(plaintext, keyInputPrefixOnly), keyInputPrefixOnly) shouldBe plaintext
   }
 
+  it should "roundtrip với key cột dạng DAK sinh: Base64 của 32 byte (44 ký tự, có '+', '/', '=')" in {
+    val dakKey = "q+3Z/0aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2Y="
+    dakKey should have length 44
+    val keyInput = dakKey + Field
+    val encrypted = CdrCipherCore.encrypt(Plaintext, keyInput)
+
+    CdrCipherCore.decrypt(encrypted, keyInput) shouldBe Plaintext
+    encrypted should not be CdrCipherCore.encrypt(Plaintext, Prefix + Field)
+  }
+
   it should "ném lỗi rõ ràng thay vì lộ nguyên exception gốc khi decrypt sai key" in {
     val ex = intercept[IllegalStateException](CdrCipherCore.decrypt(Ciphertext, "sai-key-hoan-toan"))
     ex.getMessage should include("CDR partner decrypt failed")

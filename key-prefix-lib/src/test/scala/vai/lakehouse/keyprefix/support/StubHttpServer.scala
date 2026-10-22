@@ -51,7 +51,8 @@ final class StubHttpServer extends AutoCloseable {
     val headers = ex.getRequestHeaders.asScala.map { case (k, v) => k.toLowerCase -> v.asScala.headOption.getOrElse("") }.toMap
     val method = ex.getRequestMethod
     val path = ex.getRequestURI.getPath
-    recorded.add(Recorded(method, path, headers, new String(buf.toByteArray, StandardCharsets.UTF_8)))
+    val query = Option(ex.getRequestURI.getRawQuery).getOrElse("")
+    recorded.add(Recorded(method, path, headers, new String(buf.toByteArray, StandardCharsets.UTF_8), query))
 
     val response = Option(routes.get((method, path))).map(_.next()).getOrElse(Response(404, """{"error":"not_found"}"""))
     if (response.delayMillis > 0) Thread.sleep(response.delayMillis)
@@ -67,15 +68,21 @@ object StubHttpServer {
 
   final case class Response(status: Int, body: String, headers: Map[String, String] = Map.empty, delayMillis: Long = 0)
 
-  final case class Recorded(method: String, path: String, headers: Map[String, String], body: String) {
+  final case class Recorded(method: String, path: String, headers: Map[String, String], body: String,
+                            query: String = "") {
     /** Body dạng application/x-www-form-urlencoded đã giải mã. */
-    def form: Map[String, String] =
-      body.split("&").filter(_.nonEmpty).map { pair =>
-        val kv = pair.split("=", 2)
-        val value = if (kv.length > 1) kv(1) else ""
-        java.net.URLDecoder.decode(kv(0), "UTF-8") -> java.net.URLDecoder.decode(value, "UTF-8")
-      }.toMap
+    def form: Map[String, String] = decode(body)
+
+    /** Tham số query string đã giải mã. */
+    def params: Map[String, String] = decode(query)
   }
+
+  private def decode(encoded: String): Map[String, String] =
+    encoded.split("&").filter(_.nonEmpty).map { pair =>
+      val kv = pair.split("=", 2)
+      val value = if (kv.length > 1) kv(1) else ""
+      java.net.URLDecoder.decode(kv(0), "UTF-8") -> java.net.URLDecoder.decode(value, "UTF-8")
+    }.toMap
 
   private final case class Route(responses: IndexedSeq[Response], calls: AtomicInteger) {
     def next(): Response = responses(math.min(calls.getAndIncrement(), responses.size - 1))

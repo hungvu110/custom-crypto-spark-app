@@ -26,7 +26,7 @@ class CdrAuditRuntimeSpec extends AnyFlatSpec with Matchers with Eventually {
 
     def register(statementId: Option[String] = None, ugiUser: Option[String] = Some("presto"),
                  counts: Option[CountSource] = None): Usage =
-      runtime.registerUsage("cdr_decrypt", "demo_db.t", "isdn", "start_datetime", statementId, ugiUser, counts)
+      runtime.registerUsage("cdr_decrypt", "demo_db.t", "isdn", "isdn", "start_datetime", statementId, ugiUser, counts)
 
     def plan(usages: Usage*): String =
       usages.map(u => s"Project [UDF(isdn#1, start_datetime#2)[cdr_audit:${u.usageId}] AS isdn#3]").mkString("\n")

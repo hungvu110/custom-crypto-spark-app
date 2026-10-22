@@ -43,6 +43,16 @@ class DakPrefixSourceSpec extends AnyFlatSpec with Matchers with BeforeAndAfterE
     req.headers.get("x-request-id").exists(_.nonEmpty) shouldBe true
   }
 
+  it should "gửi X-Dak-Caller chỉ khi được cấu hình" in {
+    server.stub("POST", TokenPath, tokenResponse("tok-1"))
+    server.stub("GET", KeyPath, keyOk())
+
+    source().read("demo_db.users_cdr")
+    source(cfg().copy(caller = Some("engine-1"))).read("demo_db.users_cdr")
+
+    server.requestsTo(KeyPath).map(_.headers.get("x-dak-caller")) shouldBe List(None, Some("engine-1"))
+  }
+
   it should "chuẩn hoá tên bảng về chữ thường trước khi gọi DAK" in {
     server.stub("POST", TokenPath, tokenResponse("tok-1"))
     server.stub("GET", KeyPath, keyOk())

@@ -1,5 +1,9 @@
 # Plan: audit log cho `cdr_encrypt` / `cdr_decrypt` (module `cdr-crypto-udf`)
 
+> **Lưu ý (2026-10-22):** từ `auditVersion` 2, mỗi phần tử `usages[]` có thêm `column` (tên cột dùng để chọn key, đặt sau `dataset`),
+> vì hàm đã chuyển sang key theo cột ([CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md](CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md)). Mẫu JSON bên dưới là
+> `auditVersion` 1; mẫu hiện tại ở [CDR_CRYPTO_SQL_ENGINE_GUIDE.md](CDR_CRYPTO_SQL_ENGINE_GUIDE.md) mục 5.3.
+
 Trạng thái: **đang triển khai** — tiến độ, kết quả kiểm tra và lịch sử thay đổi thiết kế ở
 [CDR_CRYPTO_AUDIT_LOG_PROGRESS.md](CDR_CRYPTO_AUDIT_LOG_PROGRESS.md). Liên quan: [PARTNER_CDR_CRYPTO_UDF_PLAN.md](PARTNER_CDR_CRYPTO_UDF_PLAN.md).
 Môi trường: Spark 3.5.1, Scala 2.12, Hadoop 3.3.4.

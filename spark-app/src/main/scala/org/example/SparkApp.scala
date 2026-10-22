@@ -26,6 +26,8 @@ import scala.util.Try
  * nạp jar lib (Dockerfile + spark.jars), đăng ký extension (spark.sql.extensions) rồi khai tên hàm SQL:
  *   CRYPTO_ENCRYPT_FUNCTION/CRYPTO_DECRYPT_FUNCTION (vd column_encrypt/column_decrypt hoặc cdr_encrypt/cdr_decrypt),
  *   CRYPTO_ENCRYPTED_COLUMNS (phân cách bằng dấu phẩy) và CRYPTO_KEY_FIELD. Để trống cả 2 tên hàm = không mã hoá.
+ *   CRYPTO_KEY_SCOPE: table (mặc định, hàm 3 tham số như column_encrypt) hoặc column (hàm 4 tham số như cdr_encrypt key
+ *   theo cột — app truyền thêm tên cột chữ thường làm tham số 2).
  * Tên key tra keyPrefix là `DB_NAME.TABLE_NAME` chữ thường (CryptoStep.keyName). Nguồn keyPrefix
  * (CRYPTO_PREFIX_SOURCE, DAK_*, VAULT_*, ...) do lib tự đọc từ biến môi trường, app không đụng tới.
  */
@@ -64,7 +66,8 @@ object SparkApp {
     // Mặc định KHÔNG mã hoá (cả 2 tên hàm rỗng). Sai/thiếu cấu hình ném IllegalArgumentException.
     crypto            = CryptoStep.parse(
       env("CRYPTO_ENCRYPT_FUNCTION", ""), env("CRYPTO_DECRYPT_FUNCTION", ""),
-      env("CRYPTO_ENCRYPTED_COLUMNS", ""), env("CRYPTO_KEY_FIELD", "")),
+      env("CRYPTO_ENCRYPTED_COLUMNS", ""), env("CRYPTO_KEY_FIELD", ""),
+      env("CRYPTO_KEY_SCOPE", KeyScope.Table.name)),
     // Mặc định TẮT — bật DEBUG cho SASL/Token in ra hex dump rất dài, chỉ nên
     // bật khi thật sự cần trace lỗi wire encryption (mục 14.2 của plan gốc).
     hdfsSaslDebug     = env("HDFS_SASL_DEBUG", "false").toLowerCase == "true"
@@ -294,6 +297,7 @@ object SparkApp {
         Log.kv("column crypto",           c.description)
         Log.kv("CRYPTO_ENCRYPTED_COLUMNS", c.encryptedColumns.mkString(", "))
         Log.kv("CRYPTO_KEY_FIELD",        c.keyField)
+        Log.kv("CRYPTO_KEY_SCOPE",        c.keyScope.name)
       case None => Log.kv("column crypto", "DISABLED")
     }
     Log.kv("HDFS_SASL_DEBUG",     cfg.hdfsSaslDebug)

@@ -7,11 +7,16 @@ import java.util.UUID
 /** Định danh cố định của engine/job, ghi vào mọi event (mỗi engine thuộc đúng một team). */
 final case class EngineIdentity(tenant: String, workspace: String, team: String, engineId: String)
 
-/** Thông tin tĩnh của một lần dùng hàm, biết ngay lúc builder chạy. Không chứa giá trị dữ liệu hay keyPrefix. */
+/**
+ * Thông tin tĩnh của một lần dùng hàm, biết ngay lúc builder chạy. Không chứa giá trị dữ liệu hay keyPrefix.
+ *
+ * @param column tên cột dùng để chọn key (tham số 2 của hàm, chữ thường) — có từ `auditVersion` 2
+ */
 final case class UsageInfo(
   usageId: String,
   function: String,
   dataset: String,
+  column: String,
   valueExpr: String,
   keyFieldExpr: String)
 
@@ -94,6 +99,7 @@ final case class AuditEvent(
     usage.info.foreach { i =>
       json.str("function", i.function)
       json.str("dataset", i.dataset)
+      json.str("column", i.column)
       json.str("valueExpr", i.valueExpr)
       json.str("keyFieldExpr", i.keyFieldExpr)
     }
@@ -107,7 +113,8 @@ final case class AuditEvent(
 
 object AuditEvent {
 
-  val Version = 1
+  /** 2: mỗi usage có thêm `column` (key theo cột). */
+  val Version = 2
 
   /** Tách event có quá `maxUsages` phần tử `usages` thành nhiều phần (`part`/`parts`), mỗi phần một `eventId`, để một dòng log luôn nhỏ. */
   def split(event: AuditEvent, maxUsages: Int): Seq[AuditEvent] =

@@ -25,6 +25,11 @@ public class KeyService {
   }
 
   public KeyResponse fetch(Caller caller, String database, String table) {
+    if (caller.isInternal()) {
+      // Đường theo bảng đi qua phiếu của một team; client nội bộ không thuộc team nào (vòng 2 của DAK).
+      audit("DENIED", 403, "access_denied", "NOT_A_TEAM", caller, database, table, null);
+      throw DakApiException.accessDenied(database, table);
+    }
     try {
       VaultKeyReader.KeyMaterial key = vault.read(caller.tenant(), caller.workspace(), database, table);
       audit("ALLOWED", 200, "-", "-", caller, database, table, key.version());

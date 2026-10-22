@@ -8,7 +8,7 @@ class UsageRegistrySpec extends AnyFlatSpec with Matchers {
   private val Ttl = 1000L
 
   private def usage(id: Int, createdAt: Long, counts: Option[CountSource] = None) =
-    new Usage(UsageInfo(f"u$id%012x", "cdr_decrypt", "d.t", "isdn", "start_datetime"), None, None, counts, createdAt)
+    new Usage(UsageInfo(f"u$id%012x", "cdr_decrypt", "d.t", "isdn", "isdn", "start_datetime"), None, None, counts, createdAt)
 
   "UsageRegistry" should "trả usage đã đăng ký theo usageId" in {
     val registry = new UsageRegistry(Ttl, 100, () => 0L)

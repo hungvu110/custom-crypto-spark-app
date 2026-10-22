@@ -1,5 +1,9 @@
 # Plan: UDF bọc thư viện mã hoá CDR của đối tác (Data Lake / `TransformDL`)
 
+> **Lưu ý (2026-10-22):** plan này mô tả bản đầu, key cấp **bảng** và cú pháp 3 tham số. Bản hiện tại dùng **mỗi cột một key** qua
+> DAK `by-column`, cú pháp `cdr_encrypt('<database>.<table>', '<tên cột>', <giá trị>, <keyField>)`:
+> [CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md](CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md). Phần thuật toán đối tác và `CdrCipherCore` ở đây vẫn đúng.
+
 Kế hoạch triển khai đầy đủ cho việc tích hợp thuật toán mã hoá CDR do đối tác cung cấp
 (`DataLakeSecurity_jv8.jar`, class `com.viettel.datalake.security.TransformDL`) vào sql-engine
 và `spark-app`, dưới dạng **UDF** — bắt buộc phải đi hướng này vì phải *tuân theo đúng* thuật

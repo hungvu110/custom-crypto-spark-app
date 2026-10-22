@@ -44,10 +44,10 @@ Công thức nằm ở `CryptoExpressions`, dùng chung cho **DataFrame API** (`
 (`CdrCrypto.transform`) nên kết quả giống hệt nhau:
 
 ```scala
-// DataFrame API
-val enc = CdrCrypto.encryptColumns(df, "sub_rel_product", keyField = "start_datetime", Seq("isdn"))
-val dec = CdrCrypto.decryptColumns(enc, "sub_rel_product", keyField = "start_datetime", Seq("isdn"))
-// SQL:  SELECT cdr_encrypt('sub_rel_product', isdn, start_datetime) FROM t
+// DataFrame API (mỗi cột một key, xin qua DAK by-column theo tên cột của DataFrame)
+val enc = CdrCrypto.encryptColumns(df, "demo_db.sub_rel_product", keyField = "start_datetime", Seq("isdn"))
+val dec = CdrCrypto.decryptColumns(enc, "demo_db.sub_rel_product", keyField = "start_datetime", Seq("isdn"))
+// SQL:  SELECT cdr_encrypt('demo_db.sub_rel_product', 'isdn', isdn, start_datetime) FROM t
 ```
 
 ## keyPrefix — hạ tầng dùng chung `key-prefix-lib`
@@ -110,7 +110,7 @@ Kết quả được cache trong bộ nhớ theo bảng, `CRYPTO_CACHE_TTL_SECON
 Cùng các key logic này, sql-engine cấu hình qua Spark conf `spark.columncrypto.<key>` (hoặc `spark.cdrcrypto.<key>`) thay vì env
 (`source`, `file.dir`, `vault.addr`, `vault.role`, `vault.kvBasePath`, `vault.authMount`,
 `vault.kvMount`, `vault.keyField`, `vault.jwtPath`, `vault.authMethod`, `vault.token`, `cacheTtlSeconds`,
-`dak.addr`, `dak.tokenUrl`, `dak.clientId`, `dak.clientSecret`, `dak.allowInsecureHttp`).
+`dak.addr`, `dak.tokenUrl`, `dak.clientId`, `dak.clientSecret`, `dak.allowInsecureHttp`, `dak.tag`, `dak.caller`).
 
 ## Lấy keyPrefix từ DAK (`CRYPTO_PREFIX_SOURCE=dak`)
 
@@ -145,6 +145,55 @@ số đầu của hàm, vd `cdr_decrypt('demo_db.users_cdr', ...)`). Tên một 
 xem [`SPARK_APP_REFERENCE.md`](../project/SPARK_APP_REFERENCE.md)) và Secret token Vault, rồi chạy lại job. Fallback đọc secret `<VAULT_KV_PATH>/<database>.<table>` ở Vault cũ và **bỏ qua** phân quyền, thời hạn quyền của
 DAK — chỉ dùng khi DAK sự cố và quay lại `dak` ngay khi DAK phục hồi. Thiết kế và quy trình: `docs/key-access/DAK_KEY_ACCESS_SQL_ENGINE_PLAN.md`,
 hợp đồng API: `docs/key-access/DAK_API_SPEC.md`.
+
+## Key theo cột qua DAK `by-column` (`ColumnKeySource`)
+
+Ngoài key cấp **bảng** ở trên, `key-prefix-lib` có nguồn key cấp **cột**: mỗi cột của bảng một key, lấy qua
+`GET <DAK_ADDR>/api/v1/keys/by-column`. Thiết kế: [`DAK_BY_COLUMN_CLIENT_PLAN.md`](DAK_BY_COLUMN_CLIENT_PLAN.md); mock để test:
+[`dak-mock/README.md`](../../dak-mock/README.md) mục 2.1.
+
+> **Bên dùng:** `cdr_encrypt`/`cdr_decrypt` (4 tham số) và `CdrCrypto` DataFrame API của `cdr-crypto-udf` đọc nguồn này
+> ([`CDR_CRYPTO_SQL_ENGINE_GUIDE.md`](../cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md)). `column_*` vẫn dùng key cấp bảng ở trên.
+
+Khác với key cấp bảng:
+
+| Điểm               | Key theo cột                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| Nguồn              | **Chỉ `dak`**. `source` khác (`file`, `vault`, hoặc không đặt) bị từ chối: không có key cột nào ở file hay Vault cũ   |
+| Client             | **Client nội bộ** DAK cấp cho luồng này, và phải đặt `dak.tag=internal` (`DAK_TAG=internal`)                         |
+| Mã hoá / giải mã   | Mã hoá gửi `onMissing=request`: cột chưa có key thì DAK mở một yêu cầu (YC). Giải mã gửi `onMissing=none`           |
+| Kết quả            | Chỉ dùng được khi **mọi** cột được hỏi đều có key; một cột chưa có thì cả lời gọi lỗi, nêu từng cột và mã YC         |
+| Cache              | Theo `(bảng, cột)`, cùng `cacheTtlSeconds` (mặc định 300). Key cột không bao giờ đổi, TTL chỉ giới hạn thời gian một key đã bị khoá trên DAK còn dùng được |
+
+Hai cấu hình mới (đọc chung bởi nguồn `dak` của cả key bảng lẫn key cột):
+
+| Key logic    | sql-engine                  | SparkApplication | Ý nghĩa                                                                                       |
+| ------------ | --------------------------- | ---------------- | --------------------------------------------------------------------------------------------- |
+| `dak.tag`    | `spark.cdrcrypto.dak.tag`    | `DAK_TAG`        | Client nội bộ: `internal`. Client team: để trống. Chỉ chữ thường, số, `_`, `-`               |
+| `dak.caller` | `spark.cdrcrypto.dak.caller` | `DAK_CALLER`     | Tuỳ chọn. Gửi làm header `X-Dak-Caller` (tên engine/job), DAK chỉ dùng để ghi audit. `[A-Za-z0-9._-]{1,128}` |
+
+Giá trị sai định dạng làm lib báo lỗi cấu hình ngay khi dựng nguồn (thông báo nêu tên key, không in lại giá trị).
+
+**Một client cho một job SparkApplication.** Client nội bộ không thuộc team nào nên gọi đường theo bảng `/{database}/{table}` sẽ nhận
+`403`. Trên SparkApplication, `column_*` và `cdr_*` đọc **chung** bộ `DAK_*`, nên một job không dùng được cả `column_encrypt` (cần
+client team) lẫn `cdr_encrypt` theo cột (cần client nội bộ). Trên sql-engine không vướng vì hai bộ hàm có namespace riêng
+(`spark.columncrypto.*` / `spark.cdrcrypto.*`).
+
+Lỗi thường gặp:
+
+| Thông báo chứa                                   | Nguyên nhân / cách xử lý                                                                                         |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `Column keys are only available from DAK`        | `source` chưa đặt `dak`                                                                                          |
+| `HTTP 400 invalid_tag` … `check the dak.tag`     | Client nội bộ chưa đặt `dak.tag=internal`, hoặc client team lại đặt `dak.tag`                                    |
+| `HTTP 403 access_denied` … `grant`               | Client team thiếu grant còn hạn trên ít nhất một cột                                                             |
+| `'<cột>' PENDING (requestCode=YC-…)`             | Cột chưa có key, DAK đã mở YC. Người có quyền bên DAK tạo key rồi chạy lại (dak-mock: `POST /mock-admin/yc/{code}/fulfill`) |
+| `'<cột>' MISSING (reason=not_requested)`         | Khi giải mã: sai tên bảng/cột, hoặc cột chưa từng được mã hoá                                                    |
+| `'<cột>' MISSING (reason=yc_limit_reached)`      | Bảng đã có quá nhiều YC đang mở; chờ DAK xử lý rồi thử lại                                                       |
+| `'<cột>' REJECTED`                               | YC bị DAK từ chối; không thử lại, liên hệ DAK                                                                    |
+| `'<cột>' DISABLED`                               | Key của cột đang bị khoá trên DAK                                                                                |
+| `invalid by-column response`                     | DAK trả sai hợp đồng (thiếu/thừa cột, lệch bảng, trạng thái lạ); gửi `requestId` cho DAK                         |
+
+Thông báo lỗi không bao giờ chứa token, secret hay key, chỉ mã lỗi, `requestId`, tên bảng/cột và mã YC.
 
 ## Lấy keyPrefix từ HashiCorp Vault (`CRYPTO_PREFIX_SOURCE=vault`)
 

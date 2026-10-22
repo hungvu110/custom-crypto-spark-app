@@ -33,7 +33,8 @@ trường hay mount thêm Secret.
 
 ```
 Query console ──SQL──> STS (driver)
-                         │  analyze: gặp column_encrypt('customers', name, id)   hoặc   cdr_encrypt('users_cdr', isdn, start_datetime)
+                         │  analyze: gặp column_encrypt('customers', name, id)   hoặc   cdr_encrypt('db.users_cdr', 'isdn', isdn, start_datetime)
+                         │     (cdr_* xin key theo CỘT qua DAK by-column — xem docs/cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md)
                          │     └─ Extension ─> key-prefix-lib (CachedPrefixSource) ─> Vault (hoặc file)
                          │           keyPrefix của bảng 'customers' / 'users_cdr' (chỉ driver gọi, cache theo TTL)
                          │           - authMethod=token      : 1 request GET secret kèm token tĩnh (mặc định của hướng dẫn này)
@@ -244,7 +245,7 @@ spark.columncrypto.vault.kvBasePath=hla-datalake/datalake/spark-application
 **Cú pháp với `source=dak`**: tham số đầu của hàm bắt buộc là **`'database.table'`**, được chuẩn hoá chữ thường:
 
 ```sql
-SELECT id, cdr_decrypt('demo_db.users_cdr', name, created_at) AS name FROM demo_db.users_cdr;
+SELECT id, cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name FROM demo_db.users_cdr;
 INSERT INTO demo_db.customers SELECT id, column_encrypt('demo_db.customers', name, id) FROM staging_customers;
 ```
 
@@ -418,24 +419,26 @@ Kiểm tra extension đã nạp:
 DESCRIBE FUNCTION cdr_encrypt;
 ```
 
-Cú pháp: `cdr_encrypt('<bảng>', <cột>, <giá trị keyField>)` và `cdr_decrypt('<bảng>', <cột đã mã hoá>, <giá trị keyField>)` — **cùng
-hình dạng 3 tham số** với `column_*`. Khác ở cách dùng `keyField`: key được tạo bằng `keyPrefix + keyField` **nối chuỗi thô** (không
-băm), nên `keyField` phải khớp **chính xác từng ký tự** với hệ thống của đối tác (không thêm dấu cách, không đổi định dạng ngày).
+Cú pháp: `cdr_encrypt('<database>.<bảng>', '<tên cột>', <giá trị>, <giá trị keyField>)` và
+`cdr_decrypt('<database>.<bảng>', '<tên cột>', <giá trị đã mã hoá>, <giá trị keyField>)` — **4 tham số**, khác `column_*` (3 tham số):
+`cdr_*` dùng **mỗi cột một key**, xin qua DAK `by-column` theo tên cột ở tham số 2. Cấu hình và hướng dẫn đầy đủ:
+[CDR_CRYPTO_SQL_ENGINE_GUIDE.md](../cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md). Key được tạo bằng `key của cột + keyField` **nối chuỗi
+thô** (không băm), nên `keyField` phải khớp **chính xác từng ký tự** với lúc mã hoá (không thêm dấu cách, không đổi định dạng ngày).
 
 ```sql
--- Giải mã CDR do đối tác giao: cột isdn đã mã hoá, start_datetime là keyField (giữ plaintext)
+-- Giải mã: cột isdn đã mã hoá bằng key của cột isdn, start_datetime là keyField (giữ plaintext)
 SELECT start_datetime,
-       cdr_decrypt('sub_rel_product', isdn, start_datetime) AS isdn
+       cdr_decrypt('db.cdr_from_partner', 'isdn', isdn, start_datetime) AS isdn
 FROM db.cdr_from_partner;
 
--- Ghi CDR mã hoá theo đúng thuật toán đối tác
+-- Ghi CDR mã hoá: key gắn với bảng/cột nơi dữ liệu được lưu
 INSERT INTO db.cdr_out
-SELECT start_datetime, cdr_encrypt('sub_rel_product', isdn, start_datetime)
+SELECT start_datetime, cdr_encrypt('db.cdr_out', 'isdn', isdn, start_datetime)
 FROM staging_cdr;
 
 -- View cho người dùng cuối
 CREATE VIEW db.cdr_plain AS
-SELECT start_datetime, cdr_decrypt('sub_rel_product', isdn, start_datetime) AS isdn
+SELECT start_datetime, cdr_decrypt('db.cdr_from_partner', 'isdn', isdn, start_datetime) AS isdn
 FROM db.cdr_from_partner;
 ```
 
@@ -444,14 +447,15 @@ Cột đã mã hoá phải khai kiểu `STRING` trong DDL (giá trị là Base64
 ### 6.3. Đọc bảng do SparkApplication ghi (manifest `spark-application-cdr.yaml`)
 
 Job `k8s/spark-application-cdr.yaml` ghi bảng `${DB_NAME}.${TABLE_NAME}` gồm `id, name, city, created_at`, mã hoá 2 cột
-`name`, `city` (`CRYPTO_ENCRYPTED_COLUMNS`) bằng `cdr_encrypt`, lấy giá trị cột `created_at` (`CRYPTO_KEY_FIELD`, giữ plaintext)
-làm `keyField`. Để đọc lại trên sql-engine, gọi `cdr_decrypt` với **cùng tên bảng và cùng cột `keyField`**:
+`name`, `city` (`CRYPTO_ENCRYPTED_COLUMNS`) bằng `cdr_encrypt` với **mỗi cột một key** (`CRYPTO_KEY_SCOPE=column`), lấy giá trị cột
+`created_at` (`CRYPTO_KEY_FIELD`, giữ plaintext) làm `keyField`. Để đọc lại trên sql-engine, gọi `cdr_decrypt` với **cùng
+`database.table`, cùng tên cột và cùng cột `keyField`**:
 
 ```sql
--- Giả sử manifest đặt DB_NAME=demo_db, TABLE_NAME=users_cdr (khớp secret .../spark-application/users_cdr)
+-- Giả sử manifest đặt DB_NAME=demo_db, TABLE_NAME=users_cdr
 SELECT id,
-       cdr_decrypt('users_cdr', name, created_at) AS name,
-       cdr_decrypt('users_cdr', city, created_at) AS city,
+       cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name,
+       cdr_decrypt('demo_db.users_cdr', 'city', city, created_at) AS city,
        created_at
 FROM demo_db.users_cdr
 ORDER BY id;
@@ -459,30 +463,29 @@ ORDER BY id;
 -- View để người dùng cuối không phải nhớ cú pháp
 CREATE VIEW demo_db.users_cdr_plain AS
 SELECT id,
-       cdr_decrypt('users_cdr', name, created_at) AS name,
-       cdr_decrypt('users_cdr', city, created_at) AS city,
+       cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name,
+       cdr_decrypt('demo_db.users_cdr', 'city', city, created_at) AS city,
        created_at
 FROM demo_db.users_cdr;
 ```
 
 Quy tắc khớp với manifest:
 
-| Trong manifest                           | Trong câu SQL                                                                                                                                        |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TABLE_NAME`                             | Tham số **đầu** của hàm (`'users_cdr'`) — quyết định `keyPrefix` nào được tra. Phải **bằng `TABLE_NAME` lúc ghi**, không phải tên bảng nào cũng được |
-| `DB_NAME` + `TABLE_NAME`                 | Tên bảng trong `FROM` (`demo_db.users_cdr`)                                                                                                          |
-| `CRYPTO_ENCRYPTED_COLUMNS` (`name,city`) | Các cột bọc trong `cdr_decrypt(...)`; cột khác (`id`, `created_at`) đọc thẳng                                                                        |
-| `CRYPTO_KEY_FIELD` (`created_at`)        | Tham số **thứ 3** của hàm — truyền đúng cột `created_at` của chính dòng đó                                                                           |
+| Trong manifest                           | Trong câu SQL                                                                                                                         |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_NAME` + `TABLE_NAME`                 | Tham số **đầu** của hàm (`'demo_db.users_cdr'`) và tên bảng trong `FROM`. Phải **bằng lúc ghi**, vì key gắn với bảng này              |
+| `CRYPTO_ENCRYPTED_COLUMNS` (`name,city`) | Mỗi cột một lời gọi `cdr_decrypt(...)`, tên cột chữ thường ở tham số **thứ 2** (`'name'`, `'city'`) — quyết định key nào được dùng     |
+| `CRYPTO_KEY_FIELD` (`created_at`)        | Tham số **thứ 4** của hàm — truyền đúng cột `created_at` của chính dòng đó                                                             |
 
 Vì `cdr_*` **tất định** (cùng đầu vào → cùng ciphertext), có thể lọc trực tiếp trên cột đã mã hoá khi biết cả giá trị lẫn
 `created_at` của dòng, không phải quét giải mã toàn bảng:
 
 ```sql
 SELECT id, created_at,
-       cdr_decrypt('users_cdr', name, created_at) AS name
+       cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name
 FROM demo_db.users_cdr
 WHERE created_at = '2025-01-01 08:00:00'
-  AND name = cdr_encrypt('users_cdr', 'Alice Nguyen', '2025-01-01 08:00:00');
+  AND name = cdr_encrypt('demo_db.users_cdr', 'name', 'Alice Nguyen', '2025-01-01 08:00:00');
 ```
 
 Nếu bảng đã ghi bằng manifest column (`spark-application-column.yaml`, hàm `column_encrypt`), dùng cùng khuôn nhưng với

@@ -6,7 +6,7 @@ import vai.lakehouse.columncrypto.cdr.CdrCrypto
 import vai.lakehouse.keyprefix.{ChainedConfigSource, EnvConfigSource, SparkConfSource}
 
 /**
- * Runtime audit dùng chung cho cả tiến trình (giống `CdrCrypto.sharedPrefixSource`: Thrift Server khởi tạo extension lại theo từng
+ * Runtime audit dùng chung cho cả tiến trình (giống `CdrCrypto.sharedColumnKeySource`: Thrift Server khởi tạo extension lại theo từng
  * SparkSession, nhưng chỉ được có một listener và một hàng đợi). Đọc `spark.cdrcrypto.audit.*` lần đầu cần dùng; `None` khi audit tắt.
  * Cấu hình sai thì ném `IllegalArgumentException` — `CdrCryptoExtension` gọi tới ngay khi được nạp nên engine không khởi động được.
  */

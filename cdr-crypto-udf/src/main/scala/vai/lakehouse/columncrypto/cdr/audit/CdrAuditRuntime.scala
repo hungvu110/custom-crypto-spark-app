@@ -1,6 +1,7 @@
 package vai.lakehouse.columncrypto.cdr.audit
 
 import java.time.Instant
+import java.util.Locale
 import java.util.concurrent.{ConcurrentHashMap, Executors, ScheduledExecutorService, TimeUnit}
 
 import scala.util.Try
@@ -40,17 +41,19 @@ final class CdrAuditRuntime private[audit] (
    * Gọi trong builder của hàm: đăng ký usage rồi bọc biểu thức UDF bằng [[AuditTag]]. `build` nhận meter đếm dòng (nếu có Spark) để
    * gắn vào hàm biến đổi của UDF.
    */
-  def tag(function: String, dataset: String, value: Expression, fieldValue: Expression,
+  def tag(function: String, dataset: String, column: String, value: Expression, fieldValue: Expression,
           build: Option[AuditMeter] => Expression): Expression = {
     val meter = sparkContext.map(AuditMeter.register)
     val statementId = sparkContext.flatMap(sc => Option(sc.getLocalProperty(JobGroupProperty)))
-    val usage = registerUsage(function, dataset, describe(value), describe(fieldValue), statementId, currentUgiUser(), meter)
+    val usage = registerUsage(function, dataset, column, describe(value), describe(fieldValue), statementId,
+      currentUgiUser(), meter)
     AuditTag(build(meter), usage.usageId)
   }
 
-  def registerUsage(function: String, dataset: String, valueExpr: String, keyFieldExpr: String,
+  /** @param column tên cột dùng để chọn key (đã kiểm định dạng ở nguồn key) */
+  def registerUsage(function: String, dataset: String, column: String, valueExpr: String, keyFieldExpr: String,
                     statementId: Option[String], ugiUser: Option[String], counts: Option[CountSource]): Usage = {
-    val info = UsageInfo(AuditTag.newUsageId(), function, dataset,
+    val info = UsageInfo(AuditTag.newUsageId(), function, dataset, AuditText.limit(column.toLowerCase(Locale.ROOT)),
       AuditText.describeExpr(valueExpr), AuditText.describeExpr(keyFieldExpr))
     val usage = new Usage(info, statementId, ugiUser, counts, nanoTime())
     expire(registry.register(usage))
