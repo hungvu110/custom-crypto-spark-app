@@ -120,11 +120,6 @@ spec:
                 secretKeyRef:
                   name: spark-dak-client
                   key: clientSecret
-            # [DAK] Mã phiếu yêu cầu cấp key trên DAK (đi vào path /api/v1/keys/by-request/<mã>/<db>/<table>). Lib đọc
-            # spark.cdrcrypto.dak.requestCode / spark.columncrypto.dak.requestCode trước, không có mới đọc biến này.
-            # Đổi phiếu = sửa giá trị rồi restart engine. GIẢ ĐỊNH: thay bằng mã phiếu thật.
-            - name: DAK_REQUEST_CODE
-              value: "REQ-2026-000003"
           image: registry.cyberspace.vn/vlp/sql-engine:3.5.1-v1.7-nonroot-5
           imagePullPolicy: Always
           name: engine-server

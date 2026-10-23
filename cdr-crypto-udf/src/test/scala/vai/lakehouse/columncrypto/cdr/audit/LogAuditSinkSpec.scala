@@ -42,7 +42,7 @@ class LogAuditSinkSpec extends AnyFlatSpec with Matchers {
 
     val lines = linesOf(buf)
     lines should have size 1600
-    all(lines) should fullyMatch regex """CDR_AUDIT \{"auditVersion":1,.*\}"""
+    all(lines) should fullyMatch regex """CDR_AUDIT \{"auditVersion":2,.*\}"""
   }
 
   "Chế độ logger" should "ghi một message INFO khớp filter .*AUDIT.* của appender audit trên nền tảng" in {

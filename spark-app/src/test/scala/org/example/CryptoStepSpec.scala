@@ -61,6 +61,16 @@ class CryptoStepSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     }
   }
 
+  it should "đọc CRYPTO_KEY_SCOPE: mặc định table, nhận column (không phân biệt hoa thường), từ chối giá trị khác" in {
+    CryptoStep.parse("cdr_encrypt", "cdr_decrypt", "name", "created_at").map(_.keyScope) shouldBe Some(KeyScope.Table)
+    CryptoStep.parse("cdr_encrypt", "cdr_decrypt", "name", "created_at", " Column ").map(_.keyScope) shouldBe
+      Some(KeyScope.Column)
+    CryptoStep.parse("cdr_encrypt", "cdr_decrypt", "name", "created_at", "table").map(_.keyScope) shouldBe
+      Some(KeyScope.Table)
+    val ex = intercept[IllegalArgumentException](CryptoStep.parse("cdr_encrypt", "cdr_decrypt", "name", "created_at", "row"))
+    ex.getMessage should include("CRYPTO_KEY_SCOPE")
+  }
+
   "keyName" should "ghép DB_NAME.TABLE_NAME thành tên key chữ thường" in {
     CryptoStep.keyName("demo_db", "users_cdr") shouldBe "demo_db.users_cdr"
     CryptoStep.keyName("Demo_DB", "Users_CDR") shouldBe "demo_db.users_cdr"
@@ -92,6 +102,23 @@ class CryptoStepSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     val missingKey = intercept[IllegalArgumentException](
       CryptoStep.encrypt(plain, Table, settings.copy(keyField = "khong_co")))
     missingKey.getMessage should include("keyField")
+  }
+
+  "encrypt/decrypt với CRYPTO_KEY_SCOPE=column" should "gọi hàm 4 tham số (bảng, tên cột chữ thường, giá trị, keyField)" in {
+    // Hàm giả 4 tham số thay cho cdr_encrypt/cdr_decrypt (cdr-crypto-udf không có trên classpath test của app).
+    spark.udf.register("fake_encrypt4", (t: String, c: String, v: String, k: String) => s"$t|$c|$k|$v")
+    spark.udf.register("fake_decrypt4", (t: String, c: String, v: String, k: String) => v.stripPrefix(s"$t|$c|$k|"))
+    val columnSettings = CryptoSettings("fake_encrypt4", "fake_decrypt4", Seq("name", "city"), "created_at", KeyScope.Column)
+    val plain = BusinessLogic.sampleDataFrame(spark)
+
+    val encrypted = CryptoStep.encrypt(plain, Table, columnSettings)
+
+    encrypted.orderBy("id").collect().zip(plain.orderBy("id").collect()).foreach { case (e, p) =>
+      e.getAs[String]("name") shouldBe s"$Table|name|${p.getAs[String]("created_at")}|${p.getAs[String]("name")}"
+      e.getAs[String]("city") shouldBe s"$Table|city|${p.getAs[String]("created_at")}|${p.getAs[String]("city")}"
+    }
+    CryptoStep.decrypt(encrypted, Table, columnSettings).orderBy("id").collect().map(_.toSeq) shouldBe
+      plain.orderBy("id").collect().map(_.toSeq)
   }
 
   "encrypt" should "báo lỗi phân tích khi hàm chưa được extension nào đăng ký" in {

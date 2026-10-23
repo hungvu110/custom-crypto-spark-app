@@ -337,7 +337,6 @@ Chỉ khoá của chế độ đang dùng mới bị đọc: chạy `HASH` mà t
 | Vault — JWT SA          | `VAULT_JWT_PATH`                 | `spark.pseudonym.vault.jwtPath`         | `/var/run/secrets/kubernetes.io/serviceaccount/token` |                                                                                                           |
 | **DAK** — địa chỉ       | `DAK_ADDR`                       | `spark.pseudonym.dak.addr`              | — (bắt buộc khi dùng dak)                             | `https://...`                                                                                             |
 | DAK — token endpoint    | `DAK_TOKEN_URL`                  | `spark.pseudonym.dak.tokenUrl`          | — (bắt buộc)                                          | Keycloak của realm tenant, `https://...`                                                                  |
-| DAK — mã phiếu yêu cầu  | `DAK_REQUEST_CODE`               | `spark.pseudonym.dak.requestCode`       | — (bắt buộc)                                          | Mã phiếu cấp key, vd `REQ-2026-000003`; đi vào path `/api/v1/keys/by-request/<mã>/...`                    |
 | DAK — client            | `DAK_CLIENT_ID`                  | `spark.pseudonym.dak.clientId`          | — (bắt buộc)                                          | Client Keycloak của team                                                                                  |
 | DAK — secret            | `DAK_CLIENT_SECRET`              | `spark.pseudonym.dak.clientSecret`      | — (bắt buộc)                                          | **Nhạy cảm**: dùng `secretKeyRef`, không ghi thẳng giá trị                                                |
 | DAK — cho phép http     | `DAK_ALLOW_INSECURE_HTTP`        | `spark.pseudonym.dak.allowInsecureHttp` | `false`                                               | Chỉ để test với `dak-mock`                                                                                |
@@ -356,7 +355,7 @@ Chỉ khoá của chế độ đang dùng mới bị đọc: chạy `HASH` mà t
 | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `file`  | File `<CRYPTO_KEY_PREFIX_DIR>/pseudonym.hmac_v1` (key của K8s Secret, xem `k8s/pseudonym-keys-secret.yaml`)      |
 | `vault` | KV v2 tại `<VAULT_KV_MOUNT>/data/<VAULT_KV_PATH>/pseudonym.hmac_v1`, field `<VAULT_KEY_FIELD>`                   |
-| `dak`   | `GET <DAK_ADDR>/api/v1/keys/by-request/<DAK_REQUEST_CODE>/pseudonym/hmac_v1` — database `pseudonym`, table `hmac_v1`; team phải được cấp quyền |
+| `dak`   | `GET <DAK_ADDR>/api/v1/keys/pseudonym/hmac_v1` — database `pseudonym`, table `hmac_v1`; team phải được cấp quyền |
 
 Giá trị khoá là chuỗi `base64:<...>` hoặc `hex:<...>`; HMAC đúng **32 byte**, AES-SIV đúng **64 byte**; từ chối khoá
 toàn byte 0. Sinh khoá:

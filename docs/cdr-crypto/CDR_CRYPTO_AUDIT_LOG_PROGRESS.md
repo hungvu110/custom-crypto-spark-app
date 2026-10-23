@@ -53,10 +53,10 @@ Chạy ngày 2026-10-19 trên Spark 3.5.1 `local[2]`, giữ lại làm test hồ
 mvn -o -Pcdr-crypto -pl cdr-crypto-udf -am test
 ```
 
-Kết quả lần chạy gần nhất: `cdr-crypto-udf` 97/97, `key-prefix-lib` 87/87.
+Kết quả lần chạy gần nhất: `cdr-crypto-udf` 96/96, `key-prefix-lib` 86/86.
 
 Phải có `-am` (hoặc `mvn install` cho `key-prefix-lib` trước). Thiếu nó, Maven dùng bản `key-prefix-lib` cũ trong `~/.m2` (trước commit
-`2410c5c`, gọi DAK bằng mã phiếu) và `CdrCryptoExtensionDakSpec` đỏ — không liên quan tới audit.
+`2410c5c`, gọi DAK theo path cũ có mã phiếu) và `CdrCryptoExtensionDakSpec` đỏ — không liên quan tới audit.
 
 ## 4. Cấu hình để thử trên sql-engine
 

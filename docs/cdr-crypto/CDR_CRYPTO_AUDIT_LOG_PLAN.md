@@ -1,5 +1,9 @@
 # Plan: audit log cho `cdr_encrypt` / `cdr_decrypt` (module `cdr-crypto-udf`)
 
+> **Lưu ý (2026-10-22):** từ `auditVersion` 2, mỗi phần tử `usages[]` có thêm `column` (tên cột dùng để chọn key, đặt sau `dataset`),
+> vì hàm đã chuyển sang key theo cột ([CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md](CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md)). Mẫu JSON bên dưới là
+> `auditVersion` 1; mẫu hiện tại ở [CDR_CRYPTO_SQL_ENGINE_GUIDE.md](CDR_CRYPTO_SQL_ENGINE_GUIDE.md) mục 5.3.
+
 Trạng thái: **đang triển khai** — tiến độ, kết quả kiểm tra và lịch sử thay đổi thiết kế ở
 [CDR_CRYPTO_AUDIT_LOG_PROGRESS.md](CDR_CRYPTO_AUDIT_LOG_PROGRESS.md). Liên quan: [PARTNER_CDR_CRYPTO_UDF_PLAN.md](PARTNER_CDR_CRYPTO_UDF_PLAN.md).
 Môi trường: Spark 3.5.1, Scala 2.12, Hadoop 3.3.4.
@@ -56,7 +60,7 @@ Một event là **một object JSON trên một dòng**. Cùng một schema cho 
  "appId":"spark-application-...","executionId":7,"user":"alice","userSource":"thrift","statementId":"c3a1...",
  "tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"sql-engine-1",
  "usages":[{"usageId":"u9f3a1c","function":"cdr_decrypt","dataset":"demo_db.sub_rel_product",
-            "valueExpr":"isdn","keyFieldExpr":"start_datetime","dakRequestCode":"REQ-2026-000003"}]}
+            "valueExpr":"isdn","keyFieldExpr":"start_datetime"}]}
 {"auditVersion":1,"eventId":"7d02...","event":"END","ts":"2026-10-19T08:23:02.456Z",
  "appId":"spark-application-...","executionId":7,"status":"SUCCEEDED","durationMs":452333,
  "tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"sql-engine-1",
@@ -136,7 +140,7 @@ Listener chỉ nhận `executionId` và mô tả plan, không biết hàm nào �
 
 1. Lúc builder hàm chạy (driver, trong thread của người dùng), tạo `usageId` ngẫu nhiên ngắn, đăng ký `Usage` vào registry cùng:
    `statementId` (`spark.jobGroup.id` của thread — Thrift Server đặt nó bằng id câu lệnh trước khi gọi `sql()`),
-   hàm, dataset, `valueExpr`, `keyFieldExpr`, `dakRequestCode`. `user` **không** lấy ở bước này (xem "Xác định user" bên dưới).
+   hàm, dataset, `valueExpr`, `keyFieldExpr`. `user` **không** lấy ở bước này (xem "Xác định user" bên dưới).
 2. UDF giữ nguyên như khi tắt audit và được bọc trong expression `AuditTag(child, usageId)`: tính toán và sinh code y như `child`;
    `sql` (Spark dùng để tự đặt tên cột khi query không có `AS`) giữ nguyên của `child`; chỉ `toString` (Spark dùng khi in plan) thêm
    `[cdr_audit:u…]`. `usageId` = `u` + 12 ký tự hex. Đường DataFrame bọc `new Column(AuditTag(udf(...)(...).expr, usageId))`.

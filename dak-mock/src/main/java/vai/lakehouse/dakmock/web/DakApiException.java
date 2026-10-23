@@ -24,6 +24,27 @@ public final class DakApiException extends RuntimeException {
         "database and table must match [A-Za-z0-9_]{1,128}", "invalid database/table");
   }
 
+  public static DakApiException invalidColumn(String publicMessage) {
+    return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_column", publicMessage, publicMessage);
+  }
+
+  public static DakApiException invalidTag(String publicMessage) {
+    return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_tag", publicMessage, publicMessage);
+  }
+
+  public static DakApiException invalidOnMissing() {
+    return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_on_missing",
+        "onMissing must be 'request' or 'none'", "invalid onMissing");
+  }
+
+  public static DakApiException invalidRequest(String publicMessage) {
+    return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_request", publicMessage, publicMessage);
+  }
+
+  public static DakApiException notFound(String publicMessage) {
+    return new DakApiException(HttpStatus.NOT_FOUND, "not_found", publicMessage, publicMessage);
+  }
+
   public static DakApiException invalidToken(String reason) {
     return new DakApiException(HttpStatus.UNAUTHORIZED, "invalid_token", "Invalid or missing access token", reason);
   }

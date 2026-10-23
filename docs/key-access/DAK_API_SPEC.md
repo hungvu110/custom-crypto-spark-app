@@ -11,7 +11,7 @@ JWKS thay cho introspection; quyền có thời hạn; chưa kiểm `aud`; clien
 
 ## 0. Phạm vi và quyết định nền
 
-**Trong phạm vi**: API `GET /api/v1/keys/by-request/{requestCode}/{database}/{table}` và logic phía sau nó.
+**Trong phạm vi**: API `GET /api/v1/keys/{database}/{table}` và logic phía sau nó.
 
 **Ngoài phạm vi**: chức năng quản trị của DAK (admin đăng nhập bằng local user của DAK, phiếu yêu cầu/duyệt quyền, nạp key).
 Tài liệu này chỉ nêu **dữ liệu và cấu hình** mà các chức năng đó phải tạo ra để API lấy key hoạt động đúng (mục 2.3, mục 3).
@@ -45,7 +45,7 @@ flowchart LR
         JW["JWKS<br/>/protocol/openid-connect/certs"]
     end
     subgraph DAK["DAK (≥ 2 replica)"]
-        RT["GET /api/v1/keys/by-request/{requestCode}/{database}/{table}"]
+        RT["GET /api/v1/keys/{database}/{table}"]
         DB[("DB của DAK<br/>mapping, key, grant")]
     end
     V[("Vault KV v2")]
@@ -230,7 +230,7 @@ Tra `team_client` theo `(realm, azp)` ở **mỗi** request (không cache):
 ### 5.1. Request
 
 ```http
-GET /api/v1/keys/by-request/{requestCode}/{database}/{table}
+GET /api/v1/keys/{database}/{table}
 Host: dak.example
 Authorization: Bearer <access_token của client team>
 Accept: application/json
@@ -239,7 +239,6 @@ X-Request-Id: 7f3e...            (tuỳ chọn)
 
 | Mục                 | Quy định                                                               |
 | ------------------- | ---------------------------------------------------------------------- |
-| `requestCode`       | Mã phiếu yêu cầu cấp key, vd `REQ-2026-000003`; `[A-Za-z0-9._-]{1,128}`. DAK cấp key theo phiếu: chỉ trả key của bảng thuộc phạm vi phiếu |
 | `database`, `table` | `[A-Za-z0-9_]{1,128}`; DAK chuẩn hoá chữ thường trước khi tra          |
 | Sai định dạng       | 400 `invalid_table`, kiểm tra **trước** khi xác minh token             |
 | `X-Request-Id`      | Không gửi thì DAK sinh. **Luôn** trả lại trong response, kể cả khi lỗi |
@@ -249,7 +248,7 @@ X-Request-Id: 7f3e...            (tuỳ chọn)
 Ví dụ:
 
 ```bash
-curl -s https://dak.example/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr \
+curl -s https://dak.example/api/v1/keys/demo_db/users_cdr \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
@@ -287,7 +286,7 @@ sequenceDiagram
     participant DB as DB DAK
     participant V as Vault
 
-    C->>D: GET /api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr (Bearer)
+    C->>D: GET /api/v1/keys/demo_db/users_cdr (Bearer)
     Note over D: Kiểm tra định dạng database/table, chuẩn hoá chữ thường<br/>Sai → 400 invalid_table
     Note over D: Xác minh token bằng JWKS của realm (mục 4)
     D->>DB: team_client theo (realm, azp)
@@ -382,7 +381,6 @@ Cả hai dùng chung `key-prefix-lib` (nguồn `source=dak`), chỉ khác nơi �
 | `tokenUrl`             | `<ns>dak.tokenUrl`                                                           | `DAK_TOKEN_URL`                     |
 | `clientId`             | `<ns>dak.clientId`                                                           | `DAK_CLIENT_ID`                     |
 | `clientSecret`         | `<ns>dak.clientSecret`                                                       | `DAK_CLIENT_SECRET` (từ K8s Secret) |
-| `requestCode`          | `<ns>dak.requestCode`                                                        | `DAK_REQUEST_CODE`                  |
 | –                      | `<ns>source=dak`                                                             | `CRYPTO_PREFIX_SOURCE=dak`          |
 
 Tên bảng truyền vào:
@@ -396,7 +394,7 @@ Hành vi của bên gọi (cài trong `key-prefix-lib`):
 
 1. Tách `database.table`, chuẩn hoá chữ thường; sai định dạng thì báo lỗi, không gọi DAK.
 2. Xin token `client_credentials` tại `tokenUrl`, cache tới gần hết hạn, dùng lại cho mọi bảng.
-3. Gọi `GET /api/v1/keys/by-request/{requestCode}/{database}/{table}`. Nhận 401 thì xin token mới và thử lại đúng 1 lần.
+3. Gọi `GET /api/v1/keys/{database}/{table}`. Nhận 401 thì xin token mới và thử lại đúng 1 lần.
 4. Cache `keyPrefix` theo bảng trong `cacheTtlSeconds` (mặc định 300 giây). Tải lên DAK: tối đa khoảng 1 request mỗi bảng mỗi
    5 phút cho mỗi engine/job.
 

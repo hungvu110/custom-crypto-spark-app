@@ -2,9 +2,23 @@
 # Namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy (cùng namespace với sql-engine và SparkApplication của team).
 #
 # Token Vault (NHẠY CẢM) KHÔNG nằm trong file này. Tạo Secret trước, cùng namespace:
-#   read -rs -p "Vault token (chỉ đọc): " T; echo
+#   read -rs -p "Vault token: " T; echo
 #   kubectl create secret generic dak-mock-vault-token \
 #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$T"; unset T
+#
+# Token Vault này cần quyền read trên path key cả bảng VÀ read trên kv/data/hla-datalake/datalake/column-keys/* (key theo cột
+# của GET /api/v1/keys/by-column). Thêm quyền create trên path đó nếu muốn mock tự tạo key khi fulfill YC (mock ghi bằng
+# cas=0 nên không cần quyền update).
+#
+# KEY THEO CỘT — tạo tay trước (mỗi cột một secret, field keyPrefix), cột đã có secret thì by-column trả READY ngay:
+#   vault kv put kv/hla-datalake/datalake/column-keys/<database>/<table>/<column> keyPrefix="$(openssl rand -base64 32)"
+#   vd: vault kv put kv/hla-datalake/datalake/column-keys/demo_db/users_cdr/name keyPrefix="$(openssl rand -base64 32)"
+# <database>, <table>, <column> viết CHỮ THƯỜNG, chỉ gồm a-z, 0-9, _. Không ghi đè secret đã có: key đã dùng để mã hoá
+# thì đổi giá trị là mất khả năng giải mã dữ liệu cũ.
+#
+# Token của endpoint quản trị /mock-admin/** (tạo key cho YC, từ chối YC, khoá cột). Không tạo Secret = tắt endpoint:
+#   kubectl create secret generic dak-mock-admin-token \
+#     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$(openssl rand -hex 24)"
 #
 # CA nội bộ của Keycloak (PEM, có thể nhiều cert — root + intermediate), cùng namespace:
 #   kubectl create configmap keycloak-ca -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-file=ca.pem=<file CA>
@@ -43,11 +57,28 @@ data:
           client-id: <client-id-cua-team>
           workspace: wsw7vtwvi
           team: teamtscauiy
+        # Client nội bộ của GET /api/v1/keys/by-column (gửi tag=internal, không cần grant). GIẢ ĐỊNH — thay bằng
+        # client client_credentials tạo riêng cho luồng này. Không thuộc team nào nên không gọi được /{database}/{table}.
+        - realm: vlp-tenantw1xjixm
+          client-id: <client-id-noi-bo>
+          kind: internal
+      # Grant theo cột cho client team (by-column không gửi tag). Thiếu grant trên MỘT cột là 403 cả lô.
+      grants: []
+      #  - team: teamtscauiy
+      #    database: demo_db
+      #    table: users_cdr
+      #    columns: [name, city]
+      #    expires-at: 2027-10-22T00:00:00Z
       vault:
         addr: http://vault.cyberspace.vn
         kv-mount: kv
         path-template: hla-datalake/datalake/spark-application/{database}.{table}
+        # Key theo cột: mỗi cột một secret (field keyPrefix) dưới hla-datalake/datalake/. Tạo tay hoặc để mock tạo khi fulfill YC.
+        column-path-template: hla-datalake/datalake/column-keys/{database}/{table}/{column}
         key-field: keyPrefix
+      yc:
+        max-open-per-table: 50
+        auto-fulfill: false
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -67,7 +98,7 @@ spec:
         app.kubernetes.io/name: dak-mock
       annotations:
         # Đổi giá trị này (hoặc dùng kubectl rollout restart) để pod nạp lại ConfigMap sau khi sửa.
-        dak-mock/config-version: "1"
+        dak-mock/config-version: "2"
     spec:
       # Mock không gọi Kubernetes API: không cần mount token của ServiceAccount.
       automountServiceAccountToken: false
@@ -142,6 +173,13 @@ spec:
                 secretKeyRef:
                   name: dak-mock-vault-token
                   key: token
+            # Không có Secret -> biến rỗng -> endpoint quản trị tắt (404).
+            - name: MOCK_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dak-mock-admin-token
+                  key: token
+                  optional: true
             # Tin CA nội bộ của sso-lakehouse qua truststore do initContainer dựng.
             # Biến này THAY THẾ JAVA_TOOL_OPTIONS của image nên phải giữ lại các cờ cũ.
             - name: JAVA_TOOL_OPTIONS

@@ -1,9 +1,10 @@
 # dak-mock — Mock DAK cho use case lấy key (chạy trên Kubernetes nội bộ)
 
-Service Spring Boot giả lập DAK, **chỉ** phục vụ API mà sql-engine và SparkApplication gọi để lấy `keyPrefix`:
+Service Spring Boot giả lập DAK, **chỉ** phục vụ các API mà sql-engine và SparkApplication gọi để lấy key:
 
 ```
-GET /api/v1/keys/by-request/{requestCode}/{database}/{table}      Authorization: Bearer <access token Keycloak của team>
+GET /api/v1/keys/{database}/{table}      Authorization: Bearer <access token Keycloak của team>        key cả bảng
+GET /api/v1/keys/by-column?...           Authorization: Bearer <client nội bộ hoặc client team>        key theo cột (mục 2.1)
 ```
 
 Hợp đồng API đầy đủ: [docs/key-access/DAK_API_SPEC.md](../docs/key-access/DAK_API_SPEC.md). Phía client (`key-prefix-lib`, nguồn `source=dak`):
@@ -26,14 +27,56 @@ Tất cả chạy trong cluster: build image → push registry nội bộ → `k
 
 ## 2. Mock làm gì và không làm gì
 
-| Có                                                                                         | Không (cố ý bỏ qua)                                                                 |
-| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Xác minh access token bằng **JWKS của realm Keycloak** (RS256, `iss`, `exp`, `typ`, `azp`) | **Phân quyền**: grant theo bảng, thời hạn quyền, phiếu duyệt                        |
-| Ánh xạ `(realm, client_id)` → (tenant, workspace, team) từ ConfigMap                       | Chức năng quản trị (tạo client, tạo/nạp key, cấp quyền, khoá key)                   |
-| Đọc `keyPrefix` từ **Vault KV v2 bằng token tĩnh**, cùng path với luồng column/cdr cũ      | Database: mock không có DB, mọi cấu hình nằm trong ConfigMap                        |
-| Mã lỗi, body lỗi, `X-Request-Id`, `Cache-Control: no-store` đúng spec                      | Đọc đúng `vault_version` đã lưu (mock đọc version mới nhất), rate limit, kiểm `aud` |
+| Có                                                                                                    | Không (cố ý bỏ qua)                                                                 |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Xác minh access token bằng **JWKS của realm Keycloak** (RS256, `iss`, `exp`, `typ`, `azp`)            | Grant theo bảng, phiếu duyệt cho `/{database}/{table}`                              |
+| Ánh xạ `(realm, client_id)` → (tenant, workspace, team) từ ConfigMap; client **nội bộ** không có team | Giao diện quản trị của DAK (tạo client, phiếu PYC, cảnh báo hết hạn)                |
+| Đọc `keyPrefix` từ **Vault KV v2 bằng token tĩnh**, cùng path với luồng column/cdr cũ                 | Database: mock không có DB; cấu hình ở ConfigMap, YC và danh sách khoá ở bộ nhớ     |
+| `GET /api/v1/keys/by-column` (mục 2.1): key theo cột, YC, grant theo cột cho client team              | Đọc đúng `vault_version` đã lưu (mock đọc version mới nhất), rate limit, kiểm `aud` |
+| Endpoint quản trị `/mock-admin/**` đóng vai người có quyền bên DAK (mục 2.2)                          | `GET /api/v1/keys/by-file`                                                          |
+| Mã lỗi, body lỗi, `X-Request-Id`, `Cache-Control: no-store` đúng spec                                 |                                                                                     |
 
-Vì không có phân quyền: **mọi team có token hợp lệ đều lấy được mọi key có trong Vault**. Chỉ dùng cho môi trường test.
+Đường `/{database}/{table}` vẫn không phân quyền: **mọi team có token hợp lệ đều lấy được mọi key bảng có trong Vault**. Chỉ
+dùng cho môi trường test.
+
+### 2.1. `GET /api/v1/keys/by-column`
+
+Thiết kế đầy đủ: [docs/dak-mock-api/DAK_MOCK_BY_COLUMN_PLAN.md](../docs/dak-mock-api/DAK_MOCK_BY_COLUMN_PLAN.md). Tóm tắt:
+
+```http
+GET /api/v1/keys/by-column?database=demo_db&table=users_cdr&columns=msisdn,imei&onMissing=request&tag=internal
+Authorization: Bearer <token>
+X-Dak-Caller: <tên engine/job>     (tuỳ chọn, chỉ để audit; sai định dạng thì bị bỏ qua)
+```
+
+| Người gọi                        | `tag`      | Kết quả                                                                                   |
+| -------------------------------- | ---------- | ----------------------------------------------------------------------------------------- |
+| Client nội bộ (`kind: internal`) | `internal` | Không cần grant; `onMissing=request` mở YC cho cột chưa có key                            |
+| Client nội bộ                    | không gửi  | `400 invalid_tag`                                                                         |
+| Client team                      | không gửi  | Phải có grant còn hạn trên **mọi** cột (`dak.grants`), không thì `403` cả lô; không mở YC |
+| Client team                      | `internal` | `403 access_denied`                                                                       |
+
+Luôn `200` khi qua được kiểm tham số, token và quyền; mỗi cột có `state`: `READY` (kèm `keyPrefix`, `keyVersion`), `PENDING`
+(kèm `requestCode`), `MISSING` (kèm `reason`: `not_requested` hoặc `yc_limit_reached`), `REJECTED` (kèm `requestCode`,
+`reasonText`), `DISABLED`. `complete=true` khi mọi cột `READY`. Tối đa 100 cột và 4096 ký tự sau khi gộp trùng.
+
+Key cột lưu ở `kv/data/hla-datalake/datalake/column-keys/{database}/{table}/{column}` (đổi được bằng `dak.vault.column-path-template`)
+và chỉ được **tạo** bằng `cas=0`: không bao giờ ghi đè key đã có. Có hai cách để một cột có key: tạo tay secret trước (mục 5.1), hoặc để
+mock tạo khi `fulfill` YC (cần quyền `create`).
+
+### 2.2. Endpoint quản trị `/mock-admin/**`
+
+Bật khi có Secret `dak-mock-admin-token`; mọi request phải có header `X-Mock-Admin-Token`, sai hoặc thiếu thì `404`.
+
+| Endpoint                                                       | Việc                                                                  |
+| -------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `GET /mock-admin/yc`                                           | Liệt kê YC                                                            |
+| `POST /mock-admin/yc/{requestCode}/fulfill`                    | Tạo key (ngẫu nhiên 32 byte, hoặc body `{"keyValue":"..."}`), đóng YC |
+| `POST /mock-admin/yc/{requestCode}/reject`                     | Body `{"reasonText":"..."}`. Lời gọi sau cho cột đó nhận `REJECTED`   |
+| `POST /mock-admin/columns/{database}/{table}/{column}/disable` | Khoá cột đã có key: lời gọi sau nhận `DISABLED`                       |
+| `POST /mock-admin/columns/{database}/{table}/{column}/enable`  | Mở khoá: cột trả lại đúng key cũ                                      |
+
+YC và danh sách khoá nằm trong bộ nhớ: **pod restart là mất** (YC mở lại với mã mới, cột hết bị khoá). Key cột trong Vault không mất.
 
 ## 3. Cấu trúc code
 
@@ -43,13 +86,20 @@ dak-mock/
 ├── k8s/dak-mock.yaml                        ConfigMap + Deployment + Service
 ├── pom.xml                                  Spring Boot 3.4, Java 17 — project độc lập, KHÔNG thuộc reactor Spark
 └── src/main/java/vai/lakehouse/dakmock/
-    ├── config/DakProperties.java            cấu hình `dak.*` (realm, client, Vault), kiểm tra ngay lúc khởi động
+    ├── config/DakProperties.java            cấu hình `dak.*` (realm, client, grant, Vault, YC, admin), kiểm tra lúc khởi động
+    ├── config/ClientKind.java               loại client: team | internal
     ├── web/RequestIdFilter.java             X-Request-Id + Cache-Control: no-store cho MỌI response
-    ├── web/KeyController.java               GET /api/v1/keys/by-request/{requestCode}/{database}/{table}: kiểm tên → xác minh token → lấy key
+    ├── web/KeyController.java               GET /api/v1/keys/{database}/{table}: kiểm tên → xác minh token → lấy key
+    ├── web/ColumnKeyController.java         GET /api/v1/keys/by-column: kiểm tham số → xác minh token → ColumnKeyService
+    ├── web/MockAdminController.java         /mock-admin/**: YC, fulfill, reject, khoá/mở khoá cột
     ├── auth/TokenVerifier.java              xác minh JWT bằng JWKS của realm, tra client đã đăng ký
-    ├── key/KeyService.java                  lấy key cho team + ghi log audit (không ghi prefix)
-    ├── key/VaultKeyReader.java              GET {vault}/v1/{kvMount}/data/{path} với X-Vault-Token
-    ├── web/DakApiException.java             lỗi theo bảng mã lỗi của spec (400/401/403/500/503)
+    ├── key/KeyService.java                  lấy key bảng cho team + ghi log audit (không ghi prefix)
+    ├── key/VaultKeyReader.java              đọc {vault}/v1/{kvMount}/data/{path}; tạo secret mới bằng cas=0
+    ├── column/ColumnKeyRequest.java         parse + chuẩn hoá tham số by-column, giới hạn 100 cột / 4096 ký tự
+    ├── column/ColumnKeyService.java         tag × loại client, grant theo cột, trạng thái từng cột, audit
+    ├── column/ColumnKeyStore.java           key cột ở Vault (chỉ tạo, không ghi đè) + danh sách cột bị khoá
+    ├── column/YcRegistry.java               YC trong bộ nhớ, giới hạn YC mở, REJECTED dính theo cột
+    ├── web/DakApiException.java             lỗi theo bảng mã lỗi của spec (400/401/403/404/500/503)
     └── web/ApiExceptionHandler.java         chuyển lỗi thành {"error","message","requestId"}
 ```
 
@@ -61,7 +111,7 @@ sequenceDiagram
     participant J as sso-lakehouse (JWKS)
     participant V as Vault KV v2
 
-    C->>M: GET http://dak-mock:8085/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr (Bearer)
+    C->>M: GET http://dak-mock:8085/api/v1/keys/demo_db/users_cdr (Bearer)
     Note over M: Kiểm tên database/table, chuẩn hoá chữ thường — sai → 400
     Note over M: iss (chưa tin) → realm vlp-tenantw1xjixm trong ConfigMap; không có → 401
     M->>J: tải JWKS (có cache)
@@ -132,20 +182,38 @@ curl -s https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/.well-known
 vault kv put kv/hla-datalake/datalake/spark-application/demo_db.users_cdr keyPrefix="<giá trị prefix>"
 ```
 
-Token mà mock dùng chỉ cần quyền **đọc**:
+Token mà mock dùng cần quyền **đọc** key bảng, và **đọc + tạo** key cột (mock ghi key cột bằng `cas=0`, không cần `update`):
 
 ```hcl
 path "kv/data/hla-datalake/datalake/spark-application/*" {
   capabilities = ["read"]
 }
+path "kv/data/hla-datalake/datalake/column-keys/*" {
+  capabilities = ["read", "create"]
+}
 ```
+
+Key cột có hai cách tạo:
+
+```bash
+# Cách 1: tạo tay trước, mỗi cột một secret. Cột đã có secret thì by-column trả READY ngay, không mở YC.
+# <database>, <table>, <column> chữ thường, chỉ a-z, 0-9, _
+vault kv put kv/hla-datalake/datalake/column-keys/demo_db/users_cdr/name keyPrefix="$(openssl rand -base64 32)"
+vault kv put kv/hla-datalake/datalake/column-keys/demo_db/users_cdr/city keyPrefix="$(openssl rand -base64 32)"
+```
+
+Cách 2: để mock tạo khi người quản trị `fulfill` YC (mục 2.2); cần quyền `create` ở policy trên. Dù cách nào, **đừng ghi đè** secret đã
+có: key đã dùng để mã hoá mà đổi giá trị thì dữ liệu cũ không giải mã được.
 
 ### 5.2. Secret token Vault trên k8s
 
 ```bash
 NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
-read -rs -p "Vault token (chỉ đọc): " T; echo
+read -rs -p "Vault token (policy mục 5.1): " T; echo
 kubectl create secret generic dak-mock-vault-token -n "$NS" --from-literal=token="$T"; unset T
+
+# Tuỳ chọn: bật endpoint quản trị /mock-admin/**
+kubectl create secret generic dak-mock-admin-token -n "$NS" --from-literal=token="$(openssl rand -hex 24)"
 ```
 
 ## 6. Build và deploy
@@ -153,7 +221,7 @@ kubectl create secret generic dak-mock-vault-token -n "$NS" --from-literal=token
 ### 6.1. Test và build image
 
 ```bash
-mvn -f dak-mock/pom.xml test                                   # 16 test, không cần Keycloak/Vault thật
+mvn -f dak-mock/pom.xml test                                   # 49 test, không cần Keycloak/Vault thật
 docker build -t hub.vtcc.vn:8989/dak-mock:0.1.0 dak-mock       # build context là thư mục dak-mock
 docker push hub.vtcc.vn:8989/dak-mock:0.1.0
 ```
@@ -207,7 +275,17 @@ TOKEN=$(printf '%s' "$CS" | curl -s \
   | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'); unset CS
 
 # 2. Gọi mock
-curl -s -i http://dak-mock:8085/api/v1/keys/by-request/REQ-2026-000003/demo_db/users_cdr -H "Authorization: Bearer $TOKEN"
+curl -s -i http://dak-mock:8085/api/v1/keys/demo_db/users_cdr -H "Authorization: Bearer $TOKEN"
+
+# 3. Key theo cột (TOKEN của client nội bộ): lần đầu nhận PENDING kèm requestCode
+curl -s "http://dak-mock:8085/api/v1/keys/by-column?database=demo_db&table=users_cdr&columns=name,city&onMissing=request&tag=internal" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 4. Đóng vai người có quyền bên DAK: xem YC rồi tạo key (token quản trị đọc từ bàn phím)
+printf 'Admin token: '; stty -echo; read AT; stty echo; echo
+curl -s http://dak-mock:8085/mock-admin/yc -H "X-Mock-Admin-Token: $AT"
+curl -s -X POST http://dak-mock:8085/mock-admin/yc/<requestCode>/fulfill -H "X-Mock-Admin-Token: $AT"
+# Gọi lại bước 3 -> cột đó READY
 ```
 
 Pod tạm tự xoá khi thoát (`--rm`).
@@ -285,8 +363,6 @@ SparkApplication: [k8s/spark-application-cdr.yaml](../k8s/spark-application-cdr.
   value: "true"
 - name: DAK_TOKEN_URL
   value: "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"
-- name: DAK_REQUEST_CODE
-  value: REQ-2026-000003   # mã phiếu yêu cầu cấp key
 - name: DAK_CLIENT_ID
   value: "<client_id của team>" # PHẢI SỬA, trùng client-id trong ConfigMap của mock
 # DAK_CLIENT_SECRET lấy từ Secret spark-dak-client (key clientSecret)
@@ -299,7 +375,6 @@ spark.columncrypto.source=dak
 spark.columncrypto.dak.addr=http://dak-mock:8085
 spark.columncrypto.dak.tokenUrl=https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token
 spark.columncrypto.dak.clientId=<client_id của team>
-spark.columncrypto.dak.requestCode=<mã phiếu yêu cầu, vd REQ-2026-000003>
 spark.columncrypto.dak.clientSecret=<client secret>
 spark.columncrypto.dak.allowInsecureHttp=true
 ```
@@ -307,7 +382,8 @@ spark.columncrypto.dak.allowInsecureHttp=true
 (sql-engine cùng namespace `vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy` nên dùng `http://dak-mock:8085`; nếu engine nằm ở
 namespace khác thì dùng `http://dak-mock.vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy.svc.cluster.local:8085`.)
 
-Thử: `SELECT cdr_decrypt('demo_db.users_cdr', name, created_at) FROM demo_db.users_cdr LIMIT 5`. Luồng lấy key chỉ chạy khi
+Thử: `SELECT cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) FROM demo_db.users_cdr LIMIT 5` (key theo cột: engine
+dùng client nội bộ với `spark.cdrcrypto.dak.tag=internal`, xem mục 2.1). Luồng lấy key chỉ chạy khi
 câu SQL có hàm crypto được phân tích, không chạy lúc engine khởi động.
 
 ## 10. Lưu ý khi mở bằng IDE

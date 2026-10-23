@@ -33,7 +33,8 @@ trường hay mount thêm Secret.
 
 ```
 Query console ──SQL──> STS (driver)
-                         │  analyze: gặp column_encrypt('customers', name, id)   hoặc   cdr_encrypt('users_cdr', isdn, start_datetime)
+                         │  analyze: gặp column_encrypt('customers', name, id)   hoặc   cdr_encrypt('db.users_cdr', 'isdn', isdn, start_datetime)
+                         │     (cdr_* xin key theo CỘT qua DAK by-column — xem docs/cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md)
                          │     └─ Extension ─> key-prefix-lib (CachedPrefixSource) ─> Vault (hoặc file)
                          │           keyPrefix của bảng 'customers' / 'users_cdr' (chỉ driver gọi, cache theo TTL)
                          │           - authMethod=token      : 1 request GET secret kèm token tĩnh (mặc định của hướng dẫn này)
@@ -222,8 +223,6 @@ spark.columncrypto.dak.addr=https://dak.<domain>
 spark.columncrypto.dak.tokenUrl=https://keycloak.<domain>/realms/<realm của tenant>/protocol/openid-connect/token
 spark.columncrypto.dak.clientId=<client_id của team>
 spark.columncrypto.dak.clientSecret=<client_secret của team>
-# Mã phiếu yêu cầu cấp key trên DAK (DAK cấp key theo phiếu). Đi vào path: /api/v1/keys/by-request/<mã>/<database>/<table>
-spark.columncrypto.dak.requestCode=REQ-2026-000003
 spark.columncrypto.cacheTtlSeconds=300
 
 # --- Vault cũ: giữ nguyên cho fallback thủ công, KHÔNG được đọc khi source=dak (mục 4.3) ---
@@ -241,26 +240,12 @@ spark.columncrypto.vault.kvBasePath=hla-datalake/datalake/spark-application
 | `<ns>dak.tokenUrl`        | Có       | Token endpoint của **realm của tenant** sở hữu engine, phải là `https://`                                 |
 | `<ns>dak.clientId`        | Có       | Client của team                                                                                           |
 | `<ns>dak.clientSecret`    | Có       | Spark che giá trị trên UI/`SET` (tên key khớp `spark.redaction.regex`)                                    |
-| `<ns>dak.requestCode`     | Có       | Mã phiếu yêu cầu cấp key, vd `REQ-2026-000003`; chỉ gồm chữ, số, `.`, `_`, `-` (tối đa 128). Cũng đọc được từ env `DAK_REQUEST_CODE` |
 | `<ns>dak.allowInsecureHttp` | Không  | `true` cho phép `http://` — **chỉ** dùng khi test với server giả                                          |
-
-**Truyền mã phiếu (`requestCode`) vào engine**: mã phiếu là cấu hình của engine, **không** nằm trong câu SQL. Có 2 cách,
-lib ưu tiên Spark conf, không có mới đọc biến môi trường:
-
-1. Spark conf (ConfigMap/`spark-defaults.conf` của engine): `spark.columncrypto.dak.requestCode=REQ-...` và/hoặc
-   `spark.cdrcrypto.dak.requestCode=REQ-...` cho từng nhóm hàm.
-2. Biến môi trường `DAK_REQUEST_CODE` trong StatefulSet (xem [sql-engine-statefulset.yaml](../../k8s/sql-engine-statefulset.yaml)),
-   dùng chung cho cả `column_*` lẫn `cdr_*` nếu không đặt Spark conf riêng.
-
-Mã phiếu là conf tĩnh của driver, được đọc **một lần cho cả tiến trình** (khi hàm mã hoá/giải mã được dùng lần đầu, dùng chung
-cho mọi kết nối Thrift Server). Đổi sang phiếu khác (phiếu mới, phiếu hết hạn) thì sửa cấu hình rồi **restart engine**;
-cache `keyPrefix` theo bảng nằm trong bộ nhớ nên cũng được làm mới khi restart. Một
-engine tại một thời điểm chỉ dùng 1 mã phiếu: các bảng được gọi qua engine đó phải nằm trong phạm vi phiếu.
 
 **Cú pháp với `source=dak`**: tham số đầu của hàm bắt buộc là **`'database.table'`**, được chuẩn hoá chữ thường:
 
 ```sql
-SELECT id, cdr_decrypt('demo_db.users_cdr', name, created_at) AS name FROM demo_db.users_cdr;
+SELECT id, cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name FROM demo_db.users_cdr;
 INSERT INTO demo_db.customers SELECT id, column_encrypt('demo_db.customers', name, id) FROM staging_customers;
 ```
 
@@ -434,24 +419,26 @@ Kiểm tra extension đã nạp:
 DESCRIBE FUNCTION cdr_encrypt;
 ```
 
-Cú pháp: `cdr_encrypt('<bảng>', <cột>, <giá trị keyField>)` và `cdr_decrypt('<bảng>', <cột đã mã hoá>, <giá trị keyField>)` — **cùng
-hình dạng 3 tham số** với `column_*`. Khác ở cách dùng `keyField`: key được tạo bằng `keyPrefix + keyField` **nối chuỗi thô** (không
-băm), nên `keyField` phải khớp **chính xác từng ký tự** với hệ thống của đối tác (không thêm dấu cách, không đổi định dạng ngày).
+Cú pháp: `cdr_encrypt('<database>.<bảng>', '<tên cột>', <giá trị>, <giá trị keyField>)` và
+`cdr_decrypt('<database>.<bảng>', '<tên cột>', <giá trị đã mã hoá>, <giá trị keyField>)` — **4 tham số**, khác `column_*` (3 tham số):
+`cdr_*` dùng **mỗi cột một key**, xin qua DAK `by-column` theo tên cột ở tham số 2. Cấu hình và hướng dẫn đầy đủ:
+[CDR_CRYPTO_SQL_ENGINE_GUIDE.md](../cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md). Key được tạo bằng `key của cột + keyField` **nối chuỗi
+thô** (không băm), nên `keyField` phải khớp **chính xác từng ký tự** với lúc mã hoá (không thêm dấu cách, không đổi định dạng ngày).
 
 ```sql
--- Giải mã CDR do đối tác giao: cột isdn đã mã hoá, start_datetime là keyField (giữ plaintext)
+-- Giải mã: cột isdn đã mã hoá bằng key của cột isdn, start_datetime là keyField (giữ plaintext)
 SELECT start_datetime,
-       cdr_decrypt('sub_rel_product', isdn, start_datetime) AS isdn
+       cdr_decrypt('db.cdr_from_partner', 'isdn', isdn, start_datetime) AS isdn
 FROM db.cdr_from_partner;
 
--- Ghi CDR mã hoá theo đúng thuật toán đối tác
+-- Ghi CDR mã hoá: key gắn với bảng/cột nơi dữ liệu được lưu
 INSERT INTO db.cdr_out
-SELECT start_datetime, cdr_encrypt('sub_rel_product', isdn, start_datetime)
+SELECT start_datetime, cdr_encrypt('db.cdr_out', 'isdn', isdn, start_datetime)
 FROM staging_cdr;
 
 -- View cho người dùng cuối
 CREATE VIEW db.cdr_plain AS
-SELECT start_datetime, cdr_decrypt('sub_rel_product', isdn, start_datetime) AS isdn
+SELECT start_datetime, cdr_decrypt('db.cdr_from_partner', 'isdn', isdn, start_datetime) AS isdn
 FROM db.cdr_from_partner;
 ```
 
@@ -460,14 +447,15 @@ Cột đã mã hoá phải khai kiểu `STRING` trong DDL (giá trị là Base64
 ### 6.3. Đọc bảng do SparkApplication ghi (manifest `spark-application-cdr.yaml`)
 
 Job `k8s/spark-application-cdr.yaml` ghi bảng `${DB_NAME}.${TABLE_NAME}` gồm `id, name, city, created_at`, mã hoá 2 cột
-`name`, `city` (`CRYPTO_ENCRYPTED_COLUMNS`) bằng `cdr_encrypt`, lấy giá trị cột `created_at` (`CRYPTO_KEY_FIELD`, giữ plaintext)
-làm `keyField`. Để đọc lại trên sql-engine, gọi `cdr_decrypt` với **cùng tên bảng và cùng cột `keyField`**:
+`name`, `city` (`CRYPTO_ENCRYPTED_COLUMNS`) bằng `cdr_encrypt` với **mỗi cột một key** (`CRYPTO_KEY_SCOPE=column`), lấy giá trị cột
+`created_at` (`CRYPTO_KEY_FIELD`, giữ plaintext) làm `keyField`. Để đọc lại trên sql-engine, gọi `cdr_decrypt` với **cùng
+`database.table`, cùng tên cột và cùng cột `keyField`**:
 
 ```sql
--- Giả sử manifest đặt DB_NAME=demo_db, TABLE_NAME=users_cdr (khớp secret .../spark-application/users_cdr)
+-- Giả sử manifest đặt DB_NAME=demo_db, TABLE_NAME=users_cdr
 SELECT id,
-       cdr_decrypt('users_cdr', name, created_at) AS name,
-       cdr_decrypt('users_cdr', city, created_at) AS city,
+       cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name,
+       cdr_decrypt('demo_db.users_cdr', 'city', city, created_at) AS city,
        created_at
 FROM demo_db.users_cdr
 ORDER BY id;
@@ -475,30 +463,29 @@ ORDER BY id;
 -- View để người dùng cuối không phải nhớ cú pháp
 CREATE VIEW demo_db.users_cdr_plain AS
 SELECT id,
-       cdr_decrypt('users_cdr', name, created_at) AS name,
-       cdr_decrypt('users_cdr', city, created_at) AS city,
+       cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name,
+       cdr_decrypt('demo_db.users_cdr', 'city', city, created_at) AS city,
        created_at
 FROM demo_db.users_cdr;
 ```
 
 Quy tắc khớp với manifest:
 
-| Trong manifest                           | Trong câu SQL                                                                                                                                        |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TABLE_NAME`                             | Tham số **đầu** của hàm (`'users_cdr'`) — quyết định `keyPrefix` nào được tra. Phải **bằng `TABLE_NAME` lúc ghi**, không phải tên bảng nào cũng được |
-| `DB_NAME` + `TABLE_NAME`                 | Tên bảng trong `FROM` (`demo_db.users_cdr`)                                                                                                          |
-| `CRYPTO_ENCRYPTED_COLUMNS` (`name,city`) | Các cột bọc trong `cdr_decrypt(...)`; cột khác (`id`, `created_at`) đọc thẳng                                                                        |
-| `CRYPTO_KEY_FIELD` (`created_at`)        | Tham số **thứ 3** của hàm — truyền đúng cột `created_at` của chính dòng đó                                                                           |
+| Trong manifest                           | Trong câu SQL                                                                                                                         |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_NAME` + `TABLE_NAME`                 | Tham số **đầu** của hàm (`'demo_db.users_cdr'`) và tên bảng trong `FROM`. Phải **bằng lúc ghi**, vì key gắn với bảng này              |
+| `CRYPTO_ENCRYPTED_COLUMNS` (`name,city`) | Mỗi cột một lời gọi `cdr_decrypt(...)`, tên cột chữ thường ở tham số **thứ 2** (`'name'`, `'city'`) — quyết định key nào được dùng     |
+| `CRYPTO_KEY_FIELD` (`created_at`)        | Tham số **thứ 4** của hàm — truyền đúng cột `created_at` của chính dòng đó                                                             |
 
 Vì `cdr_*` **tất định** (cùng đầu vào → cùng ciphertext), có thể lọc trực tiếp trên cột đã mã hoá khi biết cả giá trị lẫn
 `created_at` của dòng, không phải quét giải mã toàn bảng:
 
 ```sql
 SELECT id, created_at,
-       cdr_decrypt('users_cdr', name, created_at) AS name
+       cdr_decrypt('demo_db.users_cdr', 'name', name, created_at) AS name
 FROM demo_db.users_cdr
 WHERE created_at = '2025-01-01 08:00:00'
-  AND name = cdr_encrypt('users_cdr', 'Alice Nguyen', '2025-01-01 08:00:00');
+  AND name = cdr_encrypt('demo_db.users_cdr', 'name', 'Alice Nguyen', '2025-01-01 08:00:00');
 ```
 
 Nếu bảng đã ghi bằng manifest column (`spark-application-column.yaml`, hàm `column_encrypt`), dùng cùng khuôn nhưng với
@@ -583,12 +570,11 @@ Lưu ý:
 | `first argument must be a constant string`                                                    | Tham số đầu phải là literal `'tên_bảng'`, không phải cột hay biểu thức                                                                              |
 | `With source=dak the table must be '<database>.<table>'`                                      | Đang dùng `source=dak` mà tham số đầu là tên một phần (`'users_cdr'`) hoặc có ký tự lạ — viết lại thành `'demo_db.users_cdr'`                       |
 | `'dak' cannot be combined with other sources`                                                 | Cấu hình `source=dak,vault` / `file,dak` — đặt `source=dak`; fallback về Vault phải đổi thủ công                                                    |
-| `Missing required setting: <ns>dak.requestCode` / `Invalid <ns>dak.requestCode`              | Chưa đặt hoặc sai dạng mã phiếu — đặt `spark.columncrypto.dak.requestCode` (hoặc env `DAK_REQUEST_CODE`), chỉ gồm chữ, số, `.`, `_`, `-`             |
 | `Invalid <ns>dak.addr: must be an absolute https:// URL` (hoặc `dak.tokenUrl`)                | Sai URL hoặc dùng `http://`. `http://` chỉ được phép khi đặt `<ns>dak.allowInsecureHttp=true` (test local)                                          |
 | `Keycloak token request failed: HTTP 401 (invalid_client)`                                    | Sai `dak.clientId`/`dak.clientSecret`, hoặc `dak.tokenUrl` trỏ nhầm realm (client không tồn tại ở realm đó)                                         |
 | `Keycloak token request failed: HTTP 400 (unauthorized_client)`                               | Client của team chưa bật Service Accounts — báo vận hành sửa client theo checklist                                                                  |
 | `Keycloak token request failed: cannot reach ...`                                             | Không kết nối được Keycloak: kiểm tra mạng/DNS, truststore nếu Keycloak dùng CA nội bộ                                                              |
-| `DAK denied key for '...' (HTTP 403 access_denied, requestId=...)`                            | Phiếu `requestCode` không bao gồm bảng này, chưa được duyệt hoặc **đã hết hạn**, hoặc bảng chưa đăng ký trong workspace. Gửi `requestId` cho admin DAK để tra nguyên nhân             |
+| `DAK denied key for '...' (HTTP 403 access_denied, requestId=...)`                            | Team chưa được cấp quyền trên bảng này, quyền **đã hết hạn hoặc bị thu hồi**, hoặc bảng chưa đăng ký trong workspace. Gửi `requestId` cho admin DAK để tra nguyên nhân             |
 | `DAK key request ... failed (HTTP 403 key_disabled, ...)`                                     | Key của bảng đang bị khoá trên DAK                                                                                                                  |
 | `DAK rejected the access token ... (HTTP 401 ...)`                                            | Client chưa được đăng ký hoặc đã bị khoá trên DAK, hoặc realm chưa có trong registry của DAK                                                        |
 | `DAK key request ... failed: cannot reach ...` / `HTTP 503`                                   | DAK hoặc Vault phía DAK không phản hồi. Sự cố kéo dài: fallback thủ công (mục 4.6)                                                                  |

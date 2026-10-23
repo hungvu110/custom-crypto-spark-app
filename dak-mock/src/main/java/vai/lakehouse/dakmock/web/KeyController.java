@@ -13,13 +13,12 @@ import org.springframework.web.bind.annotation.RestController;
 import vai.lakehouse.dakmock.auth.TokenVerifier;
 import vai.lakehouse.dakmock.key.KeyService;
 
-/** {@code GET /api/v1/keys/by-request/{requestCode}/{database}/{table}} — API duy nhất của mock (docs/key-access/DAK_API_SPEC.md mục 5). */
+/** {@code GET /api/v1/keys/{database}/{table}} — API duy nhất của mock (docs/key-access/DAK_API_SPEC.md mục 5). */
 @RestController
 @RequestMapping("/api/v1/keys")
 public class KeyController {
 
   private static final Pattern NAME = Pattern.compile("[A-Za-z0-9_]{1,128}");
-  private static final Pattern REQUEST_CODE = Pattern.compile("[A-Za-z0-9._-]{1,128}");
 
   private final TokenVerifier verifier;
   private final KeyService keys;
@@ -29,17 +28,12 @@ public class KeyController {
     this.keys = keys;
   }
 
-  @GetMapping(value = "/by-request/{requestCode}/{database}/{table}", produces = MediaType.APPLICATION_JSON_VALUE)
+  @GetMapping(value = "/{database}/{table}", produces = MediaType.APPLICATION_JSON_VALUE)
   public KeyService.KeyResponse getKey(
-      @PathVariable("requestCode") String requestCode,
       @PathVariable("database") String database,
       @PathVariable("table") String table,
       @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
     // Kiểm tra tên TRƯỚC khi xác minh token (spec: 400 không cần gọi Keycloak).
-    // Mock không có phiếu yêu cầu thật: chỉ kiểm dạng mã phiếu, không kiểm trạng thái/phạm vi phiếu.
-    if (requestCode == null || !REQUEST_CODE.matcher(requestCode).matches()) {
-      throw DakApiException.invalidTable();
-    }
     String db = normalize(database);
     String tbl = normalize(table);
     TokenVerifier.Caller caller = verifier.verify(authorization);

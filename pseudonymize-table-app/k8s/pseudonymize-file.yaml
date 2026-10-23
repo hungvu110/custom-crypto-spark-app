@@ -39,9 +39,9 @@ spec:
   # hình dừng ngay thì kiểm tra manifest trước khi apply.
   restartPolicy:
     type: OnFailure
-    onFailureRetries: 3              # số lần chạy lại sau khi app lỗi
-    onFailureRetryInterval: 60       # giây chờ giữa các lần
-    onSubmissionFailureRetries: 3    # số lần thử lại khi submit (spark-submit) lỗi
+    onFailureRetries: 3 # số lần chạy lại sau khi app lỗi
+    onFailureRetryInterval: 60 # giây chờ giữa các lần
+    onSubmissionFailureRetries: 3 # số lần thử lại khi submit (spark-submit) lỗi
     onSubmissionFailureRetryInterval: 60
   timeToLiveSeconds: 86400
 
@@ -134,7 +134,7 @@ spec:
       # overwrite-partitions. Lỗi cố định (cấu hình, khoá, schema, file nguồn hỏng) KHÔNG được thử lại.
       - name: OUTPUT_WRITE_RETRIES
         value: "2"
-      - name: OUTPUT_RETRY_WAIT_SECONDS    # chờ giữa các lần thử, 0..600 giây
+      - name: OUTPUT_RETRY_WAIT_SECONDS # chờ giữa các lần thử, 0..600 giây
         value: "30"
       # delta (mặc định) | hive (Parquet) | iceberg ; overwrite (thay CẢ bảng) | append | overwrite-partitions (mặc định khi có partition)
       # - name: OUTPUT_FORMAT
@@ -177,8 +177,6 @@ spec:
       #   value: https://dak.example.internal
       # - name: DAK_TOKEN_URL
       #   value: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token
-      # - name: DAK_REQUEST_CODE
-      #   value: REQ-2026-000003   # mã phiếu yêu cầu cấp key trên DAK
       # - name: DAK_CLIENT_ID
       #   value: team-de-ws8
       # - name: DAK_CLIENT_SECRET

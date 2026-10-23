@@ -14,17 +14,33 @@ case class CryptoSettings(
   encryptFunction: String,
   decryptFunction: String,
   encryptedColumns: Seq[String],
-  keyField: String
+  keyField: String,
+  keyScope: KeyScope = KeyScope.Table
 ) {
   /** Mô tả ngắn để log. */
-  def description: String = s"SQL functions $encryptFunction/$decryptFunction"
+  def description: String = s"SQL functions $encryptFunction/$decryptFunction (key per ${keyScope.name})"
 }
 
 /**
- * Hợp đồng với mọi hàm mã hoá được hỗ trợ: `fn(keyName, value, keyValue)` — 3 tham số, tham số đầu là
- * hằng chuỗi tên key `'database.table'` (nơi extension tra keyPrefix, xem [[keyName]]), tham số 2 là cột cần xử lý,
- * tham số 3 là giá trị cột `keyField` (giữ nguyên plaintext) của chính dòng đó. `column_encrypt` và `cdr_encrypt`
- * đều theo hợp đồng này.
+ * Hàm mã hoá dùng key theo bảng hay theo cột (`CRYPTO_KEY_SCOPE`), quyết định số tham số app truyền vào hàm:
+ *  - `table` (mặc định): `fn('database.table', value, keyValue)` — vd `column_encrypt`.
+ *  - `column`: `fn('database.table', 'column', value, keyValue)` — vd `cdr_encrypt` key theo cột; tên cột chữ thường là tên
+ *    dùng để xin key.
+ * App không đoán theo tên hàm vì nó không biết extension nào đang được nạp.
+ */
+sealed abstract class KeyScope(val name: String)
+
+object KeyScope {
+  case object Table extends KeyScope("table")
+  case object Column extends KeyScope("column")
+
+  val All: Seq[KeyScope] = Seq(Table, Column)
+}
+
+/**
+ * Hợp đồng với mọi hàm mã hoá được hỗ trợ: tham số đầu là hằng chuỗi tên key `'database.table'` (nơi extension tra key, xem
+ * [[keyName]]), rồi (chỉ khi [[KeyScope.Column]]) hằng chuỗi tên cột, rồi cột cần xử lý, cuối cùng là giá trị cột `keyField`
+ * (giữ nguyên plaintext) của chính dòng đó. `column_encrypt` theo dạng 3 tham số, `cdr_encrypt` theo dạng 4 tham số.
  */
 object CryptoStep {
 
@@ -45,7 +61,8 @@ object CryptoStep {
     encryptFunction: String,
     decryptFunction: String,
     encryptedColumns: String,
-    keyField: String
+    keyField: String,
+    keyScope: String = KeyScope.Table.name
   ): Option[CryptoSettings] = {
     val enc = encryptFunction.trim
     val dec = decryptFunction.trim
@@ -62,7 +79,9 @@ object CryptoStep {
       require(key.nonEmpty, "CRYPTO_KEY_FIELD must be set when crypto is enabled")
       require(!columns.contains(key),
         s"CRYPTO_KEY_FIELD '$key' must not be in CRYPTO_ENCRYPTED_COLUMNS — it must stay plaintext to be used as key material")
-      Some(CryptoSettings(enc, dec, columns, key))
+      val scope = KeyScope.All.find(_.name == keyScope.trim.toLowerCase(Locale.ROOT)).getOrElse(throw new IllegalArgumentException(
+        s"CRYPTO_KEY_SCOPE must be one of ${KeyScope.All.map(_.name).mkString(", ")}, got: '${keyScope.trim}'"))
+      Some(CryptoSettings(enc, dec, columns, key, scope))
     }
   }
 
@@ -78,7 +97,12 @@ object CryptoStep {
     validate(df, settings)
     val keyCol = col(BusinessLogic.quoteIdent(settings.keyField))
     settings.encryptedColumns.foldLeft(df) { (acc, c) =>
-      acc.withColumn(c, call_function(fn, lit(keyName), col(BusinessLogic.quoteIdent(c)), keyCol))
+      val value = col(BusinessLogic.quoteIdent(c))
+      val result = settings.keyScope match {
+        case KeyScope.Table  => call_function(fn, lit(keyName), value, keyCol)
+        case KeyScope.Column => call_function(fn, lit(keyName), lit(c.toLowerCase(Locale.ROOT)), value, keyCol)
+      }
+      acc.withColumn(c, result)
     }
   }
 

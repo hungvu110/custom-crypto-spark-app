@@ -9,10 +9,17 @@ Hai hàm:
 
 | Hàm | Cú pháp | Kết quả |
 |---|---|---|
-| `cdr_encrypt` | `cdr_encrypt('<database>.<table>', <cột cần mã hoá>, <cột keyField>)` | Ciphertext dạng Base64 (`STRING`) |
-| `cdr_decrypt` | `cdr_decrypt('<database>.<table>', <cột đã mã hoá>, <cột keyField>)` | Giá trị gốc (`STRING`) |
+| `cdr_encrypt` | `cdr_encrypt('<database>.<table>', '<tên cột>', <giá trị cần mã hoá>, <cột keyField>)` | Ciphertext dạng Base64 (`STRING`) |
+| `cdr_decrypt` | `cdr_decrypt('<database>.<table>', '<tên cột>', <giá trị đã mã hoá>, <cột keyField>)` | Giá trị gốc (`STRING`) |
 
-Hàm chạy theo **từng dòng**: key của mỗi dòng là `keyPrefix + giá trị cột keyField của dòng đó`. `keyPrefix` lấy theo bảng ở tham số đầu.
+**Mỗi cột một key.** Tham số 2 (hằng chuỗi, trong dấu nháy) là tên cột dùng để xin key từ DAK; tham số 3 là dữ liệu của từng dòng
+(thường chính là cột đó, nhưng có thể là biểu thức hay hằng số). Ví dụ `cdr_encrypt('demo_db.sub_rel_product', 'isdn', isdn,
+start_datetime)`: `'isdn'` chọn key, `isdn` là số điện thoại của từng dòng. Tách hai tham số để key vẫn đúng khi cột đã bị đổi tên
+(alias, view) hoặc khi tìm theo một giá trị cụ thể.
+
+Hàm chạy theo **từng dòng**: key của mỗi dòng là `key của cột + giá trị cột keyField của dòng đó`. Cú pháp 3 tham số cũ (key theo
+bảng) không còn: gọi 3 tham số sẽ báo lỗi kèm ví dụ cú pháp mới. Thiết kế:
+[CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md](CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md).
 
 ## 1. Chuẩn bị jar
 
@@ -33,7 +40,7 @@ mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package
 ```
 
 Đưa cả 3 jar lên HDFS, ví dụ `hdfs:///libs/column-crypto-lib/`. Khi cập nhật bản mới phải thay **cả** `key-prefix-lib` và `cdr-crypto-udf`
-cùng lúc (bản `cdr-crypto-udf` có audit cần `key-prefix-lib` bản gọi DAK theo mã phiếu).
+cùng lúc (bản `cdr-crypto-udf` key theo cột cần `key-prefix-lib` bản có `ColumnKeySource`, gọi DAK `/api/v1/keys/by-column`).
 
 ## 2. Cấu hình cần truyền vào sql-engine
 
@@ -48,21 +55,22 @@ cùng lúc (bản `cdr-crypto-udf` có audit cần `key-prefix-lib` bản gọi 
 
 ### 2.2. Bộ cấu hình đầy đủ (DAK + audit)
 
-Đây là cấu hình đang dùng: lấy key qua DAK bằng client Keycloak của team, bật audit ghi vào log của pod.
+Đây là cấu hình đang dùng: lấy key theo cột qua DAK bằng **client nội bộ** DAK cấp cho luồng này, bật audit ghi vào log của pod.
 
 ```properties
 # --- 1. Nạp lib và đăng ký hàm ---
 spark.jars=hdfs:///libs/column-crypto-lib/key-prefix-lib-1.0-SNAPSHOT.jar,hdfs:///libs/column-crypto-lib/cdr-crypto-udf-1.0-SNAPSHOT.jar,hdfs:///libs/column-crypto-lib/DataLakeSecurity_jv8.jar
 spark.sql.extensions=<extension đang có>,vai.lakehouse.columncrypto.cdr.CdrCryptoExtension
 
-# --- 2. Lấy keyPrefix qua DAK ---
+# --- 2. Lấy key theo cột qua DAK (GET /api/v1/keys/by-column) ---
 spark.cdrcrypto.source=dak
 spark.cdrcrypto.dak.addr=https://dak.<domain>
 spark.cdrcrypto.dak.tokenUrl=https://keycloak.<domain>/realms/<realm của tenant>/protocol/openid-connect/token
-spark.cdrcrypto.dak.clientId=<client_id của team>
-spark.cdrcrypto.dak.clientSecret=<client_secret của team>
-spark.cdrcrypto.dak.requestCode=<mã phiếu, vd REQ-2026-000003>
-# 0 = không cache keyPrefix: DAK thu hồi quyền thì query kế tiếp lỗi ngay (mục 2.6)
+spark.cdrcrypto.dak.clientId=<client_id nội bộ>
+spark.cdrcrypto.dak.clientSecret=<client_secret nội bộ>
+spark.cdrcrypto.dak.tag=internal
+spark.cdrcrypto.dak.caller=en-sqlzqfu6n7
+# 0 = không cache key: DAK khoá key của cột thì query kế tiếp lỗi ngay (mục 2.6)
 spark.cdrcrypto.cacheTtlSeconds=0
 
 # --- 3. Audit log ---
@@ -87,17 +95,20 @@ bằng dấu phẩy, không ghi đè).
 | `spark.jars` | Có | Đủ 3 jar ở mục 1, ngăn cách bằng dấu phẩy. Đọc từ HDFS cần Kerberos đã login (xem [mục 3 của hướng dẫn chung](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md#3-build-và-đặt-jar)) |
 | `spark.sql.extensions` | Có | Thêm `vai.lakehouse.columncrypto.cdr.CdrCryptoExtension`, **nối** vào extension sẵn có (vd Ranger) |
 
-**Nhóm 2 — lấy `keyPrefix` qua DAK** (namespace `spark.cdrcrypto.`, riêng với `spark.columncrypto.` của `column_*`)
+**Nhóm 2 — lấy key theo cột qua DAK** (namespace `spark.cdrcrypto.`, riêng với `spark.columncrypto.` của `column_*`)
 
 | Key | Bắt buộc | Ghi chú |
 |---|---|---|
-| `spark.cdrcrypto.source` | Có | `dak`. Không ghép với nguồn khác; muốn quay về Vault phải đổi thủ công (mục 2.5) |
+| `spark.cdrcrypto.source` | Có | `dak`. Key theo cột chỉ có ở DAK: giá trị khác bị từ chối, không có fallback về Vault (mục 2.5) |
 | `spark.cdrcrypto.dak.addr` | Có | Base URL của DAK, `https://` |
 | `spark.cdrcrypto.dak.tokenUrl` | Có | Token endpoint của realm Keycloak của tenant, `https://` |
-| `spark.cdrcrypto.dak.clientId` | Có | Client Keycloak của team, do vận hành cấp |
+| `spark.cdrcrypto.dak.clientId` | Có | **Client nội bộ** của luồng `by-column`, do DAK cấp (không phải client của team) |
 | `spark.cdrcrypto.dak.clientSecret` | Có | Spark che giá trị này trên UI và `SET` |
-| `spark.cdrcrypto.dak.requestCode` | Có | Mã phiếu yêu cầu cấp key trên DAK; chỉ gồm chữ, số, `.`, `_`, `-`. Một engine dùng một phiếu; đổi phiếu phải restart |
-| `spark.cdrcrypto.cacheTtlSeconds` | Không | Cache `keyPrefix` trong bộ nhớ, mặc định `300`; `0` = tắt. Quyết định thu hồi quyền trên DAK có hiệu lực sau bao lâu (mục 2.6) |
+| `spark.cdrcrypto.dak.tag` | Có (client nội bộ) | `internal`. Thiếu thì DAK trả `400 invalid_tag`. Client team (khi DAK có grant theo cột) thì để trống |
+| `spark.cdrcrypto.dak.caller` | Không | Tên engine, gửi làm header `X-Dak-Caller` để DAK ghi audit. `[A-Za-z0-9._-]{1,128}`, sai định dạng thì lỗi cấu hình |
+| `spark.cdrcrypto.cacheTtlSeconds` | Không | Cache key theo `(bảng, cột)` trong bộ nhớ, mặc định `300`; `0` = tắt. Quyết định key bị khoá trên DAK có hiệu lực sau bao lâu (mục 2.6) |
+
+Cấu hình phía lib và bảng lỗi đầy đủ: [KEY_PREFIX_SOURCES.md](../key-access/KEY_PREFIX_SOURCES.md#key-theo-cột-qua-dak-by-column-columnkeysource).
 
 **Nhóm 3 — audit log** (mặc định tắt)
 
@@ -138,25 +149,17 @@ kubectl get statefulset -n <namespace> -o name | grep sql-engine
 
 Mỗi engine thuộc đúng một team, nên một engine chỉ có một bộ giá trị này.
 
-### 2.5. Quay về Vault khi DAK gặp sự cố
+### 2.5. Khi DAK gặp sự cố
 
-Đổi `spark.cdrcrypto.source=vault`, thêm khối Vault rồi restart engine. Các key và cách tạo token chỉ đọc:
-[mục 4.2–4.4 của hướng dẫn chung](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md#42-cấu-hình-nguồn-keyprefix-key-prefix-lib).
+Không có đường quay về Vault cũ cho `cdr_*`: key theo cột chỉ có ở DAK (Vault cũ chỉ có key cấp bảng, không giải mã được dữ liệu
+mã hoá bằng key cột). Đặt `source` khác `dak` thì mọi query `cdr_*` lỗi `Column keys are only available from DAK`. Khi DAK sập, query
+vẫn chạy được với các cột đã có key trong cache cho tới hết `cacheTtlSeconds` (mục 2.6).
 
-```properties
-spark.cdrcrypto.source=vault
-spark.cdrcrypto.vault.addr=http://vault.cyberspace.vn
-spark.cdrcrypto.vault.authMethod=token
-spark.cdrcrypto.vault.token=<token Vault chỉ đọc>
-spark.cdrcrypto.vault.kvBasePath=hla-datalake/datalake/spark-application
-```
+### 2.6. Key bị khoá trên DAK và `cacheTtlSeconds`
 
-Khi `source=vault`, audit không ghi `dakRequestCode`.
-
-### 2.6. Thu hồi quyền trên DAK và `cacheTtlSeconds`
-
-DAK kiểm tra quyền ở **mỗi** request và không cache. Nhưng engine cache `keyPrefix` theo bảng trong `cacheTtlSeconds`, và trong
-khoảng đó `cdr_*` dùng prefix trong cache mà không hỏi lại DAK. Vì vậy khi DAK thu hồi quyền của team (hoặc quyền hết hạn, key bị khoá):
+DAK kiểm tra ở **mỗi** request và không cache. Nhưng engine cache key theo `(bảng, cột)` trong `cacheTtlSeconds`, và trong
+khoảng đó `cdr_*` dùng key trong cache mà không hỏi lại DAK. Key của một cột **không bao giờ đổi**, nên cache không có rủi ro dùng key
+sai; điều cần cân nhắc chỉ là khi DAK khoá key của một cột (hoặc thu hồi quyền của client):
 
 | `cacheTtlSeconds` | Query chạy sau khi thu hồi |
 |---|---|
@@ -164,9 +167,9 @@ khoảng đó `cdr_*` dùng prefix trong cache mà không hỏi lại DAK. Vì v
 | `N` | Như trên, tối đa `N` giây |
 | `0` | **Lỗi ngay** ở query kế tiếp, vì mỗi lần dùng hàm đều hỏi DAK |
 
-Lỗi khi đó có dạng `DAK denied key for 'demo_db.sub_rel_product' (HTTP 403 access_denied, requestId=...)`; gửi `requestId` cho admin
-DAK để tra nguyên nhân. Kết quả lỗi không bị cache: mọi query sau đều lỗi cho tới khi quyền được cấp lại, và chạy lại được ngay khi
-DAK cấp lại quyền.
+Lỗi khi đó có dạng `DAK has no usable key for 1 column(s) of 'demo_db.sub_rel_product' (requestId=...): 'isdn' DISABLED: ...`
+(hoặc `HTTP 403 access_denied` khi quyền bị thu hồi); gửi `requestId` cho admin DAK để tra nguyên nhân. Kết quả lỗi không bị cache:
+mọi query sau đều lỗi cho tới khi key được mở khoá, và chạy lại được ngay khi DAK mở khoá (mở khoá trả lại đúng key cũ).
 
 **"Query kế tiếp" là câu query được phân tích sau lúc thu hồi.** Kể cả với `0`:
 
@@ -206,29 +209,37 @@ Nếu engine không lên, xem log driver: lỗi cấu hình và lỗi self-check
 
 ## 4. Dùng trên query console
 
-Với `source=dak`, tham số đầu **bắt buộc** là `'database.table'` (không phân biệt hoa thường). `keyField` nối thẳng sau `keyPrefix`
-không qua băm, nên giá trị cột keyField phải khớp **từng ký tự** với lúc mã hoá (cùng định dạng ngày, không thêm dấu cách).
+Tham số đầu **bắt buộc** là `'database.table'`, tham số 2 là tên cột (cả hai là hằng chuỗi, không phân biệt hoa thường, chỉ gồm
+chữ, số, `_`). `keyField` nối thẳng sau key không qua băm, nên giá trị cột keyField phải khớp **từng ký tự** với lúc mã hoá (cùng
+định dạng ngày, không thêm dấu cách).
 
 ```sql
--- Giải mã CDR do đối tác giao: isdn đã mã hoá, start_datetime là keyField (giữ plaintext)
+-- Giải mã CDR: isdn đã mã hoá bằng key của cột isdn, start_datetime là keyField (giữ plaintext)
 SELECT start_datetime,
-       cdr_decrypt('demo_db.sub_rel_product', isdn, start_datetime) AS isdn
+       cdr_decrypt('demo_db.sub_rel_product', 'isdn', isdn, start_datetime) AS isdn
 FROM demo_db.sub_rel_product;
 
--- Ghi CDR mã hoá theo đúng thuật toán đối tác
+-- Ghi CDR mã hoá: mỗi cột dùng key của chính nó
 INSERT INTO demo_db.cdr_out
-SELECT start_datetime, cdr_encrypt('demo_db.sub_rel_product', isdn, start_datetime)
+SELECT start_datetime,
+       cdr_encrypt('demo_db.cdr_out', 'isdn', isdn, start_datetime),
+       cdr_encrypt('demo_db.cdr_out', 'imsi', imsi, start_datetime)
 FROM demo_db.staging_cdr;
 
 -- View cho người dùng cuối, để không phải nhớ cú pháp
 CREATE VIEW demo_db.sub_rel_product_plain AS
-SELECT start_datetime, cdr_decrypt('demo_db.sub_rel_product', isdn, start_datetime) AS isdn
+SELECT start_datetime, cdr_decrypt('demo_db.sub_rel_product', 'isdn', isdn, start_datetime) AS isdn
 FROM demo_db.sub_rel_product;
 ```
 
 - Cột đã mã hoá khai kiểu `STRING`.
+- Bảng và cột trong tham số 1, 2 là nơi **lưu** dữ liệu mã hoá, vì key gắn với chúng. Ghi vào `cdr_out` thì mã hoá bằng key của
+  `cdr_out`, và giải mã sau này cũng phải dùng `'demo_db.cdr_out', 'isdn'`.
 - `cdr_*` là tất định (cùng đầu vào → cùng ciphertext), nên lọc được trực tiếp trên cột đã mã hoá khi biết giá trị và keyField:
-  `WHERE isdn = cdr_encrypt('demo_db.sub_rel_product', '978356099', start_datetime)`.
+  `WHERE isdn = cdr_encrypt('demo_db.sub_rel_product', 'isdn', '978356099', start_datetime)`.
+- **Lần mã hoá đầu tiên của một cột** luôn lỗi `PENDING` kèm mã YC: DAK chưa có key cho cột đó và đã mở yêu cầu tạo key. Người có
+  quyền bên DAK tạo key (với dak-mock: `POST /mock-admin/yc/<mã>/fulfill`) rồi chạy lại câu lệnh. Giải mã cột chưa có key thì lỗi
+  `MISSING (reason=not_requested)` và không mở YC.
 - Chỉ **16 ký tự cuối** của `keyPrefix + keyField` ảnh hưởng tới key (đặc tính thuật toán đối tác): keyField từ 16 ký tự trở lên thì
   `keyPrefix` không còn tác dụng bảo vệ.
 
@@ -240,7 +251,7 @@ Mỗi câu query có dùng `cdr_encrypt`/`cdr_decrypt` sinh **hai dòng**:
 
 | Dòng | Khi nào | Nội dung chính |
 |---|---|---|
-| `START` | Ngay khi query bắt đầu, trước khi dữ liệu được xử lý | Ai chạy (`user` = tên đăng nhập JDBC/Keycloak), hàm, bảng, cột, mã phiếu DAK |
+| `START` | Ngay khi query bắt đầu, trước khi dữ liệu được xử lý | Ai chạy (`user` = tên đăng nhập JDBC/Keycloak), hàm, bảng, cột |
 | `END` | Ngay khi query kết thúc | `SUCCEEDED`/`FAILED`, thời lượng, số dòng đã xử lý, số dòng có giá trị NULL |
 
 Hiếm hơn: `EXPIRED` — hàm đã vào plan nhưng không có query nào chạy nó (chỉ `EXPLAIN`, hoặc chạy ngoài SQL execution như `df.rdd`).
@@ -262,8 +273,8 @@ Việc thu log về hệ thống audit do team DAK đảm nhiệm.
 Layout của log4j2 thêm thời gian và tên logger vào trước, nên `CDR_AUDIT` nằm **giữa dòng**; phần sau `CDR_AUDIT ` là một object JSON:
 
 ```text
-26/10/19 15:15:30 INFO audit: CDR_AUDIT {"auditVersion":1,"eventId":"0b1f...","event":"START","ts":"2026-10-19T08:15:30.123Z","appId":"spark-application-...","executionId":7,"user":"alice","userSource":"thrift","statementId":"c3a1...","tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"en-sqlzqfu6n7","usages":[{"usageId":"u9f3a1c2b4d5e","function":"cdr_decrypt","dataset":"demo_db.sub_rel_product","valueExpr":"spark_catalog.demo_db.sub_rel_product.isdn","keyFieldExpr":"spark_catalog.demo_db.sub_rel_product.start_datetime","dakRequestCode":"REQ-2026-000003"}]}
-26/10/19 15:23:02 INFO audit: CDR_AUDIT {"auditVersion":1,"eventId":"7d02...","event":"END","ts":"2026-10-19T08:23:02.456Z","appId":"spark-application-...","executionId":7,"tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"en-sqlzqfu6n7","status":"SUCCEEDED","durationMs":452333,"usages":[{"usageId":"u9f3a1c2b4d5e","rows":1200000000,"nullRows":3400}]}
+26/10/19 15:15:30 INFO audit: CDR_AUDIT {"auditVersion":2,"eventId":"0b1f...","event":"START","ts":"2026-10-19T08:15:30.123Z","appId":"spark-application-...","executionId":7,"user":"alice","userSource":"thrift","statementId":"c3a1...","tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"en-sqlzqfu6n7","usages":[{"usageId":"u9f3a1c2b4d5e","function":"cdr_decrypt","dataset":"demo_db.sub_rel_product","column":"isdn","valueExpr":"spark_catalog.demo_db.sub_rel_product.isdn","keyFieldExpr":"spark_catalog.demo_db.sub_rel_product.start_datetime"}]}
+26/10/19 15:23:02 INFO audit: CDR_AUDIT {"auditVersion":2,"eventId":"7d02...","event":"END","ts":"2026-10-19T08:23:02.456Z","appId":"spark-application-...","executionId":7,"tenant":"tenantw1xjixm","workspace":"wsw7vtwvi","team":"teamtscauiy","engineId":"en-sqlzqfu6n7","status":"SUCCEEDED","durationMs":452333,"usages":[{"usageId":"u9f3a1c2b4d5e","rows":1200000000,"nullRows":3400}]}
 ```
 
 | Trường | Ý nghĩa |
@@ -276,7 +287,7 @@ Layout của log4j2 thêm thời gian và tên logger vào trước, nên `CDR_A
 | `statementId` | Id câu lệnh của Thrift Server |
 | `tenant`, `workspace`, `team`, `engineId` | Định danh engine (mục 2.4) |
 | `status`, `durationMs` | Chỉ có ở `END` |
-| `usages[]` | Mỗi lần dùng hàm trong query: `function`, `dataset` (tham số đầu), `valueExpr`, `keyFieldExpr`, `dakRequestCode`; ở `END` là `rows`, `nullRows` |
+| `usages[]` | Mỗi lần dùng hàm trong query: `function`, `dataset` (tham số 1), `column` (tham số 2, cột dùng để chọn key), `valueExpr`, `keyFieldExpr`; ở `END` là `rows`, `nullRows`. `column` có từ `auditVersion` 2 |
 | `part`, `parts` | Có khi một query dùng nhiều hàm hơn `maxUsagesPerEvent` và bị tách thành nhiều dòng |
 | `dropped` | Có khi hàng đợi audit từng đầy và phải bỏ event |
 
@@ -291,8 +302,18 @@ Layout của log4j2 thêm thời gian và tên logger vào trước, nên `CDR_A
 
 ## 6. Xử lý sự cố
 
-Lỗi chung của `cdr_*` (thiếu jar, lỗi DAK/Vault, sai keyField…):
-[mục 9 của hướng dẫn chung](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md#9-xử-lý-sự-cố). Lỗi riêng của audit:
+Lỗi chung của `cdr_*` (thiếu jar, lỗi kết nối DAK/Keycloak, sai keyField…):
+[mục 9 của hướng dẫn chung](../column-crypto/COLUMN_CRYPTO_SQL_ENGINE_GUIDE.md#9-xử-lý-sự-cố). Lỗi khi xin key theo cột (`PENDING`,
+`MISSING`, `REJECTED`, `DISABLED`, `invalid_tag`…): [bảng lỗi của KEY_PREFIX_SOURCES.md](../key-access/KEY_PREFIX_SOURCES.md#key-theo-cột-qua-dak-by-column-columnkeysource).
+Lỗi riêng của hàm:
+
+| Triệu chứng | Nguyên nhân / cách xử lý |
+|---|---|
+| `cdr_encrypt expects 4 arguments (table, column, value, fieldValue)` | Đang dùng cú pháp 3 tham số cũ; thêm tên cột ở tham số 2 |
+| `the second argument must be a constant string with the column name` | Tham số 2 phải là hằng chuỗi trong dấu nháy (`'isdn'`), không phải cột |
+| `Column keys are only available from DAK` | `spark.cdrcrypto.source` khác `dak` |
+
+Lỗi riêng của audit:
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|

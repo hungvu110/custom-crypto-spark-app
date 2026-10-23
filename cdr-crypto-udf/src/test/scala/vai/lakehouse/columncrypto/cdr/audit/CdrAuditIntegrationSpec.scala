@@ -11,7 +11,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.time.{Millis, Seconds, Span}
 import vai.lakehouse.columncrypto.cdr.{CdrCrypto, CdrCryptoExtension}
-import vai.lakehouse.keyprefix.PrefixSource
+import vai.lakehouse.keyprefix.{ColumnKeySource, KeyIntent}
 
 /** Audit qua SQL và DataFrame API thật (`local[2]`, listener và accumulator thật), sink trong bộ nhớ. */
 class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with Eventually {
@@ -22,8 +22,9 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   private val Dataset = "demo_db.sub_rel_product"
   private val Plaintexts = Seq("978356099", "912345678")
 
-  private val stubSource = new PrefixSource {
-    override def read(datasetName: String): String = Prefix
+  private val stubSource = new ColumnKeySource {
+    override def readColumns(datasetName: String, columns: Seq[String], intent: KeyIntent): Map[String, String] =
+      columns.map(_.toLowerCase -> Prefix).toMap
   }
 
   private val sink = new InMemoryAuditSink
@@ -49,7 +50,7 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     val rows = Seq(Row(Plaintexts(0), "20260928123456"), Row(Plaintexts(1), "20260101000000"), Row(null, "20260101000001"))
     spark.createDataFrame(spark.sparkContext.parallelize(rows), schema).createOrReplaceTempView("cdr_sample")
     spark.sql(s"CREATE TABLE enc_tbl USING parquet AS " +
-      s"SELECT cdr_encrypt('$Dataset', isdn, start_datetime) AS isdn, start_datetime FROM cdr_sample")
+      s"SELECT cdr_encrypt('$Dataset', 'isdn', isdn, start_datetime) AS isdn, start_datetime FROM cdr_sample")
     ciphertexts = spark.table("enc_tbl").collect().flatMap(r => Option(r.getString(0))).toSeq
     auditOn = true
   }
@@ -61,7 +62,7 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     SparkSession.clearDefaultSession()
   }
 
-  private val DecryptSql = s"SELECT cdr_decrypt('$Dataset', isdn, start_datetime) FROM enc_tbl"
+  private val DecryptSql = s"SELECT cdr_decrypt('$Dataset', 'isdn', isdn, start_datetime) FROM enc_tbl"
 
   /** Chạy `body`, chờ đến khi mọi START đều có END, trả về các event phát sinh. */
   private def audited(body: => Unit): Seq[AuditEvent] = {
@@ -85,7 +86,7 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     start.executionId shouldBe end.executionId
     start.appId shouldBe spark.sparkContext.applicationId
     val info = start.usages.loneElement.info.get
-    (info.function, info.dataset) shouldBe ((CdrCryptoExtension.DecryptFunction, Dataset))
+    (info.function, info.dataset, info.column) shouldBe ((CdrCryptoExtension.DecryptFunction, Dataset, "isdn"))
     info.valueExpr should endWith("isdn")
     info.keyFieldExpr should endWith("start_datetime")
     end.status shouldBe Some(Status.Succeeded)
@@ -106,7 +107,7 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   it should "ghi FAILED khi giải mã lỗi" in {
     val events = audited {
       intercept[Exception](spark.sql(
-        s"SELECT cdr_decrypt('$Dataset', isdn, '00000000000000') FROM enc_tbl WHERE isdn IS NOT NULL").collect())
+        s"SELECT cdr_decrypt('$Dataset', 'isdn', isdn, '00000000000000') FROM enc_tbl WHERE isdn IS NOT NULL").collect())
     }
 
     events.filter(_.event == EventType.End).map(_.status) shouldBe Seq(Some(Status.Failed))
@@ -156,7 +157,7 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
   "cdr_encrypt trong CTAS" should "chỉ sinh một cặp START/END dù Spark tạo execution con" in {
     val events = audited {
-      spark.sql(s"CREATE TABLE enc_copy USING parquet AS SELECT cdr_encrypt('$Dataset', isdn, start_datetime) AS isdn FROM cdr_sample")
+      spark.sql(s"CREATE TABLE enc_copy USING parquet AS SELECT cdr_encrypt('$Dataset', 'isdn', isdn, start_datetime) AS isdn FROM cdr_sample")
     }
 
     events.map(_.event) shouldBe Seq(EventType.Start, EventType.End)
@@ -165,7 +166,7 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
   }
 
   "CdrCrypto.decryptColumns (DataFrame API)" should "được audit giống SQL" in {
-    val cfg = CdrCrypto.loadConfig(Dataset, "start_datetime", Seq("isdn"), stubSource)
+    val cfg = CdrCrypto.loadConfig(Dataset, "start_datetime", Seq("isdn"), KeyIntent.Decrypt, stubSource)
     var result: Seq[String] = Nil
     val events = audited {
       result = CdrCrypto.applyWith(spark.table("enc_tbl"), cfg, encryptMode = false, Some(runtime))
@@ -174,7 +175,7 @@ class CdrAuditIntegrationSpec extends AnyFlatSpec with Matchers with BeforeAndAf
 
     result should contain theSameElementsAs (Plaintexts :+ null)
     val info = events.head.usages.loneElement.info.get
-    (info.function, info.dataset) shouldBe ((CdrCryptoExtension.DecryptFunction, Dataset))
+    (info.function, info.dataset, info.column) shouldBe ((CdrCryptoExtension.DecryptFunction, Dataset, "isdn"))
     events.last.usages.loneElement.counts shouldBe Some(UsageCounts(3, 1))
   }
 
