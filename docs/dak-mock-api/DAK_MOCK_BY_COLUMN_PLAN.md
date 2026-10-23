@@ -10,14 +10,14 @@ bên gọi thấy được**, không mô phỏng thiết kế nội bộ của D
 
 ## 0. Mock làm gì và không làm gì
 
-| Có                                                                                         | Không                                                                        |
-| ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `GET /api/v1/keys/by-column` đúng hình dạng request/response/mã lỗi của hợp đồng           | Phiếu PYC: grant của client team khai tĩnh trong `dak.grants`                |
-| Hai loại client: **nội bộ** (`tag=internal`) và **team**                                    | Giao diện quản trị, phiếu PYC, cảnh báo hết hạn                              |
-| YC: `PENDING` → tạo key hoặc từ chối; giới hạn 50 YC mở; `REJECTED` dính theo cột           | DB: YC giữ trong bộ nhớ, mất khi pod restart                                 |
-| Key cột lưu ở Vault KV v2, **ghi với `cas=0`** nên không bao giờ ghi đè                     | Rate limit, `by-file`                                                        |
-| Endpoint quản trị riêng của mock để giả lập "người có quyền bên DAK"                       |                                                                              |
-| Endpoint cũ `GET /api/v1/keys/{database}/{table}` **giữ nguyên**                            |                                                                              |
+| Có                                                                                | Không                                                         |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `GET /api/v1/keys/by-column` đúng hình dạng request/response/mã lỗi của hợp đồng  | Phiếu PYC: grant của client team khai tĩnh trong `dak.grants` |
+| Hai loại client: **nội bộ** (`tag=internal`) và **team**                          | Giao diện quản trị, phiếu PYC, cảnh báo hết hạn               |
+| YC: `PENDING` → tạo key hoặc từ chối; giới hạn 50 YC mở; `REJECTED` dính theo cột | DB: YC giữ trong bộ nhớ, mất khi pod restart                  |
+| Key cột lưu ở Vault KV v2, **ghi với `cas=0`** nên không bao giờ ghi đè           | Rate limit, `by-file`                                         |
+| Endpoint quản trị riêng của mock để giả lập "người có quyền bên DAK"              |                                                               |
+| Endpoint cũ `GET /api/v1/keys/{database}/{table}` **giữ nguyên**                  |                                                               |
 
 ## 1. Hợp đồng mock phục vụ
 
@@ -54,15 +54,15 @@ Thứ tự kiểm tra (như endpoint cũ: định dạng **trước** token, đ�
 
 Với mỗi cột, xét theo thứ tự:
 
-| Điều kiện                                                                | `state`    | Field kèm                             |
-| ------------------------------------------------------------------------ | ---------- | ------------------------------------- |
-| Cột nằm trong danh sách khoá                                             | `DISABLED` | —                                     |
-| Có key trong Vault                                                       | `READY`    | `keyPrefix`, `keyVersion`             |
-| Có YC `REJECTED` cho `(database, table, column)`                          | `REJECTED` | `requestCode`, `reasonText`           |
-| Có YC `OPEN` cho cột                                                     | `PENDING`  | `requestCode` (cùng mã, không mở mới) |
-| `onMissing=none`                                                         | `MISSING`  | `reason: not_requested`               |
-| `onMissing=request`, đã có 50 YC `OPEN` cho `(client, database, table)`   | `MISSING`  | `reason: yc_limit_reached`            |
-| `onMissing=request`                                                      | `PENDING`  | `requestCode` mới (`YC-<năm>-<6 số>`) |
+| Điều kiện                                                               | `state`    | Field kèm                             |
+| ----------------------------------------------------------------------- | ---------- | ------------------------------------- |
+| Cột nằm trong danh sách khoá                                            | `DISABLED` | —                                     |
+| Có key trong Vault                                                      | `READY`    | `keyPrefix`, `keyVersion`             |
+| Có YC `REJECTED` cho `(database, table, column)`                        | `REJECTED` | `requestCode`, `reasonText`           |
+| Có YC `OPEN` cho cột                                                    | `PENDING`  | `requestCode` (cùng mã, không mở mới) |
+| `onMissing=none`                                                        | `MISSING`  | `reason: not_requested`               |
+| `onMissing=request`, đã có 50 YC `OPEN` cho `(client, database, table)` | `MISSING`  | `reason: yc_limit_reached`            |
+| `onMissing=request`                                                     | `PENDING`  | `requestCode` mới (`YC-<năm>-<6 số>`) |
 
 `REJECTED` khớp theo `(database, table, column)`, **không theo client**: client nội bộ thứ hai (sau rotate) cũng nhận `REJECTED`.
 
@@ -91,7 +91,12 @@ Luôn `200` khi qua được mục 1.1:
   "table": "users_cdr",
   "complete": false,
   "columns": [
-    { "column": "msisdn", "state": "READY", "keyPrefix": "9f2c...", "keyVersion": 1 },
+    {
+      "column": "msisdn",
+      "state": "READY",
+      "keyPrefix": "9f2c...",
+      "keyVersion": 1
+    },
     { "column": "imei", "state": "PENDING", "requestCode": "YC-2026-000002" }
   ]
 }
@@ -109,23 +114,23 @@ dak:
   clients:
     - realm: vlp-tenantw1xjixm
       client-id: <client-noi-bo>
-      kind: internal            # mới: internal | team (mặc định team). internal không cần workspace/team
+      kind: internal # mới: internal | team (mặc định team). internal không cần workspace/team
     - realm: vlp-tenantw1xjixm
       client-id: <client-cua-team>
       workspace: wsw7vtwvi
       team: teamtscauiy
-  grants:                       # mới: grant theo cột của client team
+  grants: # mới: grant theo cột của client team
     - team: teamtscauiy
       database: demo_db
       table: users_cdr
       columns: [msisdn, imei]
-      expires-at: 2027-10-22T00:00:00Z   # ISO-8601; để trống = không hết hạn
+      expires-at: 2027-10-22T00:00:00Z # ISO-8601; để trống = không hết hạn
   vault:
     # mới: path key cột. Mỗi phần là MỘT đoạn đường dẫn riêng
     column-path-template: hla-datalake/datalake/column-keys/{database}/{table}/{column}
   yc:
-    max-open-per-table: 50      # theo (client, database, table)
-    auto-fulfill: false         # true: onMissing=request tạo key ngay và trả READY (chỉ để chạy e2e nhanh)
+    max-open-per-table: 50 # theo (client, database, table)
+    auto-fulfill: false # true: onMissing=request tạo key ngay và trả READY (chỉ để chạy e2e nhanh)
   admin:
     token: ${MOCK_ADMIN_TOKEN:} # để trống = tắt endpoint quản trị
 ```
@@ -141,7 +146,7 @@ dak:
   đã tồn tại thì mock dùng key đang có, không sinh key khác.
 - Giá trị sinh: 32 byte ngẫu nhiên (`SecureRandom`) mã hoá Base64. Tên cột đã qua kiểm tra `[a-z0-9_]` nên không cần escape.
 - Token Vault của mock (`VAULT_TOKEN`) cần quyền `read` trên `kv/data/hla-datalake/datalake/column-keys/*`, và thêm `create` nếu muốn mock tự tạo key khi `fulfill` YC. Path nằm dưới
-`hla-datalake/datalake/` để người vận hành tạo được secret tay.
+  `hla-datalake/datalake/` để người vận hành tạo được secret tay.
 
 ### 2.3 YC trong bộ nhớ
 
@@ -163,17 +168,17 @@ Chỉ bật khi đặt `MOCK_ADMIN_TOKEN`; mọi request phải có header `X-Mo
 
 ### 2.5 Lớp mới / sửa
 
-| Lớp                           | Việc                                                                                                  |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `ColumnKeyController`         | `GET /api/v1/keys/by-column`: kiểm tham số theo mục 1.1, gọi `ColumnKeyService`                       |
-| `ColumnKeyRequest`            | Parse và chuẩn hoá `database`/`table`/`columns`/`onMissing`/`tag`                                     |
-| `ColumnKeyService`            | Bảng `tag` × client, trạng thái từng cột (mục 1.2), dựng response, audit                              |
-| `ColumnKeyStore`              | Đọc/ghi key cột ở Vault (`cas=0`)                                                                     |
-| `YcRegistry`                  | YC và giới hạn 50                                                                                     |
-| `MockAdminController`         | Mục 2.4                                                                                               |
-| `TokenVerifier.Caller`        | Thêm `kind`; client nội bộ có `workspace`/`team` rỗng                                                  |
-| `DakApiException`             | Thêm `invalidColumn`, `invalidTag`, `invalidOnMissing`                                                |
-| `KeyController`, `KeyService` | **Không đổi** hành vi. Client nội bộ gọi endpoint cũ nhận `403 access_denied` (không thuộc team nào)  |
+| Lớp                           | Việc                                                                                                 |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `ColumnKeyController`         | `GET /api/v1/keys/by-column`: kiểm tham số theo mục 1.1, gọi `ColumnKeyService`                      |
+| `ColumnKeyRequest`            | Parse và chuẩn hoá `database`/`table`/`columns`/`onMissing`/`tag`                                    |
+| `ColumnKeyService`            | Bảng `tag` × client, trạng thái từng cột (mục 1.2), dựng response, audit                             |
+| `ColumnKeyStore`              | Đọc/ghi key cột ở Vault (`cas=0`)                                                                    |
+| `YcRegistry`                  | YC và giới hạn 50                                                                                    |
+| `MockAdminController`         | Mục 2.4                                                                                              |
+| `TokenVerifier.Caller`        | Thêm `kind`; client nội bộ có `workspace`/`team` rỗng                                                |
+| `DakApiException`             | Thêm `invalidColumn`, `invalidTag`, `invalidOnMissing`                                               |
+| `KeyController`, `KeyService` | **Không đổi** hành vi. Client nội bộ gọi endpoint cũ nhận `403 access_denied` (không thuộc team nào) |
 
 ### 2.6 Audit
 
@@ -189,26 +194,26 @@ Lỗi cả lời gọi (`400`/`401`/`403`) ghi một dòng `result=ERROR` như e
 
 Làm **trước** hai plan còn lại để có chỗ chạy thử đầu-cuối.
 
-| #  | Việc                                                          | Test (`ColumnKeyApiTest`, kiểu `KeyApiTest`: MockWebServer giả Keycloak JWKS và Vault)                                       |
-| -- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| M1 | `DakProperties`: `kind`, `column-path-template`, `yc`, `admin` | Cấu hình sai thì ứng dụng không khởi động                                                                                    |
-| M2 | `ColumnKeyRequest` + mã lỗi `400`                             | Mỗi ca `400` ở mục 1.1, và không có request nào tới JWKS                                                                     |
-| M3 | Bảng `tag` × client, grant theo cột của client team           | Năm ca của mục 1.1 bước 6; mục 1.2b: đủ grant, thiếu một cột, grant hết hạn, team không có grant, không mở YC                 |
-| M4 | `ColumnKeyStore` + `YcRegistry` + `ColumnKeyService`          | Mọi dòng của bảng mục 1.2; gọi lại trả cùng `requestCode`; giới hạn 50; `REJECTED` dính khi đổi client                        |
-| M5 | `MockAdminController`                                         | fulfill → lời gọi sau `READY`; fulfill lần hai không đổi key (`cas=0`); reject; disable/enable trả key cũ; thiếu token → `404` |
-| M6 | `auto-fulfill`                                                | `onMissing=request` trả `READY` ngay                                                                                         |
-| M7 | k8s + tài liệu (mục 4)                                        | —                                                                                                                            |
+| #   | Việc                                                           | Test (`ColumnKeyApiTest`, kiểu `KeyApiTest`: MockWebServer giả Keycloak JWKS và Vault)                                         |
+| --- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| M1  | `DakProperties`: `kind`, `column-path-template`, `yc`, `admin` | Cấu hình sai thì ứng dụng không khởi động                                                                                      |
+| M2  | `ColumnKeyRequest` + mã lỗi `400`                              | Mỗi ca `400` ở mục 1.1, và không có request nào tới JWKS                                                                       |
+| M3  | Bảng `tag` × client, grant theo cột của client team            | Năm ca của mục 1.1 bước 6; mục 1.2b: đủ grant, thiếu một cột, grant hết hạn, team không có grant, không mở YC                  |
+| M4  | `ColumnKeyStore` + `YcRegistry` + `ColumnKeyService`           | Mọi dòng của bảng mục 1.2; gọi lại trả cùng `requestCode`; giới hạn 50; `REJECTED` dính khi đổi client                         |
+| M5  | `MockAdminController`                                          | fulfill → lời gọi sau `READY`; fulfill lần hai không đổi key (`cas=0`); reject; disable/enable trả key cũ; thiếu token → `404` |
+| M6  | `auto-fulfill`                                                 | `onMissing=request` trả `READY` ngay                                                                                           |
+| M7  | k8s + tài liệu (mục 4)                                         | —                                                                                                                              |
 
 Ca test xuyên suốt: không response hay dòng log nào chứa `keyPrefix` ngoài trường `keyPrefix` của cột `READY`.
 
 ## 4. Triển khai
 
-| Việc                                                                                     | Chi tiết                                                                                       |
-| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| [k8s/dak-mock.yaml](../../dak-mock/k8s/dak-mock.yaml) ConfigMap                          | Thêm client nội bộ (`kind: internal`), `vault.column-path-template`, `yc.*`                    |
+| Việc                                                                                     | Chi tiết                                                                                                                              |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| [k8s/dak-mock.yaml](../../dak-mock/k8s/dak-mock.yaml) ConfigMap                          | Thêm client nội bộ (`kind: internal`), `vault.column-path-template`, `yc.*`                                                           |
 | Secret                                                                                   | `MOCK_ADMIN_TOKEN` mới; `VAULT_TOKEN` cần `read` (và `create` nếu mock tự tạo key) trên `kv/data/hla-datalake/datalake/column-keys/*` |
-| Keycloak                                                                                 | Tạo một client `client_credentials` đóng vai client nội bộ trong realm test                    |
-| [README.md](../../dak-mock/README.md), [sa-fetch-key.sh](../../dak-mock/sa-fetch-key.sh) | Mô tả endpoint mới, endpoint quản trị, ví dụ `curl` cho `by-column`                            |
+| Keycloak                                                                                 | Tạo một client `client_credentials` đóng vai client nội bộ trong realm test                                                           |
+| [README.md](../../dak-mock/README.md), [sa-fetch-key.sh](../../dak-mock/sa-fetch-key.sh) | Mô tả endpoint mới, endpoint quản trị, ví dụ `curl` cho `by-column`                                                                   |
 
 Kịch bản chạy thử đầu-cuối trên cluster (sau khi xong cả ba plan):
 
@@ -220,7 +225,7 @@ Kịch bản chạy thử đầu-cuối trên cluster (sau khi xong cả ba plan
 
 ## 5. Việc còn mở
 
-| Việc                                                                            | Ảnh hưởng                                                          |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Bản hợp đồng đính kèm vòng 6 chưa có trong repo; tên field theo ví dụ vòng 2 §4 | Khi có bản chính thức, đối chiếu và sửa mock cùng lúc với lib      |
+| Việc                                                                            | Ảnh hưởng                                                                        |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Bản hợp đồng đính kèm vòng 6 chưa có trong repo; tên field theo ví dụ vòng 2 §4 | Khi có bản chính thức, đối chiếu và sửa mock cùng lúc với lib                    |
 | Nhánh client team (grant theo cột) chưa làm ở DAK                               | Mock dùng `dak.grants` tĩnh; khi DAK có grant theo cột thì đối chiếu lại hành vi |
