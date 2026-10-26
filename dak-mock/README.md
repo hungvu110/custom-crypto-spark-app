@@ -113,7 +113,7 @@ sequenceDiagram
 
     C->>M: GET http://dak-mock:8085/api/v1/keys/demo_db/users_cdr (Bearer)
     Note over M: Kiểm tên database/table, chuẩn hoá chữ thường — sai → 400
-    Note over M: iss (chưa tin) → realm vlp-tenantw1xjixm trong ConfigMap; không có → 401
+    Note over M: iss (chưa tin) → realm vlp-tenantw1xjixm trong ConfigMap, không có → 401
     M->>J: tải JWKS (có cache)
     Note over M: Chữ ký RS256, exp/iat, iss, typ=Bearer, azp<br/>(realm, azp) có trong ConfigMap và enabled? Không → 401
     M->>V: GET /v1/kv/data/hla-datalake/datalake/spark-application/demo_db.users_cdr
