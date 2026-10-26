@@ -34,3 +34,6 @@ docs/schema.xlsx
 .prettierignore
 .prettierrc
 .scalafmt.conf
+# Python
+__pycache__/
+*.pyc
