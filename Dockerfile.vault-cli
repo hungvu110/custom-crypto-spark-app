@@ -1,0 +1,24 @@
+# Image tối thiểu để chạy CLI `vault` (kv put / get / list, token lookup) trong k8s/vault-cli-pod.yaml.
+# Chỉ có: alpine (busybox: sh, head, base64, sleep) + binary vault (static) + CA công khai. Không có curl/jq/bash.
+#
+# Build/push từ máy có quyền push registry:
+#   docker build -f Dockerfile.vault-cli -t <registry>/vault-cli:1.15 .
+#   docker push <registry>/vault-cli:1.15
+# Máy build không pull được Docker Hub thì đổi VAULT_IMAGE / ALPINE_IMAGE sang bản mirror nội bộ:
+#   docker build -f Dockerfile.vault-cli --build-arg VAULT_IMAGE=<mirror>/hashicorp/vault:1.15 \
+#     --build-arg ALPINE_IMAGE=<mirror>/alpine:3.20 -t <registry>/vault-cli:1.15 .
+ARG VAULT_IMAGE=hashicorp/vault:1.15
+ARG ALPINE_IMAGE=alpine:3.20
+
+FROM ${VAULT_IMAGE} AS vault
+
+FROM ${ALPINE_IMAGE}
+# ca-certificates: để vault gọi được Vault https (CA công khai); Vault nội bộ chạy http thì không cần nhưng nhẹ (~0.5MB).
+RUN apk add --no-cache ca-certificates \
+    && addgroup -g 1000 vault \
+    && adduser -D -u 1000 -G vault -h /tmp vault
+COPY --from=vault /bin/vault /usr/local/bin/vault
+
+USER 1000:1000
+ENV HOME=/tmp
+CMD ["sleep", "3600"]

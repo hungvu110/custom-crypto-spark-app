@@ -30,3 +30,7 @@ tools/datalake-security-test/
 
 # Schema nguồn dữ liệu thật (có thông tin nhạy cảm) — KHÔNG commit
 docs/schema.xlsx
+.editorconfig
+.prettierignore
+.prettierrc
+.scalafmt.conf

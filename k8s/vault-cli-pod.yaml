@@ -1,0 +1,78 @@
+# Pod chạy lâu dài (kubectl exec vào dùng) để chạy lệnh `vault` để tạo / đọc key theo cột (kv/hla-datalake/datalake/column-keys/...) từ trong cluster,
+# dùng cùng token Vault với dak-mock (Secret dak-mock-vault-token, key "token", đã tạo trước trong namespace).
+# Token được đưa vào qua biến VAULT_TOKEN nên không cần `vault login` (không ghi ~/.vault-token).
+#
+# Quy trình:
+#   1. Sửa "image:" cho khớp image có sẵn CLI vault trong registry nội bộ (vd mirror của hashicorp/vault).
+#   2. kubectl apply -f k8s/vault-cli-pod.yaml
+#      kubectl wait --for=condition=Ready pod/vault-cli -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --timeout=60s
+#   3. Chạy lệnh (NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy):
+#        kubectl exec -it vault-cli -n $NS -- sh          # vào shell, gõ lệnh vault trực tiếp
+#      hoặc từng lệnh:
+#        # kiểm tra token + quyền
+#        kubectl exec vault-cli -n $NS -- vault token lookup
+#        # TẠO key cho 1 cột (cas=0: chỉ tạo khi chưa tồn tại, KHÔNG ghi đè key đã dùng để mã hoá)
+#        kubectl exec vault-cli -n $NS -- sh -c \
+#          'vault kv put -mount=kv -cas=0 hla-datalake/datalake/column-keys/demo_db/users_cdr/name keyPrefix="$(head -c 32 /dev/urandom | base64)"'
+#        # LẤY key
+#        kubectl exec vault-cli -n $NS -- vault kv get -mount=kv hla-datalake/datalake/column-keys/demo_db/users_cdr/name
+#        kubectl exec vault-cli -n $NS -- vault kv get -mount=kv -field=keyPrefix hla-datalake/datalake/column-keys/demo_db/users_cdr/name
+#        # LIỆT KÊ key
+#        kubectl exec vault-cli -n $NS -- vault kv list -mount=kv hla-datalake/datalake/column-keys/demo_db/users_cdr
+#      <database>, <table>, <column> viết CHỮ THƯỜNG, chỉ gồm a-z, 0-9, _ (cùng quy ước với dak-mock).
+#   4. Pod chạy liên tục (restartPolicy: Always, không tự thoát) nên exec lại được bất cứ lúc nào. Pod giữ token Vault
+#      trong env -> xoá khi không còn dùng:
+#        kubectl delete -f k8s/vault-cli-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vault-cli
+  # Cùng namespace với dak-mock và Secret dak-mock-vault-token.
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+  labels:
+    app.kubernetes.io/name: vault-cli
+    app.kubernetes.io/component: vault-cli
+spec:
+  # Sống lâu: kubelet tự khởi động lại container nếu nó thoát/crash (khác pod tạm restartPolicy: Never).
+  restartPolicy: Always
+  # Không gọi Kubernetes API: không cần mount token của ServiceAccount.
+  automountServiceAccountToken: false
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: vault
+      # GIẢ ĐỊNH — thay bằng image có CLI vault (+ sh, base64, head) trong registry nội bộ, vd mirror của hashicorp/vault.
+      image: hub.vtcc.vn:8989/<ten-project-cua-ban>/vault:1.15
+      imagePullPolicy: IfNotPresent
+      # Giữ pod sống vô thời hạn để kubectl exec bất cứ lúc nào (không tự thoát). Ghi đè CMD của image.
+      command: ["tail", "-f", "/dev/null"]
+      env:
+        - name: VAULT_ADDR
+          value: http://vault.cyberspace.vn
+        - name: VAULT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: dak-mock-vault-token
+              key: token
+        # HOME trỏ /tmp (ghi được) cho các file tạm của CLI.
+        - name: HOME
+          value: /tmp
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        runAsUser: 1000
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
