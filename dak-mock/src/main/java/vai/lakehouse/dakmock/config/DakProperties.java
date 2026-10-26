@@ -10,11 +10,13 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
  * Cấu hình tĩnh của mock (prefix {@code dak}): registry realm, đăng ký client, grant theo cột của client team, kết nối Vault,
- * YC và endpoint quản trị. Kiểm tra ngay lúc khởi động — cấu hình sai thì ứng dụng không chạy, thay vì lỗi ở request đầu tiên.
+ * YC, endpoint quản trị và flow phiếu khử định danh ({@link DeidProperties}). Kiểm tra ngay lúc khởi động — cấu hình sai thì
+ * ứng dụng không chạy, thay vì lỗi ở request đầu tiên.
  */
 @ConfigurationProperties(prefix = "dak")
 public record DakProperties(
@@ -24,22 +26,32 @@ public record DakProperties(
     Vault vault,
     Yc yc,
     Admin admin,
-    @DefaultValue("60s") Duration clockSkew) {
+    @DefaultValue("60s") Duration clockSkew,
+    DeidProperties deid) {
 
   private static final Pattern NAME = Pattern.compile("[a-z0-9][a-z0-9_-]{0,62}");
   private static final Pattern HIVE_NAME = Pattern.compile("[A-Za-z0-9_]{1,128}");
 
+  /** Dựng cấu hình khi chưa có khối {@code dak.deid} (các test cũ): flow khử định danh lấy giá trị mặc định. */
+  public DakProperties(List<Realm> realms, List<Client> clients, List<Grant> grants, Vault vault, Yc yc, Admin admin,
+                       Duration clockSkew) {
+    this(realms, clients, grants, vault, yc, admin, clockSkew, null);
+  }
+
+  // Record có nhiều constructor: chỉ rõ constructor chính (canonical) là nơi Spring nạp cấu hình.
+  @ConstructorBinding
   public DakProperties {
     realms = realms == null ? List.of() : List.copyOf(realms);
     clients = clients == null ? List.of() : List.copyOf(clients);
     grants = grants == null ? List.of() : List.copyOf(grants);
     yc = yc == null ? new Yc(Yc.DEFAULT_MAX_OPEN_PER_TABLE, false) : yc;
     admin = admin == null ? new Admin(null) : admin;
+    deid = deid == null ? DeidProperties.defaults() : deid;
     if (vault == null) {
       throw new IllegalStateException("dak.vault must be configured");
     }
     // Static, nhận tham số: trong compact constructor các field của record CHƯA được gán.
-    validate(realms, clients, grants, vault, yc);
+    validate(realms, clients, grants, vault, yc, deid);
   }
 
   /** Một realm Keycloak (một tenant). Token chỉ được tin nếu {@code iss} khớp chính xác {@code issuer}. */
@@ -119,7 +131,8 @@ public record DakProperties(
     }
   }
 
-  private static void validate(List<Realm> realmList, List<Client> clientList, List<Grant> grantList, Vault vault, Yc yc) {
+  private static void validate(List<Realm> realmList, List<Client> clientList, List<Grant> grantList, Vault vault, Yc yc,
+                               DeidProperties deid) {
     require(!isBlank(vault.addr()), "dak.vault.addr is required");
     require(!isBlank(vault.token()), "dak.vault.token is required (set env VAULT_TOKEN)");
     require(vault.pathTemplate().contains("{database}") && vault.pathTemplate().contains("{table}"),
@@ -168,13 +181,16 @@ public record DakProperties(
         }
       }
     }
+
+    deid.validate(vault.pathTemplate());
   }
 
-  private static boolean isBlank(String s) {
+  // Package-private: DeidProperties dùng chung hai hàm này để thông điệp lỗi cấu hình có cùng tiền tố.
+  static boolean isBlank(String s) {
     return s == null || s.isBlank();
   }
 
-  private static void require(boolean ok, String message) {
+  static void require(boolean ok, String message) {
     if (!ok) {
       throw new IllegalStateException("Invalid DAK mock configuration: " + message);
     }

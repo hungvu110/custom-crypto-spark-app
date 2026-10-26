@@ -61,6 +61,13 @@
       <version>${mockwebserver.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- Chứng chỉ tự ký cho test TLS của KubernetesApiClient (CA riêng của cluster, không phải truststore chung). -->
+    <dependency>
+      <groupId>com.squareup.okhttp3</groupId>
+      <artifactId>okhttp-tls</artifactId>
+      <version>${mockwebserver.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

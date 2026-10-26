@@ -1,0 +1,117 @@
+# Mẫu SparkApplication khử định danh cho flow phiếu PYC (docs/dak-deid-flow/MOCK_IMPLEMENTATION_PLAN.md mục 4.5).
+# Dẫn xuất từ pseudonymize-table-app/k8s/pseudonymize-table.yaml. ManifestRenderer thay các ${DEID_*} CHỈ trong giá trị chuỗi
+# (sau khi đã parse YAML), ghi đè metadata.name/namespace/labels và kiểm từng giá trị theo bộ ký tự riêng của placeholder.
+# Placeholder: ${DEID_DATABASE} ${DEID_TABLE} ${DEID_PSEUDO_COLUMNS} ${DEID_OUTPUT_DB} ${DEID_OUTPUT_TABLE}
+#              ${DEID_KEY_SECRET} ${DEID_REQUEST_CODE}
+# Bắt buộc có (kiểm lúc khởi động): 6 placeholder đầu, OUTPUT_MODE=overwrite, VERIFY=true. KHÔNG đặt giá trị bí mật ở đây.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: deid-template
+spec:
+  type: Scala
+  mode: cluster
+  sparkVersion: 3.5.1
+  image: hub.vtcc.vn:8989/hungvt0110/pseudonymize-table-app:v0.1
+  imagePullPolicy: Always
+  mainApplicationFile: local:///opt/app/pseudonymize-table-app.jar
+  mainClass: vai.lakehouse.pseudonymizetable.app.PseudonymizeTableApp
+  restartPolicy:
+    type: Never
+  # Một tuần: đủ để xem log sau khi job xong, rồi Operator tự dọn.
+  timeToLiveSeconds: 604800
+  hadoopConfigMap: teamtscauiy-hadoop-conf
+
+  driver:
+    cores: 1
+    coreLimit: 1000m
+    memory: 2048m
+    memoryOverhead: 512m
+    labels:
+      version: 3.5.1
+      app: pseudonymize-table
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+      - name: DB_NAME
+        value: ${DEID_DATABASE}
+      - name: TABLE_NAME
+        value: ${DEID_TABLE}
+      - name: PSEUDO_COLUMNS
+        value: ${DEID_PSEUDO_COLUMNS}
+      - name: PSEUDO_MODE
+        value: HASH
+      - name: OUTPUT_DB
+        value: ${DEID_OUTPUT_DB}
+      - name: OUTPUT_TABLE
+        value: ${DEID_OUTPUT_TABLE}
+      - name: OUTPUT_MODE
+        value: overwrite
+      - name: VERIFY
+        value: "true"
+      - name: ENABLE_HIVE_SUPPORT
+        value: "true"
+      - name: WAREHOUSE_PATH
+        value: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse
+      # Khoá đọc từ file trong Secret của phiếu (pseudonym.hmac_v1), job chỉ biết tên thư mục mount.
+      - name: CRYPTO_PREFIX_SOURCE
+        value: file
+      - name: CRYPTO_KEY_PREFIX_DIR
+        value: /etc/pseudonym-keys
+    volumeMounts:
+      - name: pseudonym-keys
+        mountPath: /etc/pseudonym-keys
+        readOnly: true
+
+  executor:
+    instances: 2
+    cores: 2
+    coreLimit: 2000m
+    memory: 4096m
+    memoryOverhead: 1024m
+    labels:
+      version: 3.5.1
+      app: pseudonymize-table
+    serviceAccount: spark-application-sa
+    env:
+      - name: TZ
+        value: Asia/Ho_Chi_Minh
+      - name: MALLOC_ARENA_MAX
+        value: "2"
+
+  volumes:
+    - name: pseudonym-keys
+      secret:
+        secretName: ${DEID_KEY_SECRET}
+
+  sparkConf:
+    spark.jars: local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/pseudonym-udf-1.0-SNAPSHOT.jar
+    spark.kerberos.access.hadoopFileSystems: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020
+    spark.kerberos.principal: presto@VAILAKEHOUSE.VIETTEL.COM
+    spark.kerberos.keytab: /etc/security/keytabs/presto.keytab
+    spark.kubernetes.kerberos.krb5.path: /etc/krb5.conf
+    spark.security.credentials.hadoopfs.enabled: "true"
+    spark.hadoop.hadoop.security.authentication: kerberos
+    spark.hadoop.hadoop.security.authorization: "true"
+    spark.hadoop.fs.permissions.umask-mode: "002"
+    spark.sql.extensions: io.delta.sql.DeltaSparkSessionExtension
+    spark.sql.catalog.spark_catalog: org.apache.spark.sql.delta.catalog.DeltaCatalog
+    spark.driver.userClassPathFirst: "false"
+    spark.executor.userClassPathFirst: "false"
+    spark.driver.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    spark.executor.extraJavaOptions: "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
+    spark.jars.ivy: /tmp
+    spark.serializer: org.apache.spark.serializer.KryoSerializer
+    spark.scheduler.mode: FAIR
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.sources.ignoreDataLocality.enabled: "true"
+    spark.dynamicAllocation.enabled: "false"
+    spark.sql.shuffle.partitions: "64"
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/spark_history
+    spark.eventLog.rolling.enabled: "true"
+    spark.eventLog.rolling.maxFileSize: 128m

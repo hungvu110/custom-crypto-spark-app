@@ -1,7 +1,5 @@
 package vai.lakehouse.dakmock.web;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.List;
 
@@ -19,7 +17,6 @@ import vai.lakehouse.dakmock.column.ColumnId;
 import vai.lakehouse.dakmock.column.ColumnKeyRequest;
 import vai.lakehouse.dakmock.column.ColumnKeyStore;
 import vai.lakehouse.dakmock.column.YcRegistry;
-import vai.lakehouse.dakmock.config.DakProperties;
 import vai.lakehouse.dakmock.key.VaultKeyReader.KeyMaterial;
 
 /**
@@ -54,12 +51,12 @@ public class MockAdminController {
   /** Kết quả tạo key: không có giá trị key. */
   public record FulfillResult(String requestCode, String database, String table, String column, long keyVersion) {}
 
-  private final DakProperties.Admin admin;
+  private final MockAdminAuth auth;
   private final YcRegistry registry;
   private final ColumnKeyStore store;
 
-  public MockAdminController(DakProperties props, YcRegistry registry, ColumnKeyStore store) {
-    this.admin = props.admin();
+  public MockAdminController(MockAdminAuth auth, YcRegistry registry, ColumnKeyStore store) {
+    this.auth = auth;
     this.registry = registry;
     this.store = store;
   }
@@ -130,11 +127,7 @@ public class MockAdminController {
 
   // Sai hoặc thiếu token, hay chưa bật quản trị: 404 như endpoint không tồn tại, không để lộ là có endpoint.
   private void authorize(String token) {
-    boolean ok = admin.enabled() && token != null && MessageDigest.isEqual(
-        token.getBytes(StandardCharsets.UTF_8), admin.token().getBytes(StandardCharsets.UTF_8));
-    if (!ok) {
-      throw DakApiException.notFound("Unknown endpoint");
-    }
+    auth.authorize(token);
   }
 
   private static ColumnId columnId(String database, String table, String column) {

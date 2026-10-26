@@ -28,7 +28,7 @@ public class VaultKeyReader {
 
   /** Vault không có secret cho bảng này. */
   public static final class KeyNotFoundException extends RuntimeException {
-    KeyNotFoundException() {
+    public KeyNotFoundException() {
       super(null, null, false, false);
     }
   }

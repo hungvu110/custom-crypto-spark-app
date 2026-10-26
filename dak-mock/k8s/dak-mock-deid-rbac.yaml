@@ -1,0 +1,43 @@
+# Quyền Kubernetes cho flow phiếu khử định danh (docs/dak-deid-flow/MOCK_IMPLEMENTATION_PLAN.md mục 6).
+# Mock tạo Secret chứa key bảng cho từng phiếu (deid-key-<năm>-<6 số>) và xoá nó khi job xong; DAG Airflow mount Secret đó.
+# Chỉ cần create + delete trên secrets, KHÔNG get/list/update/watch. Role không giới hạn được theo tên (tên Secret chưa biết khi
+# tạo) nên code chỉ xoá tên khớp deid-key-\d{4}-\d{6}; rủi ro còn lại đã được chấp nhận (README Q17).
+#
+#   kubectl apply -f dak-mock/k8s/dak-mock-deid-rbac.yaml
+#
+# Namespace PHẢI là namespace nơi DAG tạo SparkApplication, và trùng dak.deid.kubernetes.namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dak-mock
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+  labels:
+    app.kubernetes.io/name: dak-mock
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dak-mock-deid
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+  labels:
+    app.kubernetes.io/name: dak-mock
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dak-mock-deid
+  namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+  labels:
+    app.kubernetes.io/name: dak-mock
+subjects:
+  - kind: ServiceAccount
+    name: dak-mock
+    namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dak-mock-deid

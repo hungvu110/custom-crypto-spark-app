@@ -4,6 +4,13 @@ server:
 spring:
   application:
     name: dak-mock
+  servlet:
+    multipart:
+      # Lớp chặn ngoài cho upload phiếu khử định danh; giới hạn chính xác là dak.deid.max-upload-bytes (tối đa 1 MB).
+      max-file-size: 1MB
+      max-request-size: 2MB
+      # Lớn hơn max-request-size: phần upload luôn nằm trong bộ nhớ, KHÔNG bao giờ ghi file tạm xuống đĩa.
+      file-size-threshold: 4MB
 
 logging:
   pattern:
@@ -67,3 +74,32 @@ dak:
   # Endpoint quản trị /mock-admin/** (tạo key cho YC, từ chối, khoá cột). Để trống = tắt (trả 404).
   admin:
     token: ${MOCK_ADMIN_TOKEN:}
+
+  # Flow phiếu yêu cầu khử định danh (PYC): docs/dak-deid-flow/. Mock đóng vai portal bằng HTTP (/mock-portal/**) và dùng
+  # tài khoản giả. Bí mật KHÔNG nằm ở file này: tài khoản giả (portal-users, có token) khai trong Secret dak-mock-portal-users,
+  # client secret/token của Airflow lấy từ biến môi trường.
+  deid:
+    enabled: true
+    # Bản đầu chỉ HASH: ENCRYPT cần khoá 64 byte, MAPPING cần bảng ánh xạ, một key bảng không đủ.
+    allowed-modes: [HASH]
+    max-active-per-team: 20
+    max-upload-bytes: 65536
+    # Trống = cùng database nguồn. {seq} = số cuối của mã phiếu, {yyyyMMdd} = ngày duyệt.
+    output-database: ""
+    output-table-template: "{table}_deid_{yyyyMMdd}_{seq}"
+    # noop (chỉ log manifest, không cần cluster) | kubernetes | airflow
+    submitter: noop
+    # Cần khi submitter=kubernetes hoặc airflow (cả hai tạo Secret key trong namespace này). Ví dụ:
+    #   kubernetes:
+    #     namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+    #     template-file: /deid/sparkapplication.yaml   # chỉ cần khi submitter=kubernetes
+    # Airflow 2.8, REST /api/v1. dagId người dùng chọn PHẢI nằm trong allowed-dag-ids. Ví dụ:
+    #   airflow:
+    #     base-url: http://airflow-webserver.airflow.svc.cluster.local:8080
+    #     allowed-dag-ids: [deid_pseudonymize_table]
+    #     auth: client-credentials            # hoặc bearer (token tĩnh, chỉ để thử nhanh)
+    #     token-url: https://sso-lakehouse.cyberspace.vn/realms/<realm>/protocol/openid-connect/token
+    #     client-id: <client-airflow>
+    airflow:
+      client-secret: ${AIRFLOW_CLIENT_SECRET:}
+      token: ${AIRFLOW_TOKEN:}

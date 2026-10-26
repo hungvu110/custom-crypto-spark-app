@@ -39,6 +39,11 @@ public record ColumnKeyRequest(String database, String table, List<String> colum
     return new ColumnKeyRequest(db, tbl, cols, mode, tag != null);
   }
 
+  /** Tên database/table/cột hợp lệ ({@code [A-Za-z0-9_]{1,128}}), chưa chuẩn hoá chữ thường. Dùng cho file phiếu khử định danh. */
+  public static boolean isName(String raw) {
+    return raw != null && NAME.matcher(raw).matches();
+  }
+
   /** Kiểm và chuẩn hoá một tên cột đơn lẻ (dùng cho endpoint quản trị). */
   public static String columnName(String raw) {
     if (raw == null || !NAME.matcher(raw).matches()) {

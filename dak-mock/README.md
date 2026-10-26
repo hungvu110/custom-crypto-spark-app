@@ -390,3 +390,26 @@ câu SQL có hàm crypto được phân tích, không chạy lúc engine khởi 
 
 `dak-mock` là project Maven riêng (Java 17). Nếu IDE mở thư mục gốc như project Spark (Java 11) sẽ báo lỗi cú pháp giả ở các
 `record`. Import `dak-mock/pom.xml` như một project riêng.
+
+## 11. Flow phiếu khử định danh (PYC)
+
+Team có tài khoản DAK nội bộ upload phiếu (database, table, cột, `dagId`, mục đích) trên portal, admin duyệt, DAK đọc key bảng từ Vault,
+đưa cho job bằng Secret `deid-key-<năm>-<6 số>` (job chỉ nhận TÊN Secret) rồi trigger DAG Airflow. Thiết kế, hợp đồng API và kế hoạch:
+[docs/dak-deid-flow/](../docs/dak-deid-flow/README.md). Mock đóng vai portal bằng HTTP:
+
+| Endpoint | Ai dùng | Ghi chú |
+| --- | --- | --- |
+| `POST /mock-portal/deid-requests` (multipart `file`), `GET`, `POST .../{code}/cancel`, `GET /mock-portal/deid-dags` | user của team, header `X-Mock-Portal-Token` | Phiếu thuộc team; team khác nhận `404` |
+| `GET /mock-admin/deid-requests[/{code}]`, `POST .../{code}/approve`, `.../reject`, `.../retry-submit` | admin, header `X-Mock-Admin-Token` | `approve` lỗi giao key/gửi job vẫn `200`, lỗi nằm ở `state=SUBMIT_FAILED` + `submitError` |
+
+Xem phiếu đang chạy sẽ làm mới trạng thái job từ Airflow; job xong thì Secret key bị xoá (không có tiến trình nền).
+
+**Cấu hình** (khối `dak.deid`, mẫu trong `k8s/dak-mock.yaml`): `submitter` là `noop` (mặc định, chỉ log, không cần hạ tầng) hoặc `airflow`.
+`submitter=kubernetes` không được hỗ trợ (DAG của Airflow tự tạo SparkApplication). Với `airflow`: `kubernetes.namespace` là namespace tạo Secret
+key và PHẢI là namespace nơi DAG tạo SparkApplication; `airflow.base-url`, `allowed-dag-ids`, `token-url`, `client-id`, `scope`; client secret
+qua env `AIRFLOW_CLIENT_SECRET` (hoặc `AIRFLOW_TOKEN` với `auth: bearer`). Tài khoản portal giả (có token) khai ở Secret `dak-mock-portal-users`.
+
+**Triển khai thật:** làm theo các bước ở đầu `k8s/dak-mock.yaml` (RBAC `k8s/dak-mock-deid-rbac.yaml`, Secret portal/airflow), key bảng phải có sẵn
+trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.py](../docs/dak-deid-flow/sample_dag_deid_pseudonymize_table.py).
+Quét Secret key sót: `kubectl get secret -l dak.vai/kind=deid-key -n <namespace>`.
+

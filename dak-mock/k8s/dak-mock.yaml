@@ -20,6 +20,16 @@
 #   kubectl create secret generic dak-mock-admin-token \
 #     -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-literal=token="$(openssl rand -hex 24)"
 #
+# FLOW PHIẾU KHỬ ĐỊNH DANH (docs/dak-deid-flow/): mặc định submitter=noop, không cần gì thêm. Để chạy thật (submitter=airflow):
+#   1) kubectl apply -f dak-mock/k8s/dak-mock-deid-rbac.yaml     # ServiceAccount dak-mock + quyền secrets create/delete
+#   2) Tài khoản portal giả (CÓ TOKEN, không commit file này): tạo từ file tạm
+#        kubectl create secret generic dak-mock-portal-users -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy \
+#          --from-file=application.yml=<file có dak.deid.portal-users>
+#   3) Client secret của client Keycloak gọi Airflow (auth=client-credentials):
+#        kubectl create secret generic dak-mock-airflow -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy \
+#          --from-literal=clientSecret="<client secret>"
+#   4) Sửa khối dak.deid trong ConfigMap bên dưới (submitter: airflow, airflow.base-url, token-url, client-id, scope, allowed-dag-ids).
+#
 # CA nội bộ của Keycloak (PEM, có thể nhiều cert — root + intermediate), cùng namespace:
 #   kubectl create configmap keycloak-ca -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-file=ca.pem=<file CA>
 #
@@ -79,6 +89,22 @@ data:
       yc:
         max-open-per-table: 50
         auto-fulfill: false
+      # Flow phiếu khử định danh (PYC). noop = không đọc Vault, không tạo Secret, không gọi Airflow (chỉ log).
+      deid:
+        enabled: true
+        allowed-modes: [HASH]
+        submitter: noop # đổi thành airflow khi đã làm các bước ở đầu file
+        kubernetes:
+          # Namespace tạo Secret key; PHẢI là namespace nơi DAG tạo SparkApplication (Pod chỉ mount được Secret cùng namespace).
+          namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+        airflow:
+          # GIẢ ĐỊNH — thay bằng địa chỉ và cấu hình thật của Airflow 2.8 (REST /api/v1) và client Keycloak.
+          base-url: http://airflow-webserver.vlp-tenantw1xjixm-wsw7vtwvi-data.svc.cluster.local:8080
+          allowed-dag-ids: [deid_pseudonymize_table]
+          auth: client-credentials
+          token-url: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token
+          client-id: <client-airflow>
+          scope: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -98,10 +124,11 @@ spec:
         app.kubernetes.io/name: dak-mock
       annotations:
         # Đổi giá trị này (hoặc dùng kubectl rollout restart) để pod nạp lại ConfigMap sau khi sửa.
-        dak-mock/config-version: "2"
+        dak-mock/config-version: "3"
     spec:
-      # Mock không gọi Kubernetes API: không cần mount token của ServiceAccount.
-      automountServiceAccountToken: false
+      # Cần token của ServiceAccount để tạo/xoá Secret key của phiếu khử định danh (submitter=airflow); với noop vô hại.
+      serviceAccountName: dak-mock
+      automountServiceAccountToken: true
       # Keycloak nội bộ: ghim IP cho chắc, không phụ thuộc DNS của cluster.
       hostAliases:
         - ip: "10.221.148.42"
@@ -167,7 +194,8 @@ spec:
             - name: PORT
               value: "8085"
             - name: SPRING_CONFIG_ADDITIONAL_LOCATION
-              value: "file:/config/"
+              # /portal là Secret dak-mock-portal-users (tuỳ chọn): không có thì bỏ qua.
+              value: "file:/config/,optional:file:/portal/"
             - name: VAULT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -179,6 +207,13 @@ spec:
                 secretKeyRef:
                   name: dak-mock-admin-token
                   key: token
+                  optional: true
+            # Client secret của client Keycloak gọi Airflow. Không có Secret -> rỗng (chỉ cần khi submitter=airflow).
+            - name: AIRFLOW_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dak-mock-airflow
+                  key: clientSecret
                   optional: true
             # Tin CA nội bộ của sso-lakehouse qua truststore do initContainer dựng.
             # Biến này THAY THẾ JAVA_TOOL_OPTIONS của image nên phải giữ lại các cờ cũ.
@@ -213,6 +248,9 @@ spec:
             - name: truststore
               mountPath: /opt/truststore
               readOnly: true
+            - name: portal-users
+              mountPath: /portal
+              readOnly: true
           # Mock không có endpoint health riêng: kiểm tra cổng HTTP đã mở.
           startupProbe:
             tcpSocket:
@@ -242,6 +280,11 @@ spec:
         - name: truststore
           emptyDir:
             sizeLimit: 16Mi
+        # Tài khoản portal giả (có token). Không tạo Secret -> thư mục rỗng -> portal tắt (404).
+        - name: portal-users
+          secret:
+            secretName: dak-mock-portal-users
+            optional: true
 ---
 apiVersion: v1
 kind: Service
