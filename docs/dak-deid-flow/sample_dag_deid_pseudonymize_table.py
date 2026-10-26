@@ -215,12 +215,13 @@ with DAG(
 ) as dag:
     validate = PythonOperator(task_id="validate_conf", python_callable=validate_conf)
 
-    # Tên tham số (application_file / template_spec, kubernetes_conn_id, ...) tuỳ phiên bản provider cncf.kubernetes:
-    # dùng đúng cách bạn đang gọi SparkKubernetesOperator trong DAG hiện có.
+    # Spec là dict nên truyền qua `template_spec`. `application_file` chỉ nhận đường dẫn file hoặc chuỗi YAML: đưa dict vào đó thì
+    # lỗi "AttributeError: 'dict' object has no attribute 'rstrip'" (provider cncf.kubernetes 7.x/8.x). Tên tham số còn lại
+    # (kubernetes_conn_id, ...) tuỳ phiên bản provider: dùng đúng cách bạn đang gọi SparkKubernetesOperator trong DAG hiện có.
     run_job = SparkKubernetesOperator(
         task_id="pseudonymize_table",
         namespace=NAMESPACE,
-        application_file=build_spec(),
+        template_spec=build_spec(),
         kubernetes_conn_id="kubernetes_default",
         do_xcom_push=False,
         # Chờ job xong để dag run phản ánh đúng kết quả: DAK đọc state của dag run (success/failed) để cập nhật phiếu.
