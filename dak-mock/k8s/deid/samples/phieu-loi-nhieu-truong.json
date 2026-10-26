@@ -1,0 +1,7 @@
+{
+  "database": "demo-db",
+  "table": "../users",
+  "columns": [{ "column": "msisdn", "mode": "ENCRYPT" }],
+  "dagId": "dag_khong_co_trong_allowlist",
+  "purpose": ""
+}

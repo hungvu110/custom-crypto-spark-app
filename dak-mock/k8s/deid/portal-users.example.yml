@@ -1,0 +1,24 @@
+# MẪU tài khoản portal giả của flow phiếu khử định danh. KHÔNG điền token thật vào file này và KHÔNG commit bản đã điền:
+# copy ra ngoài repo (vd /tmp/portal-users.yml), thay <TOKEN-...> rồi tạo Secret (xem đầu k8s/dak-mock.yaml):
+#   TOKEN_ALICE=$(openssl rand -hex 24)
+#   sed "s/<TOKEN-ALICE>/$TOKEN_ALICE/" dak-mock/k8s/deid/portal-users.example.yml > /tmp/portal-users.yml
+#   kubectl create secret generic dak-mock-portal-users -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy \
+#     --from-file=application.yml=/tmp/portal-users.yml && shred -u /tmp/portal-users.yml
+# Token: 24-256 ký tự in được, không khoảng trắng, mỗi tài khoản một token riêng. Phiếu thuộc TEAM, không theo tài khoản.
+dak:
+  deid:
+    portal-users:
+      - username: alice
+        team: teamtscauiy
+        token: <TOKEN-ALICE>
+      # Tài khoản thứ hai CÙNG team: thấy và huỷ được phiếu của alice.
+      # - username: bob
+      #   team: teamtscauiy
+      #   token: <TOKEN-BOB>
+      # Team khác: không thấy phiếu của teamtscauiy (nhận 404).
+      # - username: carol
+      #   team: team-khac
+      #   token: <TOKEN-CAROL>
+      # tenant/workspace chỉ cần khi dak.vault.path-template có {tenant}/{workspace} (mặc định không cần):
+      #   tenant: vlp-tenantw1xjixm
+      #   workspace: wsw7vtwvi

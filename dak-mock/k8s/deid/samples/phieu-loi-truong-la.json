@@ -1,0 +1,8 @@
+{
+  "database": "demo_db",
+  "table": "users_cdr",
+  "columns": [{ "column": "msisdn" }],
+  "dagId": "deid_pseudonymize_table",
+  "purpose": "Có trường không được phép",
+  "team": "team-khac"
+}

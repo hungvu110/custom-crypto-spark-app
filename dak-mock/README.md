@@ -435,3 +435,79 @@ qua env `AIRFLOW_CLIENT_SECRET` (hoặc `AIRFLOW_TOKEN` với `auth: bearer`). T
 trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.py](../docs/dak-deid-flow/sample_dag_deid_pseudonymize_table.py).
 Quét Secret key sót: `kubectl get secret -l dak.vai/kind=deid-key -n <namespace>`.
 
+**File mẫu** (trong `k8s/deid/`): `portal-users.example.yml` (mẫu Secret `dak-mock-portal-users`, token là chỗ trống để bạn điền, hướng dẫn tạo ở đầu file) và
+`samples/` gồm phiếu hợp lệ (`phieu-hop-le.json`, `phieu-mot-cot.json`) và phiếu lỗi để thử thông báo (`phieu-loi-nhieu-truong.json`, `phieu-loi-truong-la.json`,
+`phieu-loi-json-hong.json`). `DeidSampleFilesTest` kiểm các mẫu này với parser thật. Chạy thử bằng `curl` (đã `kubectl port-forward deploy/dak-mock 8085`):
+
+```bash
+P=http://localhost:8085
+# Team upload phiếu (token portal của alice) -> 201, phiếu PENDING_APPROVAL, mã PYC-<năm>-<6 số>
+curl -s -H "X-Mock-Portal-Token: $TOKEN_ALICE" -F file=@dak-mock/k8s/deid/samples/phieu-hop-le.json $P/mock-portal/deid-requests
+# Admin duyệt (token admin = Secret dak-mock-admin-token): giao key + trigger DAG; lỗi giao key/gửi job nằm ở state=SUBMIT_FAILED
+curl -s -X POST -H "X-Mock-Admin-Token: $ADMIN_TOKEN" $P/mock-admin/deid-requests/PYC-2026-000001/approve
+# Team xem phiếu (làm mới trạng thái job từ Airflow)
+curl -s -H "X-Mock-Portal-Token: $TOKEN_ALICE" $P/mock-portal/deid-requests/PYC-2026-000001
+```
+
+### 11.1. Checklist để chạy full luồng (portal → duyệt → Secret key → Airflow → Spark)
+
+Mỗi dòng dưới đây là một thứ phải có thật; thiếu một dòng thì phiếu dừng ở `SUBMIT_FAILED` (thông điệp ở bảng 11.2). Làm theo thứ tự, kiểm từng bước bằng lệnh đi kèm.
+
+**A. Thông tin về Airflow và Keycloak** (điền vào khối `dak.deid.airflow` của ConfigMap trong `k8s/dak-mock.yaml`, mục `submitter: airflow`):
+
+| Điền | Giá trị cần lấy | Lấy ở đâu / kiểm thế nào |
+| --- | --- | --- |
+| `submitter` | `airflow` | Mặc định `noop` (chỉ log, không gọi gì) |
+| `airflow.base-url` | URL gốc của webserver Airflow 2.8, **không** có `/api/v1`, vd `http://airflow-webserver.vlp-tenantw1xjixm-wsw7vtwvi-data.svc.cluster.local:8080` | Service của `airflow-webserver` (namespace `…-data`). Từ pod mock: `curl -s $BASE/health` phải trả JSON |
+| `airflow.allowed-dag-ids` | Danh sách `dag_id` người dùng được chọn trong phiếu, vd `[deid_pseudonymize_table]` | Là **điều kiện bảo mật**: mọi DAG trong danh sách đều nhận tên Secret chứa key. Chỉ liệt kê DAG khử định danh |
+| `airflow.auth` | `client-credentials` (mặc định) hoặc `bearer` (token tĩnh, chỉ để thử nhanh) | Luồng tự động nên dùng `client-credentials` |
+| `airflow.token-url` | Token endpoint của realm Keycloak mà Airflow tin, dạng `https://<sso>/realms/<realm>/protocol/openid-connect/token` | `https://<sso>/realms/<realm>/.well-known/openid-configuration` → `token_endpoint` |
+| `airflow.client-id` | Client Keycloak riêng cho DAK gọi Airflow | Do vận hành tạo: **confidential**, bật *Service accounts enabled* (`client_credentials`). Không dùng chung client của Airflow webserver |
+| `airflow.scope` | Scope cần thêm (có thể để trống `""`) | Chỉ điền nếu Keycloak/Airflow đòi (vd `openid`). Token phải được Airflow chấp nhận |
+| env `AIRFLOW_CLIENT_SECRET` | Client secret của client trên | Secret `dak-mock-airflow`, key `clientSecret` (lệnh ở đầu `k8s/dak-mock.yaml`). Với `auth: bearer` dùng Secret key `token` → env `AIRFLOW_TOKEN` |
+| `kubernetes.namespace` | Namespace tạo Secret key, **phải trùng namespace nơi DAG tạo SparkApplication** (`NAMESPACE` trong DAG) | Hiện là `vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy` |
+
+Quyền phía Airflow (vận hành làm, mock không tự kiểm được): service account của client Keycloak phải được Airflow map thành một user/role có quyền **tạo dag run** trên các DAG trong `allowed-dag-ids` (`can_read` DAG, `can_create`/`can_read` DAG Runs), và Airflow REST API phải chấp nhận Bearer token Keycloak. Kiểm bằng tay trước khi chạy mock:
+
+```bash
+AT=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials "$TOKEN_URL" | jq -r .access_token)   # thêm -d scope=... nếu có
+curl -s -H "Authorization: Bearer $AT" "$BASE/api/v1/dags/deid_pseudonymize_table" | jq .dag_id     # 200 và in ra dag_id
+```
+
+**B. Các thông tin khác**
+
+| Việc | Chi tiết |
+| --- | --- |
+| Tài khoản portal | Secret `dak-mock-portal-users` từ `k8s/deid/portal-users.example.yml` (token mỗi tài khoản, `team`). Không có thì portal tắt (404) |
+| Token admin | Secret `dak-mock-admin-token` (đầu `k8s/dak-mock.yaml`). Không có thì `/mock-admin/**` tắt (404) |
+| Token Vault | Secret `dak-mock-vault-token` phải đọc được key bảng ở `dak.vault.path-template` (mặc định `kv/data/hla-datalake/datalake/spark-application/{database}.{table}`) |
+| **Key bảng trong Vault** | Mỗi bảng được khử định danh phải có sẵn: `vault kv put kv/hla-datalake/datalake/spark-application/<database>.<table> keyPrefix="$(openssl rand -base64 32)"`. Phải là base64 chuẩn của **đúng 32 byte**, nếu không phiếu báo `table key has unsupported format`. Tạo bằng pod `k8s/vault-cli-pod.yaml` |
+| RBAC | `kubectl apply -f dak-mock/k8s/dak-mock-deid-rbac.yaml` (ServiceAccount `dak-mock`, quyền `secrets create/delete`) rồi rollout lại Deployment |
+| Mạng | Pod mock tới được: Airflow webserver (cổng 8080), Keycloak (đã có `hostAliases` và truststore CA nội bộ), Vault, Kubernetes API. Namespace có NetworkPolicy thì mở egress các đích này |
+| DAG | Theo [sample_dag_deid_pseudonymize_table.py](../docs/dak-deid-flow/sample_dag_deid_pseudonymize_table.py): `DAG_ID` nằm trong `allowed-dag-ids`, `NAMESPACE` trùng `kubernetes.namespace`, đọc `conf` (`requestCode, database, table, pseudoColumns, outputDb, outputTable, keySecretName`) và mount Secret `keySecretName` vào `/etc/pseudonym-keys`. Image `pseudonymize-table-app`, `hadoopConfigMap`, `serviceAccount: spark-application-sa` phải có ở namespace đó |
+
+**C. Chạy thử đầu-cuối** (theo thứ tự; dừng ở bước nào lỗi thì sửa bước đó):
+
+1. `kubectl rollout status deploy/dak-mock` rồi `kubectl logs deploy/dak-mock | grep "Started DakMockApplication"` (cấu hình sai thì app không khởi động và log nói rõ khoá nào sai).
+2. Upload `samples/phieu-hop-le.json` bằng token portal (lệnh ở mục 11) → `201`, `state=PENDING_APPROVAL`.
+3. Admin `approve` → `state=JOB_SUBMITTED`, có `jobRef.kind=AirflowDagRun` và `keyVersion`. Kiểm: `kubectl get secret -n <ns> -l dak.vai/kind=deid-key` thấy Secret `deid-key-…`; trên Airflow thấy dag run `deid-<năm>-<6 số>` của DAG đã chọn.
+4. Xem phiếu nhiều lần → `RUNNING` → `SUCCEEDED` (hoặc `FAILED`); khi job xong Secret key bị xoá. Bảng đích là `outputDatabase`.`outputTable` của phiếu.
+
+### 11.2. Phiếu `SUBMIT_FAILED`: đọc `submitError` rồi sửa
+
+`submitError` chỉ là một trong các thông điệp cố định sau (không chứa token hay key). Sửa xong gọi `retry-submit`, không cần upload lại.
+
+| `submitError` | Nguyên nhân thường gặp | Cách sửa |
+| --- | --- | --- |
+| `table key not found` | Bảng chưa có key trong Vault ở `path-template` | Tạo key bảng (mục B) |
+| `table key has unsupported format` | Key không phải base64 chuẩn của 32 byte | Ghi lại key đúng định dạng (không ghi đè key đã dùng để mã hoá dữ liệu thật) |
+| `vault unavailable` | Vault không tới được, token Vault hết hạn hoặc thiếu quyền | Kiểm `VAULT_TOKEN`, mạng tới Vault |
+| `kubernetes denied the request` | ServiceAccount thiếu quyền `secrets create/delete` ở namespace | Áp `dak-mock-deid-rbac.yaml`, kiểm `kubernetes.namespace`, rollout lại |
+| `kubernetes unavailable` | Mock không gọi được Kubernetes API (hoặc xoá Secret cũ bị lỗi) | Kiểm `automountServiceAccountToken: true`, NetworkPolicy |
+| `airflow dag not allowed` | `dagId` của phiếu không còn trong `allowed-dag-ids` | Thêm DAG vào allowlist rồi `retry-submit` |
+| `airflow dag not found` | Airflow không có DAG đó (chưa deploy, bị pause/parse lỗi) | Kiểm DAG hiện trong UI Airflow |
+| `airflow denied the request` | Token Keycloak bị từ chối (sai client secret/scope) hoặc service account chưa có quyền tạo dag run | Kiểm `AIRFLOW_CLIENT_SECRET`, `scope`, role trên Airflow (lệnh `curl` ở mục A) |
+| `airflow unavailable` | Sai `base-url`, Airflow hoặc Keycloak không tới được, 5xx | Kiểm `base-url`, mạng, `hostAliases`/CA Keycloak |
+| `invalid job parameters` | Tham số phiếu ngoài bộ ký tự cho phép (không xảy ra với phiếu qua upload hợp lệ) | Huỷ phiếu và upload lại |
+| `internal error while delivering/submitting …` | Lỗi không lường trước | Xem log mock (chỉ ghi loại lỗi, không ghi nội dung) |
+
