@@ -112,6 +112,41 @@ class DeidPropertiesTest {
         .hasMessageContainingAll(fragments);
   }
 
+  private static Airflow basicAirflow(String username, String password) {
+    return new Airflow("http://airflow:8080", List.of("deid_pseudonymize_table"), AirflowAuth.BASIC, null, null, null, null,
+        null, username, password);
+  }
+
+  @Test
+  @DisplayName("auth=basic cần username và password; đủ thì hợp lệ và password bị che trong toString")
+  void basicAuth_requiresUsernameAndPassword() {
+    Draft ok = validAirflow();
+    ok.airflow = basicAirflow("dak-trigger", "s3cret-pw");
+    assertThat(ok.props().deid().airflow().auth()).isEqualTo(AirflowAuth.BASIC);
+    assertThat(ok.props().deid().airflow().toString()).contains("username=dak-trigger").doesNotContain("s3cret-pw");
+
+    for (Airflow bad : List.of(basicAirflow(null, "pw"), basicAirflow("", "pw"), basicAirflow("u", null),
+        basicAirflow("u", " "))) {
+      Draft d = validAirflow();
+      d.airflow = bad;
+      assertThatThrownBy(d::props).isInstanceOf(IllegalStateException.class)
+          .hasMessageStartingWith("Invalid DAK mock configuration").hasMessageContaining("dak.deid.airflow.");
+    }
+  }
+
+  @Test
+  @DisplayName("nạp auth=basic cùng username và password từ thuộc tính kebab-case")
+  void basicAuth_bindsFromProperties() {
+    Map<String, String> source = Map.of("dak.deid.airflow.auth", "basic", "dak.deid.airflow.username", "dak-trigger",
+        "dak.deid.airflow.password", "pw-from-env");
+
+    DeidProperties deid = new Binder(new MapConfigurationPropertySource(source)).bind("dak.deid", DeidProperties.class).get();
+
+    assertThat(deid.airflow().auth()).isEqualTo(AirflowAuth.BASIC);
+    assertThat(deid.airflow().username()).isEqualTo("dak-trigger");
+    assertThat(deid.airflow().password()).isEqualTo("pw-from-env");
+  }
+
   @Nested
   @DisplayName("giá trị mặc định và nạp cấu hình")
   class Defaults {

@@ -7,13 +7,14 @@ import java.time.Clock;
 import java.time.Instant;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import vai.lakehouse.dakmock.config.DeidProperties.Airflow;
 import vai.lakehouse.dakmock.config.DeidProperties.AirflowAuth;
 
 /**
- * Cấp access token để gọi Airflow (docs/dak-deid-flow/MOCK_IMPLEMENTATION_PLAN.md mục 4.7). {@code client-credentials}: lấy token
+ * Xác thực với Airflow. Với {@code basic}: HTTP Basic bằng user Airflow, không có token. Phần còn lại: cấp access token để gọi Airflow (docs/dak-deid-flow/MOCK_IMPLEMENTATION_PLAN.md mục 4.7). {@code client-credentials}: lấy token
  * Keycloak bằng {@code client_credentials} (client xác thực bằng HTTP Basic), giữ trong bộ nhớ đến {@code expires_in − 30s} rồi lấy
  * lại. {@code bearer}: trả nguyên token tĩnh đã cấu hình. Lỗi quy về thông điệp cố định; token và client secret không bao giờ vào
  * log hay thông điệp lỗi.
@@ -34,6 +35,20 @@ class AirflowTokens {
   AirflowTokens(Airflow config, Clock clock) {
     this.config = config;
     this.clock = clock;
+  }
+
+  /** Gắn thông tin xác thực vào request: Basic với user Airflow, hoặc Bearer với token còn hạn. */
+  void authorize(HttpHeaders headers) {
+    if (config.auth() == AirflowAuth.BASIC) {
+      headers.setBasicAuth(config.username(), config.password(), StandardCharsets.UTF_8);
+    } else {
+      headers.setBearerAuth(token());
+    }
+  }
+
+  /** {@code true} nếu 401 có thể chữa bằng cách lấy token mới (chỉ {@code client-credentials}). */
+  boolean refreshable() {
+    return config.auth() == AirflowAuth.CLIENT_CREDENTIALS;
   }
 
   /** Token còn hạn; lấy mới nếu chưa có hoặc sắp hết hạn. */

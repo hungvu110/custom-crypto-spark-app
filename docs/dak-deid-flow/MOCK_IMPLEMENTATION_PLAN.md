@@ -250,7 +250,9 @@ Lỗi trong `deliver` luôn quy về `KeyDeliveryException` với **một trong 
 
 ### 4.7 `AirflowJobSubmitter`
 
-**Xác thực (Q9, Q11).** Webserver Airflow tích hợp Keycloak và Airflow REST API **chấp nhận Bearer token Keycloak**. Mock dùng `client_id`/`client_secret` (`auth=client-credentials`):
+**Cập nhật 2026-10-26 (đã kiểm trên Airflow thật):** `airflow config get-value api auth_backends` trả `basic_auth,session`, nên REST API **KHÔNG nhận Bearer token Keycloak**; giả định ở đoạn dưới là sai cho môi trường này. Mock thêm `auth=basic` (HTTP Basic với một user Airflow riêng cho DAK, `username` + env `AIRFLOW_PASSWORD`) và đó là cách dùng hiện tại. `client-credentials` chỉ dùng được khi Airflow bật thêm backend nhận Bearer Keycloak.
+
+**Xác thực (Q9, Q11), phương án `client-credentials`.** Webserver Airflow tích hợp Keycloak và (giả định) Airflow REST API chấp nhận Bearer token Keycloak. Mock dùng `client_id`/`client_secret` (`auth=client-credentials`):
 
 1. `POST {token-url}` với `grant_type=client_credentials` (kèm `scope` nếu cấu hình), xác thực client bằng HTTP Basic `client-id:AIRFLOW_CLIENT_SECRET`.
 2. Giữ `access_token` trong bộ nhớ đến `expires_in − 30s` rồi lấy lại. Gọi Airflow gặp `401` thì bỏ token đang giữ, lấy token mới và **thử lại đúng một lần**; vẫn `401` thì `JobSubmitException("airflow denied the request")`.

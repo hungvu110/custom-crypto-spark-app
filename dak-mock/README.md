@@ -428,8 +428,8 @@ Xem phiếu đang chạy sẽ làm mới trạng thái job từ Airflow; job xon
 
 **Cấu hình** (khối `dak.deid`, mẫu trong `k8s/dak-mock.yaml`): `submitter` là `noop` (mặc định, chỉ log, không cần hạ tầng) hoặc `airflow`.
 `submitter=kubernetes` không được hỗ trợ (DAG của Airflow tự tạo SparkApplication). Với `airflow`: `kubernetes.namespace` là namespace tạo Secret
-key và PHẢI là namespace nơi DAG tạo SparkApplication; `airflow.base-url`, `allowed-dag-ids`, `token-url`, `client-id`, `scope`; client secret
-qua env `AIRFLOW_CLIENT_SECRET` (hoặc `AIRFLOW_TOKEN` với `auth: bearer`). Tài khoản portal giả (có token) khai ở Secret `dak-mock-portal-users`.
+key và PHẢI là namespace nơi DAG tạo SparkApplication; `airflow.base-url`, `allowed-dag-ids`, `auth`; với `auth: basic` thêm `username` và mật khẩu qua env `AIRFLOW_PASSWORD`
+(`client-credentials`: `token-url`, `client-id`, `scope`, env `AIRFLOW_CLIENT_SECRET`; `bearer`: env `AIRFLOW_TOKEN`). Tài khoản portal giả (có token) khai ở Secret `dak-mock-portal-users`.
 
 **Triển khai thật:** làm theo các bước ở đầu `k8s/dak-mock.yaml` (RBAC `k8s/dak-mock-deid-rbac.yaml`, Secret portal/airflow), key bảng phải có sẵn
 trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.py](../docs/dak-deid-flow/sample_dag_deid_pseudonymize_table.py).
@@ -453,26 +453,27 @@ curl -s -H "X-Mock-Portal-Token: $TOKEN_ALICE" $P/mock-portal/deid-requests/PYC-
 
 Mỗi dòng dưới đây là một thứ phải có thật; thiếu một dòng thì phiếu dừng ở `SUBMIT_FAILED` (thông điệp ở bảng 11.2). Làm theo thứ tự, kiểm từng bước bằng lệnh đi kèm.
 
-**A. Thông tin về Airflow và Keycloak** (điền vào khối `dak.deid.airflow` của ConfigMap trong `k8s/dak-mock.yaml`, mục `submitter: airflow`):
+**A. Thông tin về Airflow** (điền vào khối `dak.deid.airflow` của ConfigMap trong `k8s/dak-mock.yaml`, mục `submitter: airflow`):
+
+Airflow 2.8 của bạn có `api.auth_backends = basic_auth, session`, nên REST API **không nhận Bearer token Keycloak**. Mock vì vậy dùng `auth: basic` (HTTP Basic với một user Airflow riêng cho DAK). `client-credentials` chỉ dùng được khi Airflow đã thêm backend nhận Bearer token Keycloak.
 
 | Điền | Giá trị cần lấy | Lấy ở đâu / kiểm thế nào |
 | --- | --- | --- |
 | `submitter` | `airflow` | Mặc định `noop` (chỉ log, không gọi gì) |
-| `airflow.base-url` | URL gốc của webserver Airflow 2.8, **không** có `/api/v1`, vd `http://airflow-webserver.vlp-tenantw1xjixm-wsw7vtwvi-data.svc.cluster.local:8080` | Service của `airflow-webserver` (namespace `…-data`). Từ pod mock: `curl -s $BASE/health` phải trả JSON |
+| `airflow.base-url` | URL gốc của webserver Airflow, **không** có `/api/v1`, vd `http://airflow-webserver.vlp-tenantw1xjixm-wsw7vtwvi-data.svc.cluster.local:8080` | Service của `airflow-webserver` (namespace `…-data`). Từ pod mock: `curl -s $BASE/health` phải trả JSON |
 | `airflow.allowed-dag-ids` | Danh sách `dag_id` người dùng được chọn trong phiếu, vd `[deid_pseudonymize_table]` | Là **điều kiện bảo mật**: mọi DAG trong danh sách đều nhận tên Secret chứa key. Chỉ liệt kê DAG khử định danh |
-| `airflow.auth` | `client-credentials` (mặc định) hoặc `bearer` (token tĩnh, chỉ để thử nhanh) | Luồng tự động nên dùng `client-credentials` |
-| `airflow.token-url` | Token endpoint của realm Keycloak mà Airflow tin, dạng `https://<sso>/realms/<realm>/protocol/openid-connect/token` | `https://<sso>/realms/<realm>/.well-known/openid-configuration` → `token_endpoint` |
-| `airflow.client-id` | Client Keycloak riêng cho DAK gọi Airflow | Do vận hành tạo: **confidential**, bật *Service accounts enabled* (`client_credentials`). Không dùng chung client của Airflow webserver |
-| `airflow.scope` | Scope cần thêm (có thể để trống `""`) | Chỉ điền nếu Keycloak/Airflow đòi (vd `openid`). Token phải được Airflow chấp nhận |
-| env `AIRFLOW_CLIENT_SECRET` | Client secret của client trên | Secret `dak-mock-airflow`, key `clientSecret` (lệnh ở đầu `k8s/dak-mock.yaml`). Với `auth: bearer` dùng Secret key `token` → env `AIRFLOW_TOKEN` |
+| `airflow.auth` | `basic` | Xem đoạn trên |
+| `airflow.username` | User Airflow riêng cho DAK, vd `dak-trigger` | Tạo trong pod webserver: `airflow users create --username dak-trigger --firstname DAK --lastname Mock --role User --email dak-trigger@example.invalid --password '<mật khẩu mạnh>'`. Role `User` đủ đọc DAG và tạo dag run; có thể tạo role riêng chỉ hai quyền đó |
+| env `AIRFLOW_PASSWORD` | Mật khẩu của user trên | Secret `dak-mock-airflow`, key `password` (lệnh ở đầu `k8s/dak-mock.yaml`) |
 | `kubernetes.namespace` | Namespace tạo Secret key, **phải trùng namespace nơi DAG tạo SparkApplication** (`NAMESPACE` trong DAG) | Hiện là `vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy` |
 
-Quyền phía Airflow (vận hành làm, mock không tự kiểm được): service account của client Keycloak phải được Airflow map thành một user/role có quyền **tạo dag run** trên các DAG trong `allowed-dag-ids` (`can_read` DAG, `can_create`/`can_read` DAG Runs), và Airflow REST API phải chấp nhận Bearer token Keycloak. Kiểm bằng tay trước khi chạy mock:
+Kiểm bằng tay trước khi chạy mock (từ trong cluster):
 
 ```bash
-AT=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials "$TOKEN_URL" | jq -r .access_token)   # thêm -d scope=... nếu có
-curl -s -H "Authorization: Bearer $AT" "$BASE/api/v1/dags/deid_pseudonymize_table" | jq .dag_id     # 200 và in ra dag_id
+curl -s -o /dev/null -w "%{http_code}\n" -u "dak-trigger:<mật khẩu>" "$BASE/api/v1/dags/deid_pseudonymize_table"   # 200
 ```
+
+`401` là sai mật khẩu hoặc user chưa tồn tại; `403` là user thiếu quyền (xem role). Hướng dẫn tạo user và cấu hình từng bước: mục 11.3.
 
 **B. Các thông tin khác**
 
@@ -506,8 +507,82 @@ curl -s -H "Authorization: Bearer $AT" "$BASE/api/v1/dags/deid_pseudonymize_tabl
 | `kubernetes unavailable` | Mock không gọi được Kubernetes API (hoặc xoá Secret cũ bị lỗi) | Kiểm `automountServiceAccountToken: true`, NetworkPolicy |
 | `airflow dag not allowed` | `dagId` của phiếu không còn trong `allowed-dag-ids` | Thêm DAG vào allowlist rồi `retry-submit` |
 | `airflow dag not found` | Airflow không có DAG đó (chưa deploy, bị pause/parse lỗi) | Kiểm DAG hiện trong UI Airflow |
-| `airflow denied the request` | Token Keycloak bị từ chối (sai client secret/scope) hoặc service account chưa có quyền tạo dag run | Kiểm `AIRFLOW_CLIENT_SECRET`, `scope`, role trên Airflow (lệnh `curl` ở mục A) |
+| `airflow denied the request` | Airflow trả 401/403: sai `username`/`AIRFLOW_PASSWORD`, hoặc user thiếu quyền tạo dag run | Kiểm user và role trên Airflow (lệnh `curl` ở mục A) |
 | `airflow unavailable` | Sai `base-url`, Airflow hoặc Keycloak không tới được, 5xx | Kiểm `base-url`, mạng, `hostAliases`/CA Keycloak |
 | `invalid job parameters` | Tham số phiếu ngoài bộ ký tự cho phép (không xảy ra với phiếu qua upload hợp lệ) | Huỷ phiếu và upload lại |
 | `internal error while delivering/submitting …` | Lỗi không lường trước | Xem log mock (chỉ ghi loại lỗi, không ghi nội dung) |
+
+### 11.3. Dùng `auth: basic` (user Airflow riêng cho DAK) — từng bước
+
+**User này không phải user Keycloak.** Đó là một user lưu trong database của chính Airflow (bảng người dùng của Flask-AppBuilder), có mật khẩu và role riêng.
+Keycloak chỉ lo đăng nhập giao diện web của Airflow; REST API ở chế độ Basic chỉ kiểm user + mật khẩu này. Airflow của bạn có
+`api.auth_backends = basic_auth,session` nên Basic dùng được ngay, không phải đổi cấu hình Airflow.
+
+**Bước 1. Tạo user trong Airflow** (chạy trong pod webserver; đổi namespace nếu khác):
+
+```bash
+AF_NS=vlp-tenantw1xjixm-wsw7vtwvi-data
+read -rs -p "Mật khẩu cho user dak-trigger: " DAK_PW; echo        # nhập mật khẩu mạnh, không để lộ trong lịch sử shell
+kubectl -n "$AF_NS" exec deploy/airflow-webserver -c webserver -- \
+  airflow users create --username dak-trigger --firstname DAK --lastname Mock \
+  --role User --email dak-trigger@example.invalid --password "$DAK_PW"
+kubectl -n "$AF_NS" exec deploy/airflow-webserver -c webserver -- airflow users list | grep dak-trigger
+```
+
+- `--role User` đủ để đọc DAG và tạo dag run. Muốn chặt hơn, tạo role riêng ở giao diện Airflow (*Security → List Roles*) chỉ có `can read` trên `DAGs` và `DAG Runs`
+  cùng `can create` trên `DAG Runs`, rồi gán role đó cho user. Với role giới hạn theo DAG, cấp quyền trên `DAG:deid_pseudonymize_table`.
+- Đổi mật khẩu sau này: `airflow users reset-password --username dak-trigger` (rồi cập nhật Secret ở bước 2).
+- Không đặt `--role Admin` hay `Op`: DAK chỉ cần tạo dag run và đọc trạng thái.
+
+**Bước 2. Đưa mật khẩu cho dak-mock** (Secret, không ghi vào ConfigMap):
+
+```bash
+NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
+kubectl create secret generic dak-mock-airflow -n "$NS" --from-literal=password="$DAK_PW"
+unset DAK_PW
+```
+
+Deployment đã đọc Secret này vào env `AIRFLOW_PASSWORD` (`optional: true`, nên chưa tạo Secret thì pod vẫn chạy với `submitter: noop`).
+
+**Bước 3. Sửa khối `dak.deid` trong ConfigMap `dak-mock-config`** (`k8s/dak-mock.yaml`):
+
+```yaml
+deid:
+  submitter: airflow
+  kubernetes:
+    namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy   # namespace tạo Secret key, trùng namespace DAG tạo SparkApplication
+  airflow:
+    base-url: http://airflow-webserver.vlp-tenantw1xjixm-wsw7vtwvi-data.svc.cluster.local:8080   # không có /api/v1; kiểm cổng
+    allowed-dag-ids: [deid_pseudonymize_table]
+    auth: basic
+    username: dak-trigger
+```
+
+**Bước 4. Áp dụng và khởi động lại:**
+
+```bash
+kubectl apply -f dak-mock/k8s/dak-mock-deid-rbac.yaml
+kubectl apply -f dak-mock/k8s/dak-mock.yaml
+kubectl rollout restart -n "$NS" deploy/dak-mock
+kubectl logs -n "$NS" deploy/dak-mock | grep -E "Started DakMockApplication|Invalid DAK mock configuration"
+```
+
+Thiếu `username` hoặc mật khẩu thì app **không khởi động** và log nói rõ khoá nào thiếu (`dak.deid.airflow.username is required when auth=basic`, `dak.deid.airflow.password ... (set env AIRFLOW_PASSWORD)`).
+
+**Bước 5. Kiểm trước khi upload phiếu** (từ pod trong cluster có `curl`, ví dụ `vault-cli`):
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -u "dak-trigger:<mật khẩu>" \
+  http://airflow-webserver.vlp-tenantw1xjixm-wsw7vtwvi-data.svc.cluster.local:8080/api/v1/dags/deid_pseudonymize_table
+```
+
+| Mã | Ý nghĩa | Sửa |
+| --- | --- | --- |
+| `200` | Đúng | Làm tiếp mục 11.1 phần C |
+| `401` | Sai mật khẩu, user không tồn tại, hoặc Airflow không dùng backend `basic_auth` cho user này | `airflow users list`, đặt lại mật khẩu, kiểm `airflow config get-value api auth_backends` có `basic_auth` |
+| `403` | User thiếu quyền | Gán role đủ quyền (bước 1) |
+| `404` | DAG chưa có hoặc sai `dag_id` | Kiểm DAG hiện trong giao diện Airflow |
+
+Sau đó phiếu `SUBMIT_FAILED` với `airflow denied the request` nghĩa là Airflow trả `401/403` cho user này (bảng ở mục 11.2).
+Chuyển sang Bearer Keycloak sau này chỉ cần đổi `auth: client-credentials` và thêm `token-url`, `client-id`, `scope`, `AIRFLOW_CLIENT_SECRET`, khi Airflow đã bật backend nhận Bearer token.
 

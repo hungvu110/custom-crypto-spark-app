@@ -88,7 +88,7 @@ public class AirflowJobSubmitter implements JobSubmitter {
   /** Gọi Airflow; gặp 401 thì bỏ token đang giữ, lấy token mới và thử lại đúng một lần. */
   private AirflowHttp.Result call(HttpMethod method, URI uri, Object body) {
     AirflowHttp.Result result = send(method, uri, body);
-    if (result.status() == 401) {
+    if (result.status() == 401 && tokens.refreshable()) {
       tokens.invalidate();
       result = send(method, uri, body);
     }
@@ -96,8 +96,7 @@ public class AirflowJobSubmitter implements JobSubmitter {
   }
 
   private AirflowHttp.Result send(HttpMethod method, URI uri, Object body) {
-    String token = tokens.token();
-    return http.exchange(method, uri, h -> h.setBearerAuth(token), MediaType.APPLICATION_JSON, body);
+    return http.exchange(method, uri, tokens::authorize, MediaType.APPLICATION_JSON, body);
   }
 
   private static String failure(int status) {

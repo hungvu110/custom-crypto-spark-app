@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
@@ -68,7 +69,9 @@ public record DeidProperties(
   /** Cách xác thực với Airflow REST API. */
   public enum AirflowAuth {
     CLIENT_CREDENTIALS,
-    BEARER
+    BEARER,
+    /** HTTP Basic với một user của Airflow (backend {@code airflow.api.auth.backend.basic_auth}). */
+    BASIC
   }
 
   /**
@@ -89,8 +92,15 @@ public record DeidProperties(
    */
   public record Airflow(String baseUrl, List<String> allowedDagIds,
                         @DefaultValue("client-credentials") AirflowAuth auth, String tokenUrl, String clientId,
-                        String scope, String clientSecret, String token) {
+                        String scope, String clientSecret, String token, String username, String password) {
 
+    /** Cấu hình không dùng {@code basic} (username/password để trống). */
+    public Airflow(String baseUrl, List<String> allowedDagIds, AirflowAuth auth, String tokenUrl, String clientId,
+                   String scope, String clientSecret, String token) {
+      this(baseUrl, allowedDagIds, auth, tokenUrl, clientId, scope, clientSecret, token, null, null);
+    }
+
+    @ConstructorBinding
     public Airflow {
       allowedDagIds = allowedDagIds == null ? List.of() : List.copyOf(allowedDagIds);
       auth = auth == null ? AirflowAuth.CLIENT_CREDENTIALS : auth;
@@ -100,7 +110,7 @@ public record DeidProperties(
     public String toString() {
       return "Airflow[baseUrl=" + baseUrl + ", allowedDagIds=" + allowedDagIds + ", auth=" + auth + ", tokenUrl=" + tokenUrl
           + ", clientId=" + clientId + ", scope=" + scope + ", clientSecret=" + mask(clientSecret)
-          + ", token=" + mask(token) + "]";
+          + ", token=" + mask(token) + ", username=" + username + ", password=" + mask(password) + "]";
     }
   }
 
@@ -223,6 +233,9 @@ public record DeidProperties(
       require(isHttpUrl(airflow.tokenUrl()), "dak.deid.airflow.token-url must be an http(s) URL");
       require(!isBlank(airflow.clientId()), "dak.deid.airflow.client-id is required");
       require(!isBlank(airflow.clientSecret()), "dak.deid.airflow.client-secret is required (set env AIRFLOW_CLIENT_SECRET)");
+    } else if (airflow.auth() == AirflowAuth.BASIC) {
+      require(!isBlank(airflow.username()), "dak.deid.airflow.username is required when auth=basic");
+      require(!isBlank(airflow.password()), "dak.deid.airflow.password is required when auth=basic (set env AIRFLOW_PASSWORD)");
     } else {
       require(!isBlank(airflow.token()), "dak.deid.airflow.token is required (set env AIRFLOW_TOKEN)");
     }

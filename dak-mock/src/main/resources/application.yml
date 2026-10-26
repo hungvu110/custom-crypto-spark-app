@@ -97,9 +97,12 @@ dak:
     #   airflow:
     #     base-url: http://airflow-webserver.airflow.svc.cluster.local:8080
     #     allowed-dag-ids: [deid_pseudonymize_table]
-    #     auth: client-credentials            # hoặc bearer (token tĩnh, chỉ để thử nhanh)
+    #     auth: basic                         # basic (user Airflow) | client-credentials (cần Airflow nhận Bearer Keycloak) | bearer
+    #     username: dak-trigger               # chỉ cho auth=basic; password qua env AIRFLOW_PASSWORD
     #     token-url: https://sso-lakehouse.cyberspace.vn/realms/<realm>/protocol/openid-connect/token
     #     client-id: <client-airflow>
     airflow:
       client-secret: ${AIRFLOW_CLIENT_SECRET:}
       token: ${AIRFLOW_TOKEN:}
+      # auth=basic: user Airflow riêng cho DAK (Airflow 2.8 mặc định chỉ có backend basic_auth và session, KHÔNG nhận Bearer Keycloak)
+      password: ${AIRFLOW_PASSWORD:}

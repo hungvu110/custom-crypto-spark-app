@@ -25,10 +25,14 @@
 #   2) Tài khoản portal giả (CÓ TOKEN, không commit file này): tạo từ file tạm
 #        kubectl create secret generic dak-mock-portal-users -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy \
 #          --from-file=application.yml=<file có dak.deid.portal-users>
-#   3) Client secret của client Keycloak gọi Airflow (auth=client-credentials):
+#   3) User Airflow riêng cho DAK (Airflow 2.8 của bạn chỉ bật backend basic_auth và session, KHÔNG nhận Bearer Keycloak).
+#      Tạo trong pod webserver (role User đủ quyền đọc DAG và tạo dag run; hoặc role riêng chỉ có hai quyền đó):
+#        airflow users create --username dak-trigger --firstname DAK --lastname Mock --role User \
+#          --email dak-trigger@example.invalid --password '<mật khẩu mạnh>'
+#      rồi đưa mật khẩu cho mock:
 #        kubectl create secret generic dak-mock-airflow -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy \
-#          --from-literal=clientSecret="<client secret>"
-#   4) Sửa khối dak.deid trong ConfigMap bên dưới (submitter: airflow, airflow.base-url, token-url, client-id, scope, allowed-dag-ids).
+#          --from-literal=password='<mật khẩu mạnh>'
+#   4) Sửa khối dak.deid trong ConfigMap bên dưới (submitter: airflow, airflow.base-url, username, allowed-dag-ids).
 #
 # CA nội bộ của Keycloak (PEM, có thể nhiều cert — root + intermediate), cùng namespace:
 #   kubectl create configmap keycloak-ca -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --from-file=ca.pem=<file CA>
@@ -101,10 +105,10 @@ data:
           # GIẢ ĐỊNH — thay bằng địa chỉ và cấu hình thật của Airflow 2.8 (REST /api/v1) và client Keycloak.
           base-url: http://airflow-webserver.vlp-tenantw1xjixm-wsw7vtwvi-data.svc.cluster.local:8080
           allowed-dag-ids: [deid_pseudonymize_table]
-          auth: client-credentials
-          token-url: https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token
-          client-id: <client-airflow>
-          scope: ""
+          # basic = HTTP Basic với user Airflow (mật khẩu ở env AIRFLOW_PASSWORD). client-credentials chỉ dùng được khi Airflow
+          # đã bật backend nhận Bearer token Keycloak (hiện chưa), khi đó đặt token-url, client-id, scope và AIRFLOW_CLIENT_SECRET.
+          auth: basic
+          username: dak-trigger
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -208,7 +212,14 @@ spec:
                   name: dak-mock-admin-token
                   key: token
                   optional: true
-            # Client secret của client Keycloak gọi Airflow. Không có Secret -> rỗng (chỉ cần khi submitter=airflow).
+            # Mật khẩu user Airflow cho DAK (auth=basic). Không có Secret -> rỗng (chỉ cần khi submitter=airflow).
+            - name: AIRFLOW_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dak-mock-airflow
+                  key: password
+                  optional: true
+            # Client secret của client Keycloak (chỉ khi auth=client-credentials).
             - name: AIRFLOW_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

@@ -315,6 +315,25 @@ class AirflowJobSubmitterTest {
     assertThat(seen.get(0).getHeader("Authorization")).isEqualTo("Bearer static-token-123");
   }
 
+  @Test
+  @DisplayName("basic auth sends HTTP Basic with the Airflow user, calls no token endpoint and never retries a 401")
+  void submit_basicAuth_sendsBasicAndDoesNotRetry() {
+    Airflow cfg = new Airflow(server.url("/airflow").toString(), List.of("deid_pseudonymize_table"), AirflowAuth.BASIC, null,
+        null, null, null, null, "dak-trigger", "p@ss word:1");
+    airflow(json(200, DAG_RUN_OK), json(401, "{}"), json(200, DAG_RUN_OK));
+    AirflowJobSubmitter submitter = submitter(cfg);
+    DeidRequest request = request("users_cdr", "deid_pseudonymize_table");
+
+    submitter.submit(request, SECRET);
+    assertThat(seen.get(0).getHeader("Authorization")).isEqualTo("Basic "
+        + Base64.getEncoder().encodeToString("dak-trigger:p@ss word:1".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    assertThat(count("/token")).isZero();
+
+    assertThatThrownBy(() -> submitter.submit(request, SECRET)).isInstanceOf(JobSubmitException.class)
+        .hasMessage("airflow denied the request");
+    assertThat(count("/airflow")).isEqualTo(2);
+  }
+
   @ParameterizedTest
   @CsvSource({"queued,RUNNING", "running,RUNNING", "success,SUCCEEDED", "failed,FAILED", "restarting,RUNNING"})
   @DisplayName("status maps the Airflow dag run state")
