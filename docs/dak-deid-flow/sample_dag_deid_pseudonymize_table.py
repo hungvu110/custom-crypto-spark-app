@@ -209,7 +209,9 @@ with DAG(
     schedule=None,  # chỉ chạy khi DAK trigger (hoặc trigger tay để thử)
     start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Ho_Chi_Minh"),
     catchup=False,
-    render_template_as_native_obj=True,
+    # PHẢI là False (mặc định). Native render đổi chuỗi trông như số thành số ("2" thành 2, "64" thành 64): env `value` và sparkConf
+    # bắt buộc là chuỗi nên Kubernetes trả 422 "must be of type string". DAG này chỉ templating ra chuỗi nên không cần native.
+    render_template_as_native_obj=False,
     max_active_runs=4,
     tags=["deid", "dak"],
 ) as dag:
