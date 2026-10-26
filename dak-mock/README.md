@@ -220,14 +220,36 @@ kubectl create secret generic dak-mock-admin-token -n "$NS" --from-literal=token
 
 ### 6.1. Test và build image
 
+Có hai cách build image, cùng cho ra image giống nhau (JRE 17, user 1000:1000, jar thuộc root chỉ đọc):
+
+**Cách A — build trọn trong Docker** (`Dockerfile`: Maven + JDK 17 build jar rồi copy sang image JRE):
+
 ```bash
-mvn -f dak-mock/pom.xml test                                   # 49 test, không cần Keycloak/Vault thật
+mvn -f dak-mock/pom.xml test                                   # ~520 test, không cần Keycloak/Vault/Kubernetes thật
 docker build -t hub.vtcc.vn:8989/dak-mock:0.1.0 dak-mock       # build context là thư mục dak-mock
 docker push hub.vtcc.vn:8989/dak-mock:0.1.0
 ```
 
-Image chạy bằng **user 1000:1000**, jar thuộc root (chỉ đọc). `.dockerignore` loại `target/` và `.env` khỏi build context.
 Bước build tải dependency từ Maven Central; nếu máy build chỉ đi qua mirror nội bộ thì thêm `settings.xml` vào bước build.
+`.dockerignore` loại `target/` và `.env` khỏi build context.
+
+**Cách B — build jar bên ngoài Docker** (máy build không tải được Maven Central trong Docker, hoặc đã có jar từ CI):
+
+```bash
+# Cần JDK 17 và Maven 3.9+ trên máy build (mirror nội bộ cấu hình ở ~/.m2/settings.xml như bình thường)
+mvn -f dak-mock/pom.xml package                                # test + jar: dak-mock/target/dak-mock-0.1.0-SNAPSHOT.jar
+# (bỏ test: thêm -DskipTests; build offline khi ~/.m2 đã đủ dependency: thêm -o)
+
+# Đóng gói jar vào image runtime, KHÔNG build lại trong Docker (Dockerfile.jar + Dockerfile.jar.dockerignore):
+docker build -f dak-mock/Dockerfile.jar -t hub.vtcc.vn:8989/dak-mock:0.1.0 dak-mock
+docker push hub.vtcc.vn:8989/dak-mock:0.1.0
+```
+
+Cần Docker BuildKit (mặc định từ Docker 23; bản cũ đặt `DOCKER_BUILDKIT=1`) để `Dockerfile.jar.dockerignore` có hiệu lực. Jar phải đúng tên
+`dak-mock-0.1.0-SNAPSHOT.jar`; đổi `<version>` trong `pom.xml` thì sửa tên này trong `Dockerfile.jar` và `Dockerfile.jar.dockerignore`.
+
+Không cần Docker để chạy thử: `java -jar dak-mock/target/dak-mock-0.1.0-SNAPSHOT.jar` (đặt `VAULT_TOKEN`, và `MOCK_ADMIN_TOKEN` nếu dùng
+`/mock-admin`; cấu hình thêm bằng `SPRING_CONFIG_ADDITIONAL_LOCATION=file:<thư mục chứa application.yml>/`).
 
 ### 6.2. Deploy
 

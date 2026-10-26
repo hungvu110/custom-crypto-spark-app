@@ -1,0 +1,3 @@
+# Dùng riêng cho Dockerfile.jar (BuildKit tự chọn file <tên Dockerfile>.dockerignore): chỉ đưa jar vào build context.
+*
+!target/dak-mock-0.1.0-SNAPSHOT.jar

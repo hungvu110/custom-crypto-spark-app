@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+#
+# Đóng gói jar ĐÃ build sẵn bên ngoài Docker (mvn package) thành image runtime, giống bước 2 của Dockerfile.
+# Dùng khi máy build không tải được Maven Central trong Docker, hoặc đã có jar từ CI. Build từ thư mục dak-mock:
+#   mvn -f dak-mock/pom.xml package -DskipTests
+#   docker build -f dak-mock/Dockerfile.jar -t hub.vtcc.vn:8989/dak-mock:0.1.0 dak-mock
+# (Dockerfile.jar.dockerignore chỉ cho jar vào build context.)
+FROM eclipse-temurin:17-jre-jammy
+
+RUN groupadd --system --gid 1000 dak \
+ && useradd --system --uid 1000 --gid 1000 --home-dir /app --no-create-home --shell /usr/sbin/nologin dak
+
+WORKDIR /app
+# Jar thuộc root, user 1000 chỉ đọc được, không sửa được.
+COPY target/dak-mock-0.1.0-SNAPSHOT.jar /app/app.jar
+
+USER 1000:1000
+
+EXPOSE 8085
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Djava.io.tmpdir=/tmp"
+
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
