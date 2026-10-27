@@ -1,20 +1,31 @@
-# Image tối thiểu để chạy CLI `vault` (kv put / get / list, token lookup) trong k8s/vault-cli-pod.yaml.
-# Chỉ có: alpine (busybox: sh, head, base64, sleep) + binary vault (static) + CA công khai. Không có curl/jq/bash.
+# Image để chạy CLI `vault` (kv put / get / list, token lookup) trong k8s/vault-cli-pod.yaml.
+# Mặc định KHÔNG cần mạng ngoài: alpine (busybox: sh, head, base64, sleep, wget, vi) + binary vault (static). Bộ CA công khai đã có sẵn
+# trong image alpine (ca-certificates-bundle); Vault nội bộ chạy http nên cũng không cần.
 #
-# Build/push từ máy có quyền push registry:
-#   docker build -f Dockerfile.vault-cli -t <registry>/vault-cli:1.15 .
-#   docker push <registry>/vault-cli:1.15
-# Máy build không pull được Docker Hub thì đổi VAULT_IMAGE / ALPINE_IMAGE sang bản mirror nội bộ:
-#   docker build -f Dockerfile.vault-cli --build-arg VAULT_IMAGE=<mirror>/hashicorp/vault:1.15 \
-#     --build-arg ALPINE_IMAGE=<mirror>/alpine:3.20 -t <registry>/vault-cli:1.15 .
+# Build/push từ máy có quyền push registry (kéo image qua cổng 8989, push qua cổng 8999 như cấu hình của bạn):
+#   docker build -f Dockerfile.vault-cli \
+#     --build-arg VAULT_IMAGE=hub.vtcc.vn:8989/hashicorp/vault:1.15 --build-arg ALPINE_IMAGE=hub.vtcc.vn:8989/alpine:3.20 \
+#     -t hub.vtcc.vn:8999/hungvt0110/vault:1.15 .
+#   docker push hub.vtcc.vn:8999/hungvt0110/vault:1.15
+#
+# CÔNG CỤ THÊM (tuỳ chọn): curl jq openssl bash ... Cần tải package apk, mà proxy có thể chặn dl-cdn.alpinelinux.org
+# ("fetch https://dl-cdn.alpinelinux.org ... Permission denied"). Khi đó trỏ APK_MIRROR vào mirror alpine nội bộ (Nexus/Artifactory),
+# URL tới thư mục chứa main/ và community/ của bản alpine v3.20:
+#   docker build ... --build-arg EXTRA_PACKAGES="curl jq openssl bash" \
+#     --build-arg APK_MIRROR=http://<mirror-noi-bo>/alpine/v3.20 -t hub.vtcc.vn:8999/hungvt0110/vault:1.15-tools .
+# Không có mirror thì bỏ trống EXTRA_PACKAGES (build mặc định); dùng curl/jq ở pod khác (pod dak-mock đã có curl).
 ARG VAULT_IMAGE=hashicorp/vault:1.15
 ARG ALPINE_IMAGE=alpine:3.20
 
 FROM ${VAULT_IMAGE} AS vault
 
 FROM ${ALPINE_IMAGE}
-# ca-certificates: để vault gọi được Vault https (CA công khai); Vault nội bộ chạy http thì không cần nhưng nhẹ (~0.5MB).
-RUN apk add --no-cache ca-certificates \
+ARG APK_MIRROR=
+ARG EXTRA_PACKAGES=
+RUN if [ -n "$EXTRA_PACKAGES" ]; then \
+      if [ -n "$APK_MIRROR" ]; then printf '%s/main\n%s/community\n' "$APK_MIRROR" "$APK_MIRROR" > /etc/apk/repositories; fi; \
+      apk add --no-cache $EXTRA_PACKAGES; \
+    fi \
     && addgroup -g 1000 vault \
     && adduser -D -u 1000 -G vault -h /tmp vault
 COPY --from=vault /bin/vault /usr/local/bin/vault

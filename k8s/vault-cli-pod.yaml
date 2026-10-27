@@ -3,7 +3,7 @@
 # Token được đưa vào qua biến VAULT_TOKEN nên không cần `vault login` (không ghi ~/.vault-token).
 #
 # Quy trình:
-#   1. Sửa "image:" cho khớp image có sẵn CLI vault trong registry nội bộ (vd mirror của hashicorp/vault).
+#   1. Build và push image bằng Dockerfile.vault-cli (lệnh ở đầu file đó), rồi kiểm "image:" bên dưới khớp tag đã push.
 #   2. kubectl apply -f k8s/vault-cli-pod.yaml
 #      kubectl wait --for=condition=Ready pod/vault-cli -n vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy --timeout=60s
 #   3. Chạy lệnh (NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy):
@@ -19,6 +19,15 @@
 #        kubectl exec vault-cli -n $NS -- vault kv get -mount=kv -field=keyPrefix hla-datalake/datalake/column-keys/demo_db/users_cdr/name
 #        # LIỆT KÊ key
 #        kubectl exec vault-cli -n $NS -- vault kv list -mount=kv hla-datalake/datalake/column-keys/demo_db/users_cdr
+#        # KIỂM TRA version hiện tại của key (dòng current_version, kèm lịch sử các version)
+#        kubectl exec vault-cli -n $NS -- vault kv metadata get -mount=kv hla-datalake/datalake/column-keys/demo_db/users_cdr/name
+#        # SỬA giá trị key = ghi version mới (version cũ vẫn còn trong Vault). Thay <N> bằng current_version vừa kiểm tra:
+#        # -cas=<N> chỉ cho ghi khi version hiện tại đúng là N, tránh ghi đè nhầm khi có người khác vừa sửa.
+#        # CẢNH BÁO: dữ liệu đã mã hoá bằng key cũ sẽ không giải mã được bằng giá trị mới -> chỉ sửa khi chưa dùng key để mã hoá.
+#        kubectl exec vault-cli -n $NS -- sh -c \
+#          'vault kv put -mount=kv -cas=<N> hla-datalake/datalake/column-keys/demo_db/users_cdr/name keyPrefix="$(head -c 32 /dev/urandom | base64)"'
+#        # Xem một version cũ cụ thể (vd version 1):
+#        kubectl exec vault-cli -n $NS -- vault kv get -mount=kv -version=1 hla-datalake/datalake/column-keys/demo_db/users_cdr/name
 #      <database>, <table>, <column> viết CHỮ THƯỜNG, chỉ gồm a-z, 0-9, _ (cùng quy ước với dak-mock).
 #   4. Pod chạy liên tục (restartPolicy: Always, không tự thoát) nên exec lại được bất cứ lúc nào. Pod giữ token Vault
 #      trong env -> xoá khi không còn dùng:
@@ -46,8 +55,9 @@ spec:
       type: RuntimeDefault
   containers:
     - name: vault
-      # GIẢ ĐỊNH — thay bằng image có CLI vault (+ sh, base64, head) trong registry nội bộ, vd mirror của hashicorp/vault.
-      image: hub.vtcc.vn:8989/<ten-project-cua-ban>/vault:1.15
+      # Image build từ Dockerfile.vault-cli (xem comment đầu file đó): push qua cổng 8999, kéo qua cổng 8989.
+      # Có CLI vault + sh, base64, head. Cần thêm curl/jq/openssl thì build với EXTRA_PACKAGES và đổi tag thành 1.15-tools.
+      image: hub.vtcc.vn:8989/hungvt0110/vault:1.15
       imagePullPolicy: IfNotPresent
       # Giữ pod sống vô thời hạn để kubectl exec bất cứ lúc nào (không tự thoát). Ghi đè CMD của image.
       command: ["tail", "-f", "/dev/null"]
