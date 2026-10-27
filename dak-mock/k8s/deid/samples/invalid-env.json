@@ -1,0 +1,13 @@
+{
+  "database": "demo_db",
+  "table": "users_cdr_2",
+  "columns": [{ "column": "name", "mode": "HASH" }],
+  "dagId": "deid_pseudonymize_table",
+  "env": {
+    "DB_NAME": "another_table",
+    "OUTPUT_MODE": "replace-everything",
+    "OUTPUT_FORMAT": 7,
+    "SOME_UNKNOWN_ENV": "x"
+  },
+  "purpose": "Contains env that must be rejected: forbidden name, wrong value, wrong type, unknown name"
+}

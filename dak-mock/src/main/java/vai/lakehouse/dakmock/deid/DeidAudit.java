@@ -40,6 +40,14 @@ final class DeidAudit {
   }
 
   /** Mọi giá trị đưa vào audit đã qua kiểm tra bộ ký tự; vẫn thay xuống dòng để một dòng audit không giả được dòng khác. */
+  /** Tên env và số lượng (không ghi giá trị) để nối vào dòng audit; rỗng nếu phiếu không có env. */
+  static String envSummary(java.util.Map<String, String> env) {
+    if (env.isEmpty()) {
+      return "";
+    }
+    return " envNames=" + clean(String.join(",", new java.util.TreeSet<>(env.keySet()))) + " envCount=" + env.size();
+  }
+
   static String clean(String value) {
     return value.replace('\r', ' ').replace('\n', ' ');
   }

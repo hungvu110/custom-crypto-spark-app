@@ -7,6 +7,7 @@ import java.util.regex.Pattern;
 
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import vai.lakehouse.dakmock.config.DeidProperties;
 import vai.lakehouse.dakmock.config.DeidProperties.Airflow;
 
 /**
@@ -29,12 +30,14 @@ public class AirflowJobSubmitter implements JobSubmitter {
   private static final Pattern RUN_ID = Pattern.compile("deid-\\d{4}-\\d{6}");
 
   private final Airflow config;
+  private final JobEnvPolicy envPolicy;
   private final AirflowTokens tokens;
   private final AirflowHttp http = new AirflowHttp();
   private final String runsBase;
 
-  AirflowJobSubmitter(Airflow config, AirflowTokens tokens) {
-    this.config = config;
+  AirflowJobSubmitter(DeidProperties deid, AirflowTokens tokens) {
+    this.config = deid.airflow();
+    this.envPolicy = new JobEnvPolicy(deid);
     this.tokens = tokens;
     this.runsBase = config.baseUrl().replaceAll("/+$", "") + "/api/v1/dags/";
   }
@@ -47,7 +50,7 @@ public class AirflowJobSubmitter implements JobSubmitter {
     }
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("dag_run_id", request.jobName());
-    body.put("conf", parameters(request, keySecretName));
+    body.put("conf", conf(request, keySecretName));
     AirflowHttp.Result result = call(HttpMethod.POST, URI.create(runsBase + dagId + "/dagRuns"), body);
     int status = result.status();
     if (status >= 200 && status < 300 || status == 409) {
@@ -77,12 +80,27 @@ public class AirflowJobSubmitter implements JobSubmitter {
     };
   }
 
-  private static Map<String, String> parameters(DeidRequest request, String keySecretName) {
+  /**
+   * {@code conf} của dag run: tham số bảng, TÊN Secret chứa key, và {@code env} cuối cùng của job (env người gửi phiếu nhập cộng mặc
+   * định, gồm cả {@code OUTPUT_*}). Kiểm lại env với danh sách hiện hành (cấu hình có thể đã đổi từ lúc gửi phiếu) và kiểm bảng kết
+   * quả khác bảng nguồn trước khi gọi mạng.
+   */
+  private Map<String, Object> conf(DeidRequest request, String keySecretName) {
+    Map<String, String> params;
     try {
-      return ManifestRenderer.jobParameters(request, keySecretName);
+      params = ManifestRenderer.jobParameters(request, keySecretName);
     } catch (IllegalArgumentException e) {
       throw new JobSubmitException(BAD_PARAMS);
     }
+    Map<String, String> env = envPolicy.complete(request.env(), request.outputDatabase(), request.outputTable());
+    if (!envPolicy.validate(env).isEmpty() || envPolicy.outputConflict(request.database(), request.table(), env).isPresent()) {
+      throw new JobSubmitException(BAD_PARAMS);
+    }
+    Map<String, Object> conf = new LinkedHashMap<>(params);
+    conf.remove("outputDb");
+    conf.remove("outputTable");
+    conf.put("env", env);
+    return conf;
   }
 
   /** Gọi Airflow; gặp 401 thì bỏ token đang giữ, lấy token mới và thử lại đúng một lần. */

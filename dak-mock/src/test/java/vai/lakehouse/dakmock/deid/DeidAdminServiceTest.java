@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.Map;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -173,6 +174,12 @@ class DeidAdminServiceTest {
         new SourceFile("phieu.json", "ab".repeat(32))));
   }
 
+  private DeidRequest pendingWithEnv(String table, Map<String, String> env) {
+    return registry.create(new NewRequest("team-a", "user-of-team-a", "demo_db", table,
+        List.of(new ColumnSpec("msisdn", Mode.HASH)), null, "ly do rieng tu",
+        new SourceFile("phieu.json", "ab".repeat(32)), env));
+  }
+
   private DeidRequest pending(String table) {
     return pending("team-a", table);
   }
@@ -249,6 +256,105 @@ class DeidAdminServiceTest {
       }
 
       assertThat(service.approve(created.requestCode()).outputTable()).isEqualTo("t11_deid_20261023_12");
+    }
+
+    @Test
+    @DisplayName("không nhập env: env cuối cùng là mặc định (bảng kết quả theo cấu hình, cách ghi overwrite, định dạng delta, Hive bật)")
+    void approve_withoutEnv_storesTheDefaultEnv() {
+      DeidRequest created = pending("users_cdr");
+
+      DeidRequest result = service.approve(created.requestCode());
+
+      assertThat(result.env()).containsExactly(
+          Map.entry("ENABLE_HIVE_SUPPORT", "true"), Map.entry("OUTPUT_DB", "demo_db"), Map.entry("OUTPUT_FORMAT", "delta"),
+          Map.entry("OUTPUT_MODE", "overwrite"), Map.entry("OUTPUT_TABLE", "users_cdr_deid_20261023_1"));
+      assertThat(result.outputDatabase()).isEqualTo("demo_db");
+      assertThat(result.outputTable()).isEqualTo("users_cdr_deid_20261023_1");
+    }
+
+    @Test
+    @DisplayName("người gửi nhập OUTPUT_DB, OUTPUT_TABLE, OUTPUT_MODE: duyệt giữ nguyên và điền mặc định cho env còn lại")
+    void approve_keepsTheEnvTheRequesterEntered() {
+      DeidRequest created = pendingWithEnv("users_cdr", Map.of("OUTPUT_DB", "deid_out", "OUTPUT_TABLE", "users_pseudo",
+          "OUTPUT_MODE", "append"));
+
+      DeidRequest result = service.approve(created.requestCode());
+
+      assertThat(result.env()).containsExactly(
+          Map.entry("ENABLE_HIVE_SUPPORT", "true"), Map.entry("OUTPUT_DB", "deid_out"), Map.entry("OUTPUT_FORMAT", "delta"),
+          Map.entry("OUTPUT_MODE", "append"), Map.entry("OUTPUT_TABLE", "users_pseudo"));
+      assertThat(result.outputDatabase()).isEqualTo("deid_out");
+      assertThat(result.outputTable()).isEqualTo("users_pseudo");
+      assertThat(registry.getByCode(created.requestCode()).env()).isEqualTo(result.env());
+    }
+
+    @Test
+    @DisplayName("chỉ nhập một trong hai OUTPUT_*: cái còn lại theo cấu hình output-database và mẫu tên bảng")
+    void approve_partialOutput_fallsBackToConfiguration() {
+      DeidProperties deid = new DeidProperties(true, null, 20, 65536, "analytics", null, null, null, null, null);
+      DeidAdminService custom = new DeidAdminService(deid, registry, keyDelivery, submitter, clock);
+      DeidRequest onlyTable = pendingWithEnv("t_a", Map.of("OUTPUT_TABLE", "only_table"));
+      DeidRequest onlyDb = pendingWithEnv("t_b", Map.of("OUTPUT_DB", "only_db"));
+
+      DeidRequest a = custom.approve(onlyTable.requestCode());
+      DeidRequest b = custom.approve(onlyDb.requestCode());
+
+      assertThat(a.outputDatabase()).isEqualTo("analytics");
+      assertThat(a.outputTable()).isEqualTo("only_table");
+      assertThat(b.outputDatabase()).isEqualTo("only_db");
+      assertThat(b.outputTable()).isEqualTo("t_b_deid_20261023_2");
+    }
+
+    @Test
+    @DisplayName("đích trùng bảng nguồn (cấu hình đổi sau lúc gửi phiếu): 400 invalid_request, phiếu vẫn chờ duyệt, không giao key")
+    void approve_outputEqualToSource_rejected() {
+      // Upload đã kiểm điều này theo cấu hình lúc đó; dựng phiếu thẳng vào registry để mô phỏng cấu hình đã đổi.
+      DeidRequest created = pendingWithEnv("users_cdr", Map.of("OUTPUT_TABLE", "users_cdr"));
+
+      Throwable thrown = catchThrowable(() -> service.approve(created.requestCode()));
+
+      assertApiError(thrown, HttpStatus.BAD_REQUEST, "invalid_request");
+      assertThat(registry.getByCode(created.requestCode()).state()).isEqualTo(State.PENDING_APPROVAL);
+      assertThat(registry.getByCode(created.requestCode()).env()).containsOnlyKeys("OUTPUT_TABLE");
+      assertThat(events).isEmpty();
+    }
+
+    @Test
+    @DisplayName("cùng tên bảng ở database khác với bảng nguồn thì duyệt được")
+    void approve_sameTableNameInAnotherDatabase_allowed() {
+      DeidRequest created = pendingWithEnv("users_cdr", Map.of("OUTPUT_DB", "other_db", "OUTPUT_TABLE", "users_cdr"));
+
+      DeidRequest result = service.approve(created.requestCode());
+
+      assertThat(result.state()).isEqualTo(State.JOB_SUBMITTED);
+      assertThat(result.outputDatabase()).isEqualTo("other_db");
+    }
+
+    @Test
+    @DisplayName("retry-submit giữ nguyên env cuối cùng đã chốt lúc duyệt")
+    void retrySubmit_keepsTheFinalEnv() {
+      DeidRequest created = pendingWithEnv("users_cdr", Map.of("OUTPUT_TABLE", "users_pseudo"));
+      keyDelivery.failure = new KeyDeliveryException("vault unavailable");
+      DeidRequest failed = service.approve(created.requestCode());
+      keyDelivery.failure = null;
+
+      DeidRequest retried = service.retrySubmit(created.requestCode());
+
+      assertThat(retried.state()).isEqualTo(State.JOB_SUBMITTED);
+      assertThat(retried.env()).isEqualTo(failed.env()).containsEntry("OUTPUT_TABLE", "users_pseudo");
+    }
+
+    @Test
+    @DisplayName("audit lúc duyệt ghi tên env cuối cùng và số lượng, không ghi giá trị")
+    void approve_auditRecordsEnvNamesButNotValues() {
+      DeidRequest created = pendingWithEnv("users_cdr", Map.of("OUTPUT_TABLE", "users_pseudo_zzz", "OUTPUT_MODE", "append"));
+
+      service.approve(created.requestCode());
+
+      String approvedLine = auditLines().stream().filter(l -> l.contains("to=APPROVED")).findFirst().orElseThrow();
+      assertThat(approvedLine).contains("envNames=ENABLE_HIVE_SUPPORT,OUTPUT_DB,OUTPUT_FORMAT,OUTPUT_MODE,OUTPUT_TABLE")
+          .contains("envCount=5");
+      assertThat(String.join("\n", auditLines())).doesNotContain("users_pseudo_zzz").doesNotContain("append");
     }
 
     @Test

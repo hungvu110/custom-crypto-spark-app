@@ -1,0 +1,13 @@
+{
+  "database": "demo_db",
+  "table": "users_cdr_2",
+  "columns": [{ "column": "name", "mode": "HASH" }],
+  "dagId": "deid_pseudonymize_table",
+  "env": {
+    "OUTPUT_DB": "demo_db",
+    "OUTPUT_TABLE": "users_cdr_2_pseudonymized",
+    "OUTPUT_MODE": "overwrite",
+    "OUTPUT_FORMAT": "delta"
+  },
+  "purpose": "Share data with partner X for churn analysis, written to a table of my choice"
+}

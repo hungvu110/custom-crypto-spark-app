@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -97,6 +98,54 @@ class DeidRequestServiceTest {
   @Nested
   @DisplayName("upload")
   class Upload {
+
+    @Test
+    @DisplayName("env người gửi nhập được lưu vào phiếu; phiếu không nhập env thì env rỗng")
+    void storesTheEnv() {
+      String json = "{\"database\":\"demo_db\",\"table\":\"users_cdr\",\"columns\":[{\"column\":\"msisdn\"}],"
+          + "\"env\":{\"OUTPUT_TABLE\":\"users_pseudo\",\"OUTPUT_MODE\":\"append\"},\"purpose\":\"p\"}";
+
+      DeidRequest withEnv = service.upload(ALICE, "f.json", new ByteArrayInputStream(json.getBytes(UTF_8)));
+      DeidRequest plain = upload(BOB, "other_table");
+
+      assertThat(withEnv.env()).containsExactly(Map.entry("OUTPUT_MODE", "append"), Map.entry("OUTPUT_TABLE", "users_pseudo"));
+      assertThat(plain.env()).isEmpty();
+      assertThat(registry.getByCode(withEnv.requestCode()).env()).isEqualTo(withEnv.env());
+    }
+
+    @Test
+    @DisplayName("audit lúc gửi phiếu ghi tên env và số lượng, không ghi giá trị")
+    void auditRecordsEnvNamesButNotValues() {
+      String json = "{\"database\":\"demo_db\",\"table\":\"users_cdr\",\"columns\":[{\"column\":\"msisdn\"}],"
+          + "\"env\":{\"OUTPUT_TABLE\":\"users_pseudo_zzz\",\"OUTPUT_MODE\":\"append\"},\"purpose\":\"p\"}";
+
+      service.upload(ALICE, "f.json", new ByteArrayInputStream(json.getBytes(UTF_8)));
+
+      String line = auditLines().get(0);
+      assertThat(line).contains("envNames=OUTPUT_MODE,OUTPUT_TABLE").contains("envCount=2");
+      assertThat(line).doesNotContain("users_pseudo_zzz").doesNotContain("append");
+    }
+
+    @Test
+    @DisplayName("phiếu không có env thì audit không có envNames")
+    void auditHasNoEnvFieldsWithoutEnv() {
+      upload(ALICE, "users_cdr");
+
+      assertThat(auditLines().get(0)).doesNotContain("envNames").doesNotContain("envCount");
+    }
+
+    @Test
+    @DisplayName("env sai thì không tạo phiếu: 400 invalid_file kèm problems của env")
+    void invalidEnv_createsNothing() {
+      String json = "{\"database\":\"demo_db\",\"table\":\"users_cdr\",\"columns\":[{\"column\":\"msisdn\"}],"
+          + "\"env\":{\"DB_NAME\":\"x\"},\"purpose\":\"p\"}";
+      int before = registry.listAll().size();
+
+      Throwable thrown = catchThrowable(() -> service.upload(ALICE, "f.json", new ByteArrayInputStream(json.getBytes(UTF_8))));
+
+      assertApiError(thrown, HttpStatus.BAD_REQUEST, "invalid_file");
+      assertThat(registry.listAll()).hasSize(before);
+    }
 
     @Test
     @DisplayName("tạo phiếu PENDING_APPROVAL thuộc team của người upload, ghi người upload và file")

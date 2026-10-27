@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import vai.lakehouse.dakmock.config.DeidProperties;
 import vai.lakehouse.dakmock.config.DeidProperties.PortalUser;
 import vai.lakehouse.dakmock.deid.DeidRequest;
 import vai.lakehouse.dakmock.deid.DeidRequestService;
@@ -30,6 +33,12 @@ public class MockPortalDeidController {
 
   /** Danh sách {@code dagId} người dùng được chọn khi điền phiếu. */
   public record DagList(List<String> dagIds) {}
+
+  /** Env của job người gửi phiếu được nhập khi điền phiếu. {@code defaultValue} vắng mặt nếu mock tính lúc duyệt. */
+  public record JobEnvList(int maxEntries, List<JobEnvItem> env) {}
+
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public record JobEnvItem(String name, String pattern, String defaultValue) {}
 
   private final DeidRequestService service;
 
@@ -74,5 +83,12 @@ public class MockPortalDeidController {
   @GetMapping("/deid-dags")
   public DagList dags() {
     return new DagList(service.allowedDagIds());
+  }
+
+  @GetMapping("/deid-job-env")
+  public JobEnvList jobEnv() {
+    DeidProperties.JobEnv jobEnv = service.allowedJobEnv();
+    return new JobEnvList(jobEnv.maxEntries(), jobEnv.allowed().stream()
+        .map(e -> new JobEnvItem(e.name(), e.pattern(), e.defaultValue())).toList());
   }
 }

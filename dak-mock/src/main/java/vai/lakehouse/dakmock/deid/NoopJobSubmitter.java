@@ -20,9 +20,10 @@ public class NoopJobSubmitter implements JobSubmitter {
         .map((ColumnSpec c) -> c.column() + ":" + c.mode())
         .collect(Collectors.joining(","));
     // Mọi giá trị đã qua kiểm tra bộ ký tự ở bước upload; keySecret chỉ là TÊN Secret, không phải key.
-    log.info("NOOP_JOB requestCode={} job={} database={} table={} pseudoColumns={} outputDb={} outputTable={} keySecret={}",
-        request.requestCode(), request.jobName(), request.database(), request.table(), pseudoColumns,
-        request.outputDatabase(), request.outputTable(), keySecretName);
+    // Chỉ ghi TÊN env của job, không ghi giá trị.
+    log.info("NOOP_JOB requestCode={} job={} database={} table={} pseudoColumns={} outputDb={} outputTable={} keySecret={} "
+            + "envNames={}", request.requestCode(), request.jobName(), request.database(), request.table(), pseudoColumns,
+        request.outputDatabase(), request.outputTable(), keySecretName, String.join(",", request.env().keySet()));
     return new JobRef(JobRef.Kind.SPARK_APPLICATION, request.jobName());
   }
 

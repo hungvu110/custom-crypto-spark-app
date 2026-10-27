@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.Map;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -510,6 +511,107 @@ class DeidUploadParserTest {
       DeidUpload upload = new DeidUploadParser(noop()).parse("..\\..\\evil\n.json", stream(validDoc()));
 
       assertThat(upload.sourceFile().name()).isEqualTo("evil.json");
+    }
+  }
+
+  @Nested
+  @DisplayName("trường env (env của job do người gửi phiếu nhập)")
+  class EnvField {
+
+    @Test
+    @DisplayName("không khai, null hoặc object rỗng: env rỗng")
+    void absentNullOrEmpty_isEmpty() {
+      assertThat(parse(noop(), validDoc()).env()).isEmpty();
+      assertThat(parse(noop(), validDoc("env", "null")).env()).isEmpty();
+      assertThat(parse(noop(), validDoc("env", "{}")).env()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("env hợp lệ được nhận nguyên giá trị và sắp theo tên; env không còn bị coi là trường lạ")
+    void validEnv_isKept() {
+      DeidUpload upload = parse(noop(), validDoc("env",
+          "{\"OUTPUT_TABLE\":\"users_pseudo\",\"OUTPUT_DB\":\"deid_out\",\"OUTPUT_MODE\":\"append\"}"));
+
+      assertThat(upload.env()).containsExactly(Map.entry("OUTPUT_DB", "deid_out"), Map.entry("OUTPUT_MODE", "append"),
+          Map.entry("OUTPUT_TABLE", "users_pseudo"));
+    }
+
+    @Test
+    @DisplayName("env không phải object: lỗi ở trường env")
+    void notAnObject_rejected() {
+      for (String bad : List.of("[]", "\"x\"", "7", "true")) {
+        assertProblems(rejected(noop(), validDoc("env", bad)), "env", "invalid_env");
+      }
+    }
+
+    @Test
+    @DisplayName("tên lạ hoặc env bị cấm: cùng thông điệp chung, field là env.<TÊN>")
+    void unknownOrForbiddenName_rejected() {
+      DakApiException e = rejected(noop(), validDoc("env", "{\"FOO\":\"x\",\"DB_NAME\":\"other\"}"));
+
+      assertThat(e.problems()).extracting(Problem::field, Problem::code, Problem::message).containsExactly(
+          tuple("env.DB_NAME", "invalid_env", "env name is not allowed"),
+          tuple("env.FOO", "invalid_env", "env name is not allowed"));
+    }
+
+    @Test
+    @DisplayName("giá trị sai quy tắc hoặc không phải chuỗi: lỗi đúng trường, thông điệp không lặp lại giá trị")
+    void badValues_rejectedWithoutEchoingThem() {
+      DakApiException e = rejected(noop(), validDoc("env", "{\"OUTPUT_MODE\":\"replace-all\",\"OUTPUT_FORMAT\":7}"));
+
+      assertThat(e.problems()).extracting(Problem::field, Problem::message).containsExactly(
+          tuple("env.OUTPUT_FORMAT", "value must be a string"),
+          tuple("env.OUTPUT_MODE", "value must match overwrite|append"));
+      assertThat(e.problems().toString()).doesNotContain("replace-all");
+    }
+
+    @Test
+    @DisplayName("lỗi env được gom cùng lỗi khác của file trong một lượt")
+    void envErrors_areCollectedWithOtherProblems() {
+      DakApiException e = rejected(noop(), validDoc("table", "\"bad-table\"", "env", "{\"OUTPUT_DB\":\"A B\"}",
+          "purpose", "\"\""));
+
+      assertThat(e.problems()).extracting(Problem::field).containsExactlyInAnyOrder("table", "env.OUTPUT_DB", "purpose");
+    }
+
+    @Test
+    @DisplayName("OUTPUT_TABLE trùng bảng nguồn bị từ chối (cùng database khai rõ hoặc database đích mặc định)")
+    void outputSameAsSource_rejected() {
+      DakApiException explicit = rejected(noop(), validDoc("env", "{\"OUTPUT_DB\":\"demo_db\",\"OUTPUT_TABLE\":\"users_cdr\"}"));
+      DakApiException implicit = rejected(noop(), validDoc("env", "{\"OUTPUT_TABLE\":\"users_cdr\"}"));
+
+      assertThat(explicit.problems()).extracting(Problem::field, Problem::message)
+          .containsExactly(tuple("env.OUTPUT_TABLE", "the output table must differ from the source table"));
+      assertProblems(implicit, "env.OUTPUT_TABLE", "invalid_env");
+    }
+
+    @Test
+    @DisplayName("cùng tên bảng ở database khác hợp lệ, kể cả database đích lấy từ cấu hình")
+    void sameTableNameInAnotherDatabase_allowed() {
+      DeidProperties configured = new DeidProperties(true, null, 20, 65536, "analytics", null, null, null, null, null);
+
+      assertThat(parse(noop(), validDoc("env", "{\"OUTPUT_DB\":\"other_db\",\"OUTPUT_TABLE\":\"users_cdr\"}")).env())
+          .containsEntry("OUTPUT_DB", "other_db");
+      assertThat(parse(configured, validDoc("env", "{\"OUTPUT_TABLE\":\"users_cdr\"}")).env())
+          .containsEntry("OUTPUT_TABLE", "users_cdr");
+    }
+
+    @Test
+    @DisplayName("quá số mục tối đa của cấu hình bị từ chối")
+    void tooManyEntries_rejected() {
+      DeidProperties two = new DeidProperties(true, null, 20, 65536, null, null, null, null, null, null,
+          new DeidProperties.JobEnv(2, DeidProperties.defaults().jobEnv().allowed()));
+
+      DakApiException e = rejected(two, validDoc("env",
+          "{\"OUTPUT_DB\":\"a\",\"OUTPUT_TABLE\":\"b\",\"OUTPUT_MODE\":\"append\"}"));
+
+      assertProblems(e, "env", "invalid_env");
+    }
+
+    @Test
+    @DisplayName("khoá env trùng trong JSON bị từ chối như mọi khoá trùng khác")
+    void duplicateEnvKey_rejectedAsWholeFile() {
+      rejected(noop(), validDoc("env", "{\"OUTPUT_DB\":\"a\",\"OUTPUT_DB\":\"b\"}"));
     }
   }
 }

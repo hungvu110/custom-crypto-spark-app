@@ -1,8 +1,11 @@
 package vai.lakehouse.dakmock.deid;
 
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -25,6 +28,7 @@ public record DeidRequest(
     List<ColumnSpec> columns,
     String dagId,
     String purpose,
+    @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String, String> env,
     String team,
     String createdBy,
     Instant createdAt,
@@ -92,9 +96,19 @@ public record DeidRequest(
   /** File người dùng đã upload: chỉ giữ tên (đã làm sạch, để hiển thị) và SHA-256 của đúng các byte đã đọc. */
   public record SourceFile(String name, String sha256) {}
 
-  /** Dữ liệu một phiếu mới, đã qua kiểm tra ở bước upload; mã phiếu và thời điểm tạo do registry cấp. */
+  /**
+   * Dữ liệu một phiếu mới, đã qua kiểm tra ở bước upload; mã phiếu và thời điểm tạo do registry cấp. {@code env} là env của job do
+   * người gửi phiếu nhập (docs/dak-deid-flow/JOB_ENV_PLAN.md), chỉ gồm tên trong danh sách được phép.
+   */
   public record NewRequest(String team, String createdBy, String database, String table, List<ColumnSpec> columns,
-                           String dagId, String purpose, SourceFile sourceFile) {}
+                           String dagId, String purpose, SourceFile sourceFile, Map<String, String> env) {
+
+    /** Phiếu không nhập env nào. */
+    public NewRequest(String team, String createdBy, String database, String table, List<ColumnSpec> columns, String dagId,
+                      String purpose, SourceFile sourceFile) {
+      this(team, createdBy, database, table, columns, dagId, purpose, sourceFile, Map.of());
+    }
+  }
 
   public DeidRequest {
     Objects.requireNonNull(requestCode, "requestCode");
@@ -103,13 +117,15 @@ public record DeidRequest(
     Objects.requireNonNull(table, "table");
     Objects.requireNonNull(team, "team");
     columns = List.copyOf(columns);
+    // Bản sao bất biến, sắp theo tên env để JSON và so sánh ổn định.
+    env = env == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(env));
   }
 
   /** Phiếu mới ở {@link State#PENDING_APPROVAL}. */
   public static DeidRequest created(String requestCode, Instant createdAt, NewRequest n) {
     return new DeidRequest(requestCode, State.PENDING_APPROVAL, n.database(), n.table(), n.columns(), n.dagId(),
-        n.purpose(), n.team(), n.createdBy(), createdAt, n.sourceFile(), null, null, null, null, null, null, null, null,
-        null, null);
+        n.purpose(), n.env(), n.team(), n.createdBy(), createdAt, n.sourceFile(), null, null, null, null, null, null, null,
+        null, null, null);
   }
 
   /** Mã phiếu hợp lệ: {@code PYC-<năm 4 số>-<6 số>}. Dùng để kiểm mã người dùng gửi lên TRƯỚC khi tra cứu hay ghi log. */
@@ -137,6 +153,17 @@ public record DeidRequest(
     requireMove(State.APPROVED, State.PENDING_APPROVAL);
     return copy(State.APPROVED, at, by, reasonText, outputDb, outputTbl, keyVersion, jobRef, submitError, jobState,
         jobFinishedAt);
+  }
+
+  /**
+   * Admin duyệt và chốt luôn env cuối cùng của job (env người gửi nhập cộng giá trị mặc định); {@code finalEnv} thay env của phiếu.
+   */
+  public DeidRequest approved(String by, Instant at, String outputDb, String outputTbl, Map<String, String> finalEnv) {
+    DeidRequest approved = approved(by, at, outputDb, outputTbl);
+    return new DeidRequest(approved.requestCode, approved.state, approved.database, approved.table, approved.columns,
+        approved.dagId, approved.purpose, finalEnv, approved.team, approved.createdBy, approved.createdAt, approved.sourceFile,
+        approved.decidedAt, approved.decidedBy, approved.reasonText, approved.outputDatabase, approved.outputTable,
+        approved.keyVersion, approved.jobRef, approved.submitError, approved.jobState, approved.jobFinishedAt);
   }
 
   /** Admin từ chối kèm lý do. */
@@ -208,7 +235,7 @@ public record DeidRequest(
   private DeidRequest copy(State newState, Instant newDecidedAt, String newDecidedBy, String newReasonText,
                            String newOutputDatabase, String newOutputTable, Long newKeyVersion, JobRef newJobRef,
                            String newSubmitError, JobState newJobState, Instant newJobFinishedAt) {
-    return new DeidRequest(requestCode, newState, database, table, columns, dagId, purpose, team, createdBy, createdAt,
+    return new DeidRequest(requestCode, newState, database, table, columns, dagId, purpose, env, team, createdBy, createdAt,
         sourceFile, newDecidedAt, newDecidedBy, newReasonText, newOutputDatabase, newOutputTable, newKeyVersion,
         newJobRef, newSubmitError, newJobState, newJobFinishedAt);
   }

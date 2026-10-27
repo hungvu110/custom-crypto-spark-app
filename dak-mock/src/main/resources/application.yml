@@ -101,6 +101,18 @@ dak:
     #     username: dak-trigger               # chỉ cho auth=basic; password qua env AIRFLOW_PASSWORD
     #     token-url: https://sso-lakehouse.cyberspace.vn/realms/<realm>/protocol/openid-connect/token
     #     client-id: <client-airflow>
+    # Env của job khử định danh mà người gửi phiếu được nhập (docs/dak-deid-flow/JOB_ENV_PLAN.md). Không khai thì dùng danh sách mặc định
+    # bên dưới. Khai thì THAY HẲN danh sách mặc định. Mỗi mục: name, pattern (khớp toàn bộ giá trị), default-value (tuỳ chọn).
+    # OUTPUT_DB và OUTPUT_TABLE không có default-value vì mock tính khi duyệt phiếu. Tên thuộc nhóm bị cấm (DB_NAME, INPUT_*, CRYPTO_*,
+    # VAULT_*, tên có SECRET/TOKEN/PASSWORD/KEY...) làm ứng dụng không khởi động.
+    #   job-env:
+    #     max-entries: 10
+    #     allowed:
+    #       - {name: OUTPUT_DB, pattern: "[a-z0-9_]{1,128}"}
+    #       - {name: OUTPUT_TABLE, pattern: "[a-z0-9_]{1,128}"}
+    #       - {name: OUTPUT_MODE, pattern: "overwrite|append", default-value: overwrite}
+    #       - {name: OUTPUT_FORMAT, pattern: "delta|hive|iceberg", default-value: delta}
+    #       - {name: ENABLE_HIVE_SUPPORT, pattern: "true|false", default-value: "true"}
     airflow:
       client-secret: ${AIRFLOW_CLIENT_SECRET:}
       token: ${AIRFLOW_TOKEN:}

@@ -30,9 +30,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import vai.lakehouse.dakmock.config.DeidProperties;
 import vai.lakehouse.dakmock.config.DeidProperties.Airflow;
 import vai.lakehouse.dakmock.config.DeidProperties.AirflowAuth;
+import vai.lakehouse.dakmock.config.DeidProperties.JobEnv;
+import vai.lakehouse.dakmock.config.DeidProperties.Kubernetes;
 import vai.lakehouse.dakmock.config.DeidProperties.Mode;
+import vai.lakehouse.dakmock.config.DeidProperties.Submitter;
 import vai.lakehouse.dakmock.deid.DeidRequest.ColumnSpec;
 import vai.lakehouse.dakmock.deid.DeidRequest.NewRequest;
 import vai.lakehouse.dakmock.deid.DeidRequest.SourceFile;
@@ -122,7 +126,13 @@ class AirflowJobSubmitterTest {
   }
 
   private AirflowJobSubmitter submitter(Airflow cfg) {
-    return new AirflowJobSubmitter(cfg, new AirflowTokens(cfg, clock));
+    return submitter(cfg, null);
+  }
+
+  private AirflowJobSubmitter submitter(Airflow cfg, JobEnv jobEnv) {
+    DeidProperties deid = new DeidProperties(true, null, 20, 65536, null, null, Submitter.AIRFLOW,
+        new Kubernetes(null, "ns", null), cfg, null, jobEnv);
+    return new AirflowJobSubmitter(deid, new AirflowTokens(cfg, clock));
   }
 
   private AirflowJobSubmitter submitter() {
@@ -164,8 +174,59 @@ class AirflowJobSubmitterTest {
     assertThat(body.path("dag_run_id").asText()).isEqualTo("deid-2026-000007");
     assertThat(JSON.convertValue(body.path("conf"), Map.class)).isEqualTo(Map.of(
         "requestCode", "PYC-2026-000007", "database", "demo_db", "table", "users_cdr",
-        "pseudoColumns", "msisdn:HASH,imei:HASH", "outputDb", "demo_db", "outputTable", "users_cdr_deid_20261023_7",
-        "keySecretName", SECRET));
+        "pseudoColumns", "msisdn:HASH,imei:HASH", "keySecretName", SECRET,
+        "env", Map.of("ENABLE_HIVE_SUPPORT", "true", "OUTPUT_DB", "demo_db", "OUTPUT_FORMAT", "delta",
+            "OUTPUT_MODE", "overwrite", "OUTPUT_TABLE", "users_cdr_deid_20261023_7")));
+    assertThat(body.path("conf").has("outputDb")).isFalse();
+    assertThat(body.path("conf").has("outputTable")).isFalse();
+  }
+
+  private static DeidRequest requestWithFinalEnv(Map<String, String> env) {
+    return DeidRequest.created("PYC-2026-000007", Instant.parse("2026-10-23T08:00:00Z"),
+            new NewRequest("team-a", "alice", "demo_db", "users_cdr", List.of(new ColumnSpec("msisdn", Mode.HASH)),
+                "deid_dag", "purpose", new SourceFile("f.json", "ab".repeat(32)), env))
+        .approved("admin", Instant.parse("2026-10-23T09:00:00Z"), env.getOrDefault("OUTPUT_DB", "demo_db"),
+            env.getOrDefault("OUTPUT_TABLE", "users_cdr_deid_20261023_7"), env);
+  }
+
+  @Test
+  @DisplayName("submit sends the final env of the request as conf.env, without separate outputDb and outputTable keys")
+  void submit_sendsTheFinalEnv() throws Exception {
+    token(json(200, TOKEN_OK));
+    airflow(json(200, DAG_RUN_OK));
+    Map<String, String> env = Map.of("OUTPUT_DB", "deid_out", "OUTPUT_TABLE", "users_pseudo", "OUTPUT_MODE", "append",
+        "OUTPUT_FORMAT", "iceberg", "ENABLE_HIVE_SUPPORT", "false");
+
+    submitter().submit(requestWithFinalEnv(env), SECRET);
+
+    JsonNode conf = JSON.readTree(seen.get(1).getBody().readUtf8()).path("conf");
+    assertThat(JSON.convertValue(conf.path("env"), Map.class)).isEqualTo(env);
+    assertThat(conf.has("outputDb")).isFalse();
+    assertThat(conf.toString()).doesNotContain("base64:");
+  }
+
+  @Test
+  @DisplayName("submit refuses an env that is no longer allowed or is hostile, before any network call")
+  void submit_badEnv_noNetwork() {
+    JobEnv noMode = new JobEnv(10, List.of(new JobEnv.Entry("OUTPUT_DB", "[a-z0-9_]{1,128}", null),
+        new JobEnv.Entry("OUTPUT_TABLE", "[a-z0-9_]{1,128}", null)));
+    Airflow cfg = config("openid", List.of("deid_dag"));
+
+    for (Map<String, String> bad : List.of(Map.of("DB_NAME", "other_table"), Map.of("OUTPUT_MODE", "append"),
+        Map.of("OUTPUT_FORMAT", "not-a-format"), Map.of("OUTPUT_TABLE", "A B"))) {
+      JobEnv allowed = bad.containsKey("OUTPUT_MODE") ? noMode : null;
+      assertThatThrownBy(() -> submitter(cfg, allowed).submit(requestWithFinalEnv(bad), SECRET))
+          .isInstanceOf(JobSubmitException.class).hasMessage("invalid job parameters");
+    }
+    assertThat(seen).isEmpty();
+  }
+
+  @Test
+  @DisplayName("submit refuses an output table equal to the source table, before any network call")
+  void submit_outputEqualToSource_noNetwork() {
+    assertThatThrownBy(() -> submitter().submit(requestWithFinalEnv(Map.of("OUTPUT_DB", "demo_db",
+        "OUTPUT_TABLE", "users_cdr")), SECRET)).isInstanceOf(JobSubmitException.class).hasMessage("invalid job parameters");
+    assertThat(seen).isEmpty();
   }
 
   @Test

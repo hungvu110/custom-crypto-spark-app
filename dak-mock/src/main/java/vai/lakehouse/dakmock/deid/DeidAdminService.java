@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.EnumSet;
+import java.util.Map;
 import java.util.Set;
 
 import org.slf4j.Logger;
@@ -45,6 +46,7 @@ public class DeidAdminService {
   private final JobSubmitter submitter;
   private final Clock clock;
   private final JobProgressRefresher refresher;
+  private final JobEnvPolicy envPolicy;
 
   @Autowired
   public DeidAdminService(DakProperties props, DeidRequestRegistry registry, KeyDelivery keyDelivery,
@@ -65,6 +67,7 @@ public class DeidAdminService {
     this.submitter = submitter;
     this.clock = clock;
     this.refresher = refresher;
+    this.envPolicy = new JobEnvPolicy(deid);
   }
 
   /**
@@ -76,8 +79,14 @@ public class DeidAdminService {
     DeidRequest approved;
     try {
       Instant now = clock.instant();
-      approved = registry.transition(checked, Set.of(State.PENDING_APPROVAL),
-          r -> r.approved(ADMIN, now, outputDatabase(r), outputTable(r, now)));
+      approved = registry.transition(checked, Set.of(State.PENDING_APPROVAL), r -> {
+        // Env cuối cùng = env người gửi nhập + mặc định; bảng kết quả không được trùng bảng nguồn (cấu hình có thể đã đổi).
+        Map<String, String> finalEnv = envPolicy.complete(r.env(), outputDatabase(r), outputTable(r, now));
+        envPolicy.outputConflict(r.database(), r.table(), finalEnv).ifPresent(problem -> {
+          throw DakApiException.invalidRequest(problem.message());
+        });
+        return r.approved(ADMIN, now, finalEnv.get(JobEnvPolicy.OUTPUT_DB), finalEnv.get(JobEnvPolicy.OUTPUT_TABLE), finalEnv);
+      });
     } catch (DakApiException e) {
       if ("invalid_state".equals(e.error())) {
         DeidRequest current = registry.getByCode(checked);
@@ -88,7 +97,7 @@ public class DeidAdminService {
       DeidAudit.error("approve", ADMIN, DeidAudit.NONE, checked, e.error());
       throw e;
     }
-    DeidAudit.transition(approved, State.PENDING_APPROVAL.name(), State.APPROVED, ADMIN, "");
+    DeidAudit.transition(approved, State.PENDING_APPROVAL.name(), State.APPROVED, ADMIN, DeidAudit.envSummary(approved.env()));
     return deliverAndSubmit(approved);
   }
 

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Map;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -113,6 +114,10 @@ class MockDeidAdminApiTest {
   private static String phieu(String table) {
     return "{\"database\":\"demo_db\",\"table\":\"" + table + "\",\"columns\":[{\"column\":\"msisdn\"},{\"column\":\"imei\"}],"
         + "\"purpose\":\"" + PURPOSE + "\"}";
+  }
+
+  private static String phieuWithEnv(String table, String envJson) {
+    return phieu(table).replaceFirst("}$", ",\"env\":" + envJson + "}");
   }
 
   private HttpHeaders headers(String headerName, String token, MediaType contentType) {
@@ -277,6 +282,56 @@ class MockDeidAdminApiTest {
     assertError(response, HttpStatus.CONFLICT, "invalid_state");
     assertThat(body(response).get("message").asText()).contains("CANCELLED");
     assertThat(stateOf(code)).isEqualTo("CANCELLED");
+  }
+
+  @Test
+  void upload_withEnv_isVisibleWhilePending_andApproveStoresTheFinalEnv() {
+    String t = table();
+    String code = createdCode(ALICE, phieuWithEnv(t, "{\"OUTPUT_DB\":\"deid_out\",\"OUTPUT_TABLE\":\"pick_" + t
+        + "\",\"OUTPUT_MODE\":\"append\"}"));
+
+    JsonNode pending = body(portalGet(ALICE, code));
+    ResponseEntity<String> approved = adminPost(ADMIN, BASE + "/" + code + "/approve");
+
+    assertThat(pending.get("state").asText()).isEqualTo("PENDING_APPROVAL");
+    assertThat(pending.get("env").get("OUTPUT_MODE").asText()).isEqualTo("append");
+    assertThat(pending.get("env").has("OUTPUT_FORMAT")).as("defaults are added only at approval").isFalse();
+    assertThat(pending.has("outputTable")).isFalse();
+    JsonNode result = body(approved);
+    assertThat(result.get("state").asText()).isEqualTo("JOB_SUBMITTED");
+    assertThat(result.get("outputDatabase").asText()).isEqualTo("deid_out");
+    assertThat(result.get("outputTable").asText()).isEqualTo("pick_" + t);
+    assertThat(result.get("env").get("OUTPUT_FORMAT").asText()).isEqualTo("delta");
+    assertThat(result.get("env").get("OUTPUT_MODE").asText()).isEqualTo("append");
+  }
+
+  @Test
+  void upload_withoutEnv_hasNoEnvWhilePending_andDefaultsAfterApproval() {
+    String t = table();
+    String code = createdCode(ALICE, phieu(t));
+
+    JsonNode pending = body(portalGet(ALICE, code));
+    JsonNode approved = body(adminPost(ADMIN, BASE + "/" + code + "/approve"));
+
+    assertThat(pending.has("env")).isFalse();
+    assertThat(approved.get("env").get("OUTPUT_MODE").asText()).isEqualTo("overwrite");
+    assertThat(approved.get("env").get("OUTPUT_TABLE").asText()).matches(t + "_deid_\\d{8}_\\d+");
+  }
+
+  @Test
+  void upload_withBadEnv_is400_withAProblemPerField_andNoValueIsEchoed() {
+    String t = table();
+
+    ResponseEntity<String> response = upload(ALICE, phieuWithEnv(t,
+        "{\"DB_NAME\":\"secret-looking-value\",\"OUTPUT_MODE\":\"replace-all\"}"));
+
+    assertError(response, HttpStatus.BAD_REQUEST, "invalid_file");
+    JsonNode problems = body(response).get("problems");
+    assertThat(problems).hasSize(2);
+    assertThat(problems.get(0).get("field").asText()).isEqualTo("env.DB_NAME");
+    assertThat(problems.get(0).get("code").asText()).isEqualTo("invalid_env");
+    assertThat(problems.get(1).get("field").asText()).isEqualTo("env.OUTPUT_MODE");
+    assertThat(response.getBody()).doesNotContain("secret-looking-value").doesNotContain("replace-all");
   }
 
   @Test

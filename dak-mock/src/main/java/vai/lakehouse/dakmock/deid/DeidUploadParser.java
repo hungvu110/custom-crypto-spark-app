@@ -66,7 +66,7 @@ public class DeidUploadParser {
   private static final String INVALID_PURPOSE = "invalid_purpose";
   private static final String INVALID_FILE = "invalid_file";
 
-  private static final Set<String> TOP_LEVEL_FIELDS = Set.of("database", "table", "columns", "dagId", "purpose");
+  private static final Set<String> TOP_LEVEL_FIELDS = Set.of("database", "table", "columns", "dagId", "purpose", "env");
   private static final Set<String> COLUMN_FIELDS = Set.of("column", "mode");
 
   // Khoá trùng và dữ liệu thừa là lỗi; không đưa đoạn nguồn vào thông điệp lỗi của Jackson; giới hạn độ sâu lồng nhau.
@@ -78,6 +78,7 @@ public class DeidUploadParser {
       .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
   private final DeidProperties deid;
+  private final JobEnvPolicy envPolicy;
 
   @Autowired
   public DeidUploadParser(DakProperties props) {
@@ -86,6 +87,7 @@ public class DeidUploadParser {
 
   public DeidUploadParser(DeidProperties deid) {
     this.deid = deid;
+    this.envPolicy = new JobEnvPolicy(deid);
   }
 
   /**
@@ -104,6 +106,7 @@ public class DeidUploadParser {
     List<ColumnSpec> columns = columns(root.get("columns"), problems);
     String dagId = dagId(root, problems);
     String purpose = purpose(root, problems);
+    Map<String, String> env = env(root, database, table, problems);
     unknownFields(root, TOP_LEVEL_FIELDS, "", problems);
 
     if (!problems.isEmpty()) {
@@ -111,7 +114,34 @@ public class DeidUploadParser {
       throw DakApiException.invalidFile("The uploaded request has " + problems.size() + " " + noun, problems);
     }
     return new DeidUpload(database, table, columns, dagId, purpose,
-        new SourceFile(sanitizeFileName(originalFilename), sha256(bytes)));
+        new SourceFile(sanitizeFileName(originalFilename), sha256(bytes)), env);
+  }
+
+  /**
+   * Env của job do người gửi nhập (JOB_ENV_PLAN.md mục 5): phải là object, mọi tên nằm trong danh sách được phép, mọi giá trị khớp quy
+   * tắc; bảng kết quả không được trùng bảng nguồn. Có lỗi thì trả env rỗng và ghi lỗi vào {@code problems}.
+   */
+  private Map<String, String> env(JsonNode root, String database, String table, List<Problem> problems) {
+    JsonNode node = root.get("env");
+    if (node == null || node.isNull()) {
+      return Map.of();
+    }
+    if (!node.isObject()) {
+      problems.add(new Problem("env", JobEnvPolicy.CODE, "env must be an object"));
+      return Map.of();
+    }
+    Map<String, Object> raw = new LinkedHashMap<>();
+    node.fields().forEachRemaining(e -> raw.put(e.getKey(), e.getValue().isTextual() ? e.getValue().textValue() : e.getValue()));
+    List<Problem> envProblems = new ArrayList<>(envPolicy.validate(raw));
+    Map<String, String> env = new LinkedHashMap<>();
+    if (envProblems.isEmpty()) {
+      raw.forEach((name, value) -> env.put(name, (String) value));
+      if (database != null && table != null) {
+        envPolicy.outputConflict(database, table, env).ifPresent(envProblems::add);
+      }
+    }
+    problems.addAll(envProblems);
+    return envProblems.isEmpty() ? env : Map.of();
   }
 
   /** Tên file để hiển thị: bỏ đường dẫn, ký tự điều khiển và ký tự định dạng, cắt 255 ký tự; trống thì dùng tên mặc định. */

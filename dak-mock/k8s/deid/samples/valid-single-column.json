@@ -3,5 +3,5 @@
   "table": "subscriber",
   "columns": [{ "column": "isdn" }],
   "dagId": "deid_pseudonymize_table",
-  "purpose": "Thử nghiệm khử định danh một cột (mode mặc định là HASH)"
+  "purpose": "Pseudonymize a single column (mode defaults to HASH)"
 }

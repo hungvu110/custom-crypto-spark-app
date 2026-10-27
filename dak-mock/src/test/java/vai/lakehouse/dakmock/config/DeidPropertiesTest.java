@@ -13,10 +13,13 @@ import java.util.function.Consumer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import vai.lakehouse.dakmock.config.DeidProperties.Airflow;
 import vai.lakehouse.dakmock.config.DeidProperties.AirflowAuth;
+import vai.lakehouse.dakmock.config.DeidProperties.JobEnv;
 import vai.lakehouse.dakmock.config.DeidProperties.Kubernetes;
 import vai.lakehouse.dakmock.config.DeidProperties.Mode;
 import vai.lakehouse.dakmock.config.DeidProperties.PortalUser;
@@ -46,6 +49,7 @@ class DeidPropertiesTest {
     Airflow airflow = new Airflow(null, List.of(), AirflowAuth.CLIENT_CREDENTIALS, null, null, null, null, null);
     List<PortalUser> users = List.of();
     String vaultTemplate = DEFAULT_VAULT_TEMPLATE;
+    JobEnv jobEnv = null;
 
     Draft k8s(String namespace, String templateFile) {
       kubernetes = new Kubernetes("https://kubernetes.default.svc", namespace, templateFile);
@@ -71,7 +75,7 @@ class DeidPropertiesTest {
 
     DeidProperties deid() {
       return new DeidProperties(enabled, modes, maxActivePerTeam, maxUploadBytes, outputDatabase, outputTableTemplate,
-          submitter, kubernetes, airflow, users);
+          submitter, kubernetes, airflow, users, jobEnv);
     }
 
     DakProperties props() {
@@ -145,6 +149,143 @@ class DeidPropertiesTest {
     assertThat(deid.airflow().auth()).isEqualTo(AirflowAuth.BASIC);
     assertThat(deid.airflow().username()).isEqualTo("dak-trigger");
     assertThat(deid.airflow().password()).isEqualTo("pw-from-env");
+  }
+
+  private static JobEnv.Entry entry(String name, String pattern, String defaultValue) {
+    return new JobEnv.Entry(name, pattern, defaultValue);
+  }
+
+  private static JobEnv jobEnv(JobEnv.Entry... entries) {
+    return new JobEnv(10, List.of(entries));
+  }
+
+  @Nested
+  @DisplayName("danh sách env người gửi phiếu được nhập (dak.deid.job-env)")
+  class JobEnvConfig {
+
+    @Test
+    @DisplayName("không cấu hình thì dùng danh sách mặc định: 5 env, tối đa 10 mục, OUTPUT_DB và OUTPUT_TABLE không có giá trị mặc định tĩnh")
+    void defaults() {
+      JobEnv jobEnv = DeidProperties.defaults().jobEnv();
+
+      assertThat(jobEnv.maxEntries()).isEqualTo(10);
+      assertThat(jobEnv.allowed()).extracting(JobEnv.Entry::name)
+          .containsExactly("OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT");
+      assertThat(jobEnv.find("OUTPUT_DB").orElseThrow().defaultValue()).isNull();
+      assertThat(jobEnv.find("OUTPUT_TABLE").orElseThrow().defaultValue()).isNull();
+      assertThat(jobEnv.find("OUTPUT_MODE").orElseThrow().defaultValue()).isEqualTo("overwrite");
+      assertThat(jobEnv.find("OUTPUT_FORMAT").orElseThrow().defaultValue()).isEqualTo("delta");
+      assertThat(jobEnv.find("ENABLE_HIVE_SUPPORT").orElseThrow().defaultValue()).isEqualTo("true");
+      assertThat(jobEnv.find("NOT_THERE")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("mặc định hợp lệ: mọi giá trị mặc định khớp quy tắc của chính nó")
+    void defaults_areValid() {
+      assertThatCode(() -> valid().props()).doesNotThrowAnyException();
+      for (JobEnv.Entry e : DeidProperties.defaults().jobEnv().allowed()) {
+        if (e.defaultValue() != null) {
+          assertThat(e.defaultValue()).matches(e.pattern());
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("nạp từ thuộc tính kebab-case, danh sách cấu hình thay hẳn danh sách mặc định")
+    void binds_fromKebabCaseProperties() {
+      Map<String, String> source = Map.of(
+          "dak.deid.job-env.max-entries", "3",
+          "dak.deid.job-env.allowed[0].name", "OUTPUT_FORMAT",
+          "dak.deid.job-env.allowed[0].pattern", "delta|hive",
+          "dak.deid.job-env.allowed[0].default-value", "delta",
+          "dak.deid.job-env.allowed[1].name", "OUTPUT_DB",
+          "dak.deid.job-env.allowed[1].pattern", "[a-z0-9_]{1,10}");
+
+      DeidProperties deid = new Binder(new MapConfigurationPropertySource(source)).bind("dak.deid", DeidProperties.class).get();
+
+      assertThat(deid.jobEnv().maxEntries()).isEqualTo(3);
+      assertThat(deid.jobEnv().allowed()).extracting(JobEnv.Entry::name).containsExactly("OUTPUT_FORMAT", "OUTPUT_DB");
+      assertThat(deid.jobEnv().find("OUTPUT_FORMAT").orElseThrow().defaultValue()).isEqualTo("delta");
+      assertThat(deid.jobEnv().find("OUTPUT_DB").orElseThrow().defaultValue()).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"DB_NAME", "TABLE_NAME", "PSEUDO_COLUMNS", "PSEUDO_MODE", "VERIFY", "WAREHOUSE_PATH",
+        "MAPPING_TABLE_PATH", "INPUT_PATH", "INPUT_FORMAT", "INPUT_OPTION_DELIMITER", "CRYPTO_PREFIX_SOURCE",
+        "CRYPTO_KEY_PREFIX_DIR", "VAULT_ADDR", "VAULT_TOKEN", "DAK_ADDR", "DAK_CLIENT_ID", "JAVA_TOOL_OPTIONS", "LD_PRELOAD",
+        "SPARK_LOCAL_DIRS", "HADOOP_CONF_DIR", "KRB5CCNAME", "KRB5_CONFIG", "MY_TOKEN", "API_SECRET", "DB_PASSWORD",
+        "USER_PASSWD", "ENCRYPTION_KEY", "KEYTAB_PATH", "MONKEY"})
+    @DisplayName("env bị cấm trong danh sách được phép làm app không khởi động và thông điệp nêu đúng tên")
+    void forbiddenName_rejected(String name) {
+      Draft d = valid();
+      d.jobEnv = jobEnv(entry(name, "[a-z]+", null));
+
+      assertThatThrownBy(d::props).isInstanceOf(IllegalStateException.class)
+          .hasMessageStartingWith("Invalid DAK mock configuration")
+          .hasMessageContaining("dak.deid.job-env").hasMessageContaining(name).hasMessageContaining("not allowed");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT", "TZ",
+        "MALLOC_ARENA_MAX"})
+    @DisplayName("env bình thường, kể cả OUTPUT_DB, OUTPUT_TABLE và OUTPUT_MODE, được phép đưa vào danh sách")
+    void ordinaryName_accepted(String name) {
+      Draft d = valid();
+      d.jobEnv = jobEnv(entry(name, "[a-z]+", null));
+
+      assertThat(d.props().deid().jobEnv().find(name)).isPresent();
+      assertThat(JobEnv.isForbidden(name)).isFalse();
+    }
+
+    @Test
+    @DisplayName("tên sai dạng, trùng, quy tắc không biên dịch được, giá trị mặc định không khớp quy tắc: đều bị từ chối")
+    void invalidEntries_rejected() {
+      for (String badName : new String[] {"lower", "1ABC", "A-B", "A B", "", "A".repeat(65)}) {
+        assertRejected(valid(), d -> d.jobEnv = jobEnv(entry(badName, "x", null)), "dak.deid.job-env", "name");
+      }
+      assertRejected(valid(), d -> d.jobEnv = jobEnv(entry(null, "x", null)), "dak.deid.job-env", "name");
+      assertRejected(valid(), d -> d.jobEnv = jobEnv(entry("OUTPUT_MODE", "a", null), entry("OUTPUT_MODE", "b", null)),
+          "dak.deid.job-env", "duplicate", "OUTPUT_MODE");
+      assertRejected(valid(), d -> d.jobEnv = jobEnv(entry("OUTPUT_MODE", "(", null)), "dak.deid.job-env", "pattern",
+          "OUTPUT_MODE");
+      assertRejected(valid(), d -> d.jobEnv = jobEnv(entry("OUTPUT_MODE", null, null)), "dak.deid.job-env", "pattern",
+          "OUTPUT_MODE");
+      assertRejected(valid(), d -> d.jobEnv = jobEnv(entry("OUTPUT_MODE", "overwrite|append", "replace")),
+          "dak.deid.job-env", "default-value", "OUTPUT_MODE");
+    }
+
+    @Test
+    @DisplayName("max-entries phải từ 1 đến 50; danh sách rỗng là hợp lệ (không ai nhập được env nào)")
+    void maxEntries_andEmptyList() {
+      assertRejected(valid(), d -> d.jobEnv = new JobEnv(0, List.of()), "dak.deid.job-env.max-entries");
+      assertRejected(valid(), d -> d.jobEnv = new JobEnv(51, List.of()), "dak.deid.job-env.max-entries");
+      Draft ok = valid();
+      ok.jobEnv = new JobEnv(1, List.of());
+      assertThat(ok.props().deid().jobEnv().allowed()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("flow tắt thì bỏ qua kiểm danh sách env")
+    void disabled_skipsTheCheck() {
+      Draft d = valid();
+      d.enabled = false;
+      d.jobEnv = jobEnv(entry("DB_NAME", "x", null));
+
+      assertThatCode(d::props).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("isForbidden: cấm theo tên đúng, tiền tố và từ khoá; không cấm OUTPUT_*")
+    void isForbidden_rules() {
+      assertThat(JobEnv.isForbidden("DB_NAME")).isTrue();
+      assertThat(JobEnv.isForbidden("INPUT_ANYTHING")).isTrue();
+      assertThat(JobEnv.isForbidden("CRYPTO_X")).isTrue();
+      assertThat(JobEnv.isForbidden("SOME_API_TOKEN")).isTrue();
+      assertThat(JobEnv.isForbidden("INPUTS")).isFalse();
+      assertThat(JobEnv.isForbidden("OUTPUT_DB")).isFalse();
+      assertThat(JobEnv.isForbidden("OUTPUT_TABLE")).isFalse();
+      assertThat(JobEnv.isForbidden("OUTPUT_MODE")).isFalse();
+    }
   }
 
   @Nested

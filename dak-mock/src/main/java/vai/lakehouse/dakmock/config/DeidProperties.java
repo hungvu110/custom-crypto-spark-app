@@ -10,8 +10,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
@@ -34,7 +36,8 @@ public record DeidProperties(
     @DefaultValue("noop") Submitter submitter,
     @DefaultValue Kubernetes kubernetes,
     @DefaultValue Airflow airflow,
-    List<PortalUser> portalUsers) {
+    List<PortalUser> portalUsers,
+    @DefaultValue JobEnv jobEnv) {
 
   public static final String DEFAULT_OUTPUT_TABLE_TEMPLATE = "{table}_deid_{yyyyMMdd}_{seq}";
   public static final int MIN_UPLOAD_BYTES = 1024;
@@ -72,6 +75,59 @@ public record DeidProperties(
     BEARER,
     /** HTTP Basic với một user của Airflow (backend {@code airflow.api.auth.backend.basic_auth}). */
     BASIC
+  }
+
+  /**
+   * Danh sách env người gửi phiếu được nhập cho job khử định danh (docs/dak-deid-flow/JOB_ENV_PLAN.md mục 3, 4). Mỗi mục có tên,
+   * quy tắc giá trị (regex khớp toàn bộ) và giá trị mặc định tuỳ chọn. Tên env thuộc nhóm bị cấm ({@link #isForbidden}) không được
+   * nằm trong danh sách: cấu hình như vậy làm ứng dụng không khởi động. {@code OUTPUT_DB} và {@code OUTPUT_TABLE} không có giá trị
+   * mặc định tĩnh vì mock tính khi duyệt phiếu.
+   */
+  public record JobEnv(@DefaultValue("10") int maxEntries, List<Entry> allowed) {
+
+    public static final int DEFAULT_MAX_ENTRIES = 10;
+    public static final int MAX_ENTRIES_LIMIT = 50;
+    /** Tên env hợp lệ. */
+    public static final Pattern NAME = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
+
+    private static final Set<String> FORBIDDEN_NAMES = Set.of("DB_NAME", "TABLE_NAME", "PSEUDO_COLUMNS", "PSEUDO_MODE", "VERIFY",
+        "WAREHOUSE_PATH", "MAPPING_TABLE_PATH");
+    private static final List<String> FORBIDDEN_PREFIXES = List.of("INPUT_", "CRYPTO_", "VAULT_", "DAK_", "JAVA_", "LD_", "SPARK_",
+        "HADOOP_", "KRB5");
+    private static final List<String> FORBIDDEN_WORDS = List.of("SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY");
+
+    /** Một env được phép: {@code defaultValue} là {@code null} nếu không có giá trị mặc định tĩnh. */
+    public record Entry(String name, String pattern, String defaultValue) {}
+
+    public JobEnv {
+      allowed = allowed == null ? defaultAllowed() : List.copyOf(allowed);
+    }
+
+    /** Danh sách mặc định: bảng kết quả, cách ghi, định dạng và hỗ trợ Hive. */
+    public static JobEnv defaults() {
+      return new JobEnv(DEFAULT_MAX_ENTRIES, null);
+    }
+
+    public Optional<Entry> find(String name) {
+      return allowed.stream().filter(e -> e.name() != null && e.name().equals(name)).findFirst();
+    }
+
+    /** Env thuộc nhóm không bao giờ được cho người gửi phiếu nhập (tên đúng, tiền tố hoặc từ khoá bí mật). */
+    public static boolean isForbidden(String name) {
+      String upper = name.toUpperCase(Locale.ROOT);
+      return FORBIDDEN_NAMES.contains(upper)
+          || FORBIDDEN_PREFIXES.stream().anyMatch(upper::startsWith)
+          || FORBIDDEN_WORDS.stream().anyMatch(upper::contains);
+    }
+
+    private static List<Entry> defaultAllowed() {
+      return List.of(
+          new Entry("OUTPUT_DB", "[a-z0-9_]{1,128}", null),
+          new Entry("OUTPUT_TABLE", "[a-z0-9_]{1,128}", null),
+          new Entry("OUTPUT_MODE", "overwrite|append", "overwrite"),
+          new Entry("OUTPUT_FORMAT", "delta|hive|iceberg", "delta"),
+          new Entry("ENABLE_HIVE_SUPPORT", "true|false", "true"));
+    }
   }
 
   /**
@@ -127,6 +183,15 @@ public record DeidProperties(
     }
   }
 
+  /** Cấu hình không khai báo danh sách env của job: dùng danh sách mặc định. */
+  public DeidProperties(boolean enabled, List<Mode> allowedModes, int maxActivePerTeam, int maxUploadBytes,
+                        String outputDatabase, String outputTableTemplate, Submitter submitter, Kubernetes kubernetes,
+                        Airflow airflow, List<PortalUser> portalUsers) {
+    this(enabled, allowedModes, maxActivePerTeam, maxUploadBytes, outputDatabase, outputTableTemplate, submitter,
+        kubernetes, airflow, portalUsers, null);
+  }
+
+  @ConstructorBinding
   public DeidProperties {
     allowedModes = allowedModes == null ? List.of(Mode.HASH) : List.copyOf(allowedModes);
     outputDatabase = outputDatabase == null ? "" : outputDatabase;
@@ -135,6 +200,7 @@ public record DeidProperties(
     kubernetes = kubernetes == null ? new Kubernetes(null, null, null) : kubernetes;
     airflow = airflow == null ? new Airflow(null, null, null, null, null, null, null, null) : airflow;
     portalUsers = portalUsers == null ? List.of() : List.copyOf(portalUsers);
+    jobEnv = jobEnv == null ? JobEnv.defaults() : jobEnv;
   }
 
   /** Cấu hình mặc định: bật, chỉ HASH, gửi job kiểu {@code noop}, chưa có tài khoản nào nên portal chưa dùng được. */
@@ -154,6 +220,7 @@ public record DeidProperties(
     }
     validateLimits();
     validateOutput();
+    validateJobEnv();
     validatePortalUsers(vaultPathTemplate);
     switch (submitter) {
       case NOOP -> { }
@@ -182,6 +249,29 @@ public record DeidProperties(
     require(outputTableTemplate.contains("{table}") && outputTableTemplate.contains("{seq}")
             && OUTPUT_TABLE_TEMPLATE.matcher(outputTableTemplate).matches(),
         "dak.deid.output-table-template must contain {table} and {seq} and otherwise only [a-z0-9_] and {yyyyMMdd}");
+  }
+
+  private void validateJobEnv() {
+    require(jobEnv.maxEntries() >= 1 && jobEnv.maxEntries() <= JobEnv.MAX_ENTRIES_LIMIT,
+        "dak.deid.job-env.max-entries must be between 1 and " + JobEnv.MAX_ENTRIES_LIMIT);
+    Set<String> seen = new HashSet<>();
+    for (JobEnv.Entry e : jobEnv.allowed()) {
+      require(e.name() != null && JobEnv.NAME.matcher(e.name()).matches(),
+          "dak.deid.job-env.allowed[*].name must match " + JobEnv.NAME.pattern());
+      require(!JobEnv.isForbidden(e.name()), "dak.deid.job-env: " + e.name()
+          + " is not allowed (it decides what the job processes or where it gets its keys)");
+      require(seen.add(e.name()), "dak.deid.job-env: duplicate name " + e.name());
+      require(!isBlank(e.pattern()), "dak.deid.job-env." + e.name() + ".pattern is required");
+      Pattern rule;
+      try {
+        rule = Pattern.compile(e.pattern());
+      } catch (PatternSyntaxException ex) {
+        throw new IllegalStateException("Invalid DAK mock configuration: dak.deid.job-env." + e.name()
+            + ".pattern is not a valid regular expression");
+      }
+      require(e.defaultValue() == null || rule.matcher(e.defaultValue()).matches(),
+          "dak.deid.job-env." + e.name() + ".default-value must match its own pattern");
+    }
   }
 
   private void validatePortalUsers(String vaultPathTemplate) {

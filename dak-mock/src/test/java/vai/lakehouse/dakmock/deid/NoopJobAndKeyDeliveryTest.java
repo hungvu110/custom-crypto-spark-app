@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -88,6 +89,20 @@ class NoopJobAndKeyDeliveryTest {
         .contains("table=users_cdr").contains("pseudoColumns=msisdn:HASH,imei:HASH").contains("outputDb=demo_db")
         .contains("outputTable=users_cdr_deid_20261023_7").contains("keySecret=deid-key-2026-000007");
     assertThat(line).doesNotContain("ly do rieng tu").doesNotContain("\n");
+  }
+
+  @Test
+  @DisplayName("noop gửi job ghi log TÊN env của job, không ghi giá trị của chúng")
+  void submit_logsEnvNamesButNotValues() {
+    Map<String, String> env = Map.of("OUTPUT_MODE", "append", "OUTPUT_FORMAT", "iceberg");
+    DeidRequest pending = DeidRequest.created("PYC-2026-000007", T, new NewRequest("team-a", "alice", "demo_db", "users_cdr",
+        List.of(new ColumnSpec("msisdn", Mode.HASH)), null, "ly do rieng tu", new SourceFile("phieu.json", "ab".repeat(32))));
+    DeidRequest request = pending.approved("admin", T, "demo_db", "users_pseudo", env);
+
+    new NoopJobSubmitter().submit(request, "deid-key-2026-000007");
+
+    String line = logs.list.get(0).getFormattedMessage();
+    assertThat(line).contains("envNames=OUTPUT_FORMAT,OUTPUT_MODE").doesNotContain("iceberg").doesNotContain("OUTPUT_MODE=append");
   }
 
   @Test

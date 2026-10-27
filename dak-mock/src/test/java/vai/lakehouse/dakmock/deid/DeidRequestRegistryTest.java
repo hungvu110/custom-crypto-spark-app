@@ -466,7 +466,7 @@ class DeidRequestRegistryTest {
 
   /** Dựng phiếu giống {@code r} nhưng ở trạng thái tuỳ ý, để thử việc registry chặn cạnh không hợp lệ. */
   private static DeidRequest copyWithState(DeidRequest r, State state) {
-    return new DeidRequest(r.requestCode(), state, r.database(), r.table(), r.columns(), r.dagId(), r.purpose(), r.team(),
+    return new DeidRequest(r.requestCode(), state, r.database(), r.table(), r.columns(), r.dagId(), r.purpose(), r.env(), r.team(),
         r.createdBy(), r.createdAt(), r.sourceFile(), r.decidedAt(), r.decidedBy(), r.reasonText(), r.outputDatabase(),
         r.outputTable(), r.keyVersion(), r.jobRef(), r.submitError(), r.jobState(), r.jobFinishedAt());
   }

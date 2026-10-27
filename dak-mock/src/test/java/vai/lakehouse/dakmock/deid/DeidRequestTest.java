@@ -250,4 +250,76 @@ class DeidRequestTest {
     assertThatThrownBy(() -> created().cancelled().jobProgress(JobState.SUCCEEDED, T1))
         .isInstanceOf(IllegalStateException.class);
   }
+
+  private static NewRequest newRequestWithEnv(Map<String, String> env) {
+    NewRequest n = newRequest();
+    return new NewRequest(n.team(), n.createdBy(), n.database(), n.table(), n.columns(), n.dagId(), n.purpose(), n.sourceFile(),
+        env);
+  }
+
+  @Test
+  @DisplayName("phiếu mới giữ env người gửi nhập, sắp theo tên; không nhập thì env rỗng")
+  void created_keepsTheEnv() {
+    DeidRequest withEnv = DeidRequest.created("PYC-2026-000001", T0,
+        newRequestWithEnv(Map.of("OUTPUT_MODE", "append", "OUTPUT_DB", "deid_out")));
+    DeidRequest plain = created();
+
+    assertThat(withEnv.env()).containsExactly(Map.entry("OUTPUT_DB", "deid_out"), Map.entry("OUTPUT_MODE", "append"));
+    assertThat(plain.env()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("env là bản sao bất biến: đổi map gốc hoặc sửa map trả về không ảnh hưởng phiếu")
+  void env_isAnImmutableCopy() {
+    Map<String, String> source = new java.util.HashMap<>(Map.of("OUTPUT_DB", "deid_out"));
+    DeidRequest r = DeidRequest.created("PYC-2026-000001", T0, newRequestWithEnv(source));
+
+    source.put("OUTPUT_MODE", "append");
+
+    assertThat(r.env()).containsOnlyKeys("OUTPUT_DB");
+    assertThatThrownBy(() -> r.env().put("X", "y")).isInstanceOf(UnsupportedOperationException.class);
+  }
+
+  @Test
+  @DisplayName("duyệt với env cuối cùng thay env của phiếu; mọi bước sau giữ nguyên env")
+  void approved_withFinalEnv_replacesTheEnv_andLaterStepsKeepIt() {
+    DeidRequest pending = DeidRequest.created("PYC-2026-000001", T0, newRequestWithEnv(Map.of("OUTPUT_MODE", "append")));
+    Map<String, String> finalEnv = Map.of("OUTPUT_DB", "demo_db", "OUTPUT_TABLE", "t_out", "OUTPUT_MODE", "append");
+
+    DeidRequest approved = pending.approved("admin", T1, "demo_db", "t_out", finalEnv);
+    DeidRequest submitted = approved.submitted(JOB, 3L);
+    DeidRequest failed = approved.submitFailed("vault unavailable");
+    DeidRequest retried = failed.retrying();
+
+    assertThat(approved.env()).isEqualTo(finalEnv);
+    assertThat(approved.outputDatabase()).isEqualTo("demo_db");
+    assertThat(approved.outputTable()).isEqualTo("t_out");
+    assertThat(submitted.env()).isEqualTo(finalEnv);
+    assertThat(failed.env()).isEqualTo(finalEnv);
+    assertThat(retried.env()).isEqualTo(finalEnv);
+    assertThat(pending.env()).containsOnlyKeys("OUTPUT_MODE");
+  }
+
+  @Test
+  @DisplayName("duyệt không truyền env thì env của phiếu giữ nguyên")
+  void approved_withoutFinalEnv_keepsTheEnv() {
+    DeidRequest pending = DeidRequest.created("PYC-2026-000001", T0, newRequestWithEnv(Map.of("OUTPUT_MODE", "append")));
+
+    assertThat(pending.approved("admin", T1, "demo_db", "t_out").env()).containsOnlyKeys("OUTPUT_MODE");
+  }
+
+  @Test
+  @DisplayName("JSON của phiếu chỉ có trường env khi env không rỗng, và env đứng sau purpose")
+  void json_hasEnvOnlyWhenNotEmpty() throws Exception {
+    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+        .findAndRegisterModules();
+
+    String plain = mapper.writeValueAsString(created());
+    String withEnv = mapper.writeValueAsString(DeidRequest.created("PYC-2026-000001", T0,
+        newRequestWithEnv(Map.of("OUTPUT_DB", "deid_out"))));
+
+    assertThat(plain).doesNotContain("\"env\"");
+    assertThat(withEnv).contains("\"env\":{\"OUTPUT_DB\":\"deid_out\"}");
+    assertThat(withEnv.indexOf("\"purpose\"")).isLessThan(withEnv.indexOf("\"env\""));
+  }
 }

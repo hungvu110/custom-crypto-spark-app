@@ -347,6 +347,7 @@ class DeidPortalApiTest {
       denied.add(get(token, "/mock-portal/deid-requests/" + code));
       denied.add(cancel(token, code));
       denied.add(get(token, "/mock-portal/deid-dags"));
+      denied.add(get(token, "/mock-portal/deid-job-env"));
     }
 
     for (ResponseEntity<String> response : denied) {
@@ -484,6 +485,23 @@ class DeidPortalApiTest {
 
     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     assertThat(body(response).get("dagIds")).isEmpty();
+  }
+
+  @Test
+  void deidJobEnv_listsTheEnvTheRequesterMayEnter() {
+    ResponseEntity<String> response = get(ALICE, "/mock-portal/deid-job-env");
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    JsonNode body = body(response);
+    assertThat(body.get("maxEntries").asInt()).isEqualTo(10);
+    List<String> names = new ArrayList<>();
+    body.get("env").forEach(e -> names.add(e.get("name").asText()));
+    assertThat(names).containsExactly("OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT");
+    JsonNode mode = body.get("env").get(2);
+    assertThat(mode.get("pattern").asText()).isEqualTo("overwrite|append");
+    assertThat(mode.get("defaultValue").asText()).isEqualTo("overwrite");
+    assertThat(body.get("env").get(0).has("defaultValue")).as("OUTPUT_DB is computed when approving").isFalse();
+    assertThat(response.getBody()).doesNotContain("DB_NAME").doesNotContain("VAULT").doesNotContain("CRYPTO");
   }
 
   // ---------------------------------------------------------------- audit

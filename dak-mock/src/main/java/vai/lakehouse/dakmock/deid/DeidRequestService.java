@@ -58,9 +58,9 @@ public class DeidRequestService {
     try {
       DeidUpload upload = parser.parse(originalFilename, content);
       DeidRequest created = registry.create(new NewRequest(user.team(), user.username(), upload.database(),
-          upload.table(), upload.columns(), upload.dagId(), upload.purpose(), upload.sourceFile()));
+          upload.table(), upload.columns(), upload.dagId(), upload.purpose(), upload.sourceFile(), upload.env()));
       DeidAudit.transition(created, DeidAudit.NONE, State.PENDING_APPROVAL, user.username(),
-          " fileSha256=" + created.sourceFile().sha256());
+          " fileSha256=" + created.sourceFile().sha256() + DeidAudit.envSummary(created.env()));
       return created;
     } catch (DakApiException e) {
       DeidAudit.error("upload", user.username(), user.team(), DeidAudit.NONE, e.error());
@@ -106,6 +106,11 @@ public class DeidRequestService {
   /** {@code dagId} người dùng được chọn: chỉ có khi gửi job bằng Airflow, không thì rỗng. Không sửa được từ ngoài. */
   public List<String> allowedDagIds() {
     return deid.submitter() == Submitter.AIRFLOW ? deid.airflow().allowedDagIds() : List.of();
+  }
+
+  /** Env của job người gửi phiếu được nhập (cho giao diện dựng form): tên, quy tắc giá trị, giá trị mặc định. */
+  public DeidProperties.JobEnv allowedJobEnv() {
+    return deid.jobEnv();
   }
 
   private String checkedCode(PortalUser user, String action, String code) {

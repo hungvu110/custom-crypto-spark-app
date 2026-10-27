@@ -34,7 +34,7 @@ public class DeidJobConfig {
     if (!isActive(deid)) {
       return new NoopJobSubmitter();
     }
-    return new AirflowJobSubmitter(deid.airflow(), new AirflowTokens(deid.airflow(), Clock.systemUTC()));
+    return new AirflowJobSubmitter(deid, new AirflowTokens(deid.airflow(), Clock.systemUTC()));
   }
 
   /** {@code true} khi flow bật và dùng Airflow; {@code false} cho noop; ném lỗi khi submitter không được hỗ trợ. */

@@ -98,6 +98,16 @@ data:
         enabled: true
         allowed-modes: [HASH]
         submitter: noop # đổi thành airflow khi đã làm các bước ở đầu file
+        # Env của job do người gửi phiếu nhập (docs/dak-deid-flow/JOB_ENV_PLAN.md). Không khai thì dùng danh sách mặc định (5 env);
+        # khai thì THAY HẲN. Phải khớp bảng JOB_ENV trong DAG (k8s/airflow/dags/). Tên bị cấm (DB_NAME, INPUT_*, CRYPTO_*, ...) làm mock không khởi động.
+        #job-env:
+        #  max-entries: 10
+        #  allowed:
+        #    - {name: OUTPUT_DB, pattern: "[a-z0-9_]{1,128}"}
+        #    - {name: OUTPUT_TABLE, pattern: "[a-z0-9_]{1,128}"}
+        #    - {name: OUTPUT_MODE, pattern: "overwrite|append", default-value: overwrite}
+        #    - {name: OUTPUT_FORMAT, pattern: "delta|hive|iceberg", default-value: delta}
+        #    - {name: ENABLE_HIVE_SUPPORT, pattern: "true|false", default-value: "true"}
         kubernetes:
           # Namespace tạo Secret key; PHẢI là namespace nơi DAG tạo SparkApplication (Pod chỉ mount được Secret cùng namespace).
           namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy

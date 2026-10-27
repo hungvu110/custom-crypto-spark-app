@@ -1,0 +1,10 @@
+{
+  "database": "demo_db",
+  "table": "users_cdr_2",
+  "columns": [{ "column": "name", "mode": "HASH" }],
+  "dagId": "deid_pseudonymize_table",
+  "env": {
+    "OUTPUT_TABLE": "users_cdr_2"
+  },
+  "purpose": "The output table must differ from the source table, because the job writes to it"
+}
