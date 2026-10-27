@@ -4,9 +4,9 @@ Ngày: 2026-10-22. Phạm vi: `key-prefix-lib` (client gọi DAK). Phần dùng 
 [../cdr-crypto/CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md](../cdr-crypto/CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md); mock DAK để test ở
 [../dak-mock-api/DAK_MOCK_BY_COLUMN_PLAN.md](../dak-mock-api/DAK_MOCK_BY_COLUMN_PLAN.md).
 
-Hợp đồng API lấy từ trao đổi với DAK: [dak_response/PHAN-HOI-YC-DAK-VONG-2.md](dak_response/PHAN-HOI-YC-DAK-VONG-2.md) §4 (hình dạng response),
-[VONG-4](dak_response/PHAN-HOI-YC-DAK-VONG-4.md) (`reason`, `REJECTED`, bảng `tag`/`onMissing`), [VONG-6](dak_response/PHAN-HOI-YC-DAK-VONG-6.md)
-(key cột không bao giờ đổi, hai tầng trạng thái).
+Hợp đồng API: **[API-LAY-KEY-DUONG-DAN-COT.md](API-LAY-KEY-DUONG-DAN-COT.md)** (DAK, 2026-10-27) mục 3 — bản tổng hợp thay thế mọi bản trao
+đổi trước. Các vòng [VONG-2](dak_response/PHAN-HOI-YC-DAK-VONG-2.md), [VONG-4](dak_response/PHAN-HOI-YC-DAK-VONG-4.md),
+[VONG-6](dak_response/PHAN-HOI-YC-DAK-VONG-6.md) giữ lại làm lịch sử đàm phán.
 
 **Trạng thái (2026-10-22):** K1–K6 xong (`mvn -pl key-prefix-lib test`: 121 test). K7 (chạy thật với dak-mock trên cluster) chưa
 làm, cần bản `cdr-crypto-udf` key theo cột để có bên gọi.
@@ -23,7 +23,8 @@ Trước đây mỗi **bảng** có một `keyPrefix`, lấy qua `GET /api/v1/ke
 | Key có đổi không      | **Không bao giờ** (DAK xác nhận vòng 6). Lib không dùng `keyVersion` để chọn hay lưu key, chỉ ghi log   |
 | Dữ liệu cũ            | Không có (mới chỉ test). Không có migration, không cần fallback về key cấp bảng                         |
 | Luồng `/{db}/{table}` | **Giữ nguyên** trong lib cho `column-crypto-lib` (`column_encrypt`), không đụng tới                     |
-| `by-file`             | Ngoài phạm vi                                                                                           |
+| `by-path` (trước gọi `by-file`) | Ngoài phạm vi plan này; đã làm riêng (`PathKeySource`, xem [key-prefix-lib/README.md](../../key-prefix-lib/README.md)) |
+| `onMissing` khi chuẩn hoá | DAK đã xác nhận (hợp đồng mục 3.2): mã hoá → `request`, giải mã → `none`. Job silver và `cdr_encrypt` đều `request`. Job batch chờ duyệt bằng `WaitingColumnKeySource` (`dak.pendingWait.*`, mặc định tắt) |
 
 ## 1. Hợp đồng `by-column` mà lib cài đặt
 
@@ -194,7 +195,7 @@ Mục tiêu coverage ≥ 80% cho các lớp mới.
 
 | Rủi ro / việc mở                                                                                                              | Cách xử lý                                                                                                    |
 | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Bản hợp đồng đính kèm vòng 6 (`YEU-CAU-TU-SA-YC.md` bản vòng 3) **chưa có trong repo**; tên trường JSON lấy từ ví dụ vòng 2 §4 | dak-mock là bản cài đặt tham chiếu của hợp đồng này. Gom toàn bộ phần parse vào một hàm của `DakColumnKeySource`; khi có bản chính thức thì đối chiếu và sửa lib cùng mock |
+| ~~Bản hợp đồng chính thức chưa có trong repo~~ — **đã có**: [API-LAY-KEY-DUONG-DAN-COT.md](API-LAY-KEY-DUONG-DAN-COT.md) (2026-10-27). Đã đối chiếu mục 3: tên trường, `state`, `reason`, `complete`, mã lỗi khớp lib và mock | Không cần sửa `by-column`; thêm gợi ý cho `429` |
 | DAK trả thêm field mới                                                                                                        | Bỏ qua field lạ (giống luồng hiện có)                                                                         |
 | Nhiều lời gọi `cdr_encrypt` trong một query tạo nhiều request khi cache trống                                                 | Cache theo cột; DataFrame API gom các cột của cùng bảng thành một lời gọi (xem plan cdr-crypto)               |
 | Lộ secret của client nội bộ là lộ key mọi cột                                                                                 | Secret chỉ ở K8s Secret, không log; rotate bằng client thứ hai theo DAK                                       |

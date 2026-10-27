@@ -15,7 +15,7 @@ mvn -B -Pcdr-crypto clean package    # build TẤT CẢ: thêm cdr-crypto-udf (c
 | Lệnh                                | Module được build                                                | Cần `DataLakeSecurity_jv8.jar` | Dùng khi                                                 |
 | ----------------------------------- | ---------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------- |
 | `mvn -B clean package`              | `key-prefix-lib`, `column-crypto-lib`, `spark-app`, `hdfs-load-stress-test`, `pseudonym-udf`, `pseudonymize-table-app`, `pseudonym-verify-utils` | Không | Image `no-crypto` / `column-crypto`, phát triển hằng ngày |
-| `mvn -B -Pcdr-crypto clean package` | 3 module trên + `cdr-crypto-udf`                                 | Có                             | Trước khi `docker build --target cdr-crypto`             |
+| `mvn -B -Pcdr-crypto clean package` | các module trên + `cdr-crypto-udf` + `silver-ingest-app`         | Có                             | Trước khi `docker build --target cdr-crypto` hoặc build image `silver-ingest-app` |
 
 `docker build --target cdr-crypto` cần thêm `cdr-crypto-udf/target/*.jar` và `DataLakeSecurity_jv8.jar` ở thư mục gốc, nên phải build bằng lệnh có `-Pcdr-crypto`.
 

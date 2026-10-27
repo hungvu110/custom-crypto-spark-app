@@ -5,7 +5,8 @@ test để `key-prefix-lib` ([../key-access/DAK_BY_COLUMN_CLIENT_PLAN.md](../key
 ([../cdr-crypto/CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md](../cdr-crypto/CDR_CRYPTO_PER_COLUMN_KEY_PLAN.md)) chạy được đầu-cuối trước khi DAK thật
 xong nhánh nội bộ.
 
-Hợp đồng mô phỏng theo trao đổi với DAK ([../key-access/dak_response/](../key-access/dak_response/), vòng 2, 4, 6). Mock chỉ mô phỏng **những gì
+Hợp đồng mô phỏng theo [../key-access/API-LAY-KEY-DUONG-DAN-COT.md](../key-access/API-LAY-KEY-DUONG-DAN-COT.md) (bản tổng hợp mới nhất của DAK,
+thay các vòng trao đổi trước trong [../key-access/dak_response/](../key-access/dak_response/)). Mock chỉ mô phỏng **những gì
 bên gọi thấy được**, không mô phỏng thiết kế nội bộ của DAK.
 
 ## 0. Mock làm gì và không làm gì
@@ -15,7 +16,8 @@ bên gọi thấy được**, không mô phỏng thiết kế nội bộ của D
 | `GET /api/v1/keys/by-column` đúng hình dạng request/response/mã lỗi của hợp đồng  | Phiếu PYC: grant của client team khai tĩnh trong `dak.grants` |
 | Hai loại client: **nội bộ** (`tag=internal`) và **team**                          | Giao diện quản trị, phiếu PYC, cảnh báo hết hạn               |
 | YC: `PENDING` → tạo key hoặc từ chối; giới hạn 50 YC mở; `REJECTED` dính theo cột | DB: YC giữ trong bộ nhớ, mất khi pod restart                  |
-| Key cột lưu ở Vault KV v2, **ghi với `cas=0`** nên không bao giờ ghi đè           | Rate limit, `by-file`                                         |
+| Key cột lưu ở Vault KV v2, **ghi với `cas=0`** nên không bao giờ ghi đè           | Rate limit (`429`)                                            |
+| `by-path` (key theo đường dẫn): xem [dak-mock/README.md](../../dak-mock/README.md) mục 2.3 |                                                  |
 | Endpoint quản trị riêng của mock để giả lập "người có quyền bên DAK"              |                                                               |
 | Endpoint cũ `GET /api/v1/keys/{database}/{table}` **giữ nguyên**                  |                                                               |
 

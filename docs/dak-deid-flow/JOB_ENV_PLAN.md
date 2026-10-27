@@ -110,14 +110,14 @@ Ghi chú triển khai E1 đến E5: tên cấu hình của giá trị mặc đ�
 `JobEnvPolicy` là bộ kiểm dùng chung, phiếu có thêm trường `env` (đứng sau `purpose` trong JSON, bỏ qua khi rỗng). Lúc gửi phiếu `env` chỉ chứa những gì người gửi nhập; lúc duyệt
 mock thay bằng env cuối cùng (đã điền mặc định). Test hiện có: 609, tất cả qua.
 
-### 7.2 Ở DAG mẫu (`dak-mock/k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py`)
+### 7.2 Ở DAG mẫu (`airflow/dags/sample_dag_deid_pseudonymize_table.py`)
 
 | # | Việc | Cách kiểm | Trạng thái |
 | --- | --- | --- | --- |
 | A1 | Thêm một bảng `JOB_ENV` trong DAG, mỗi env có giá trị mặc định (nếu có) và quy tắc giá trị, khớp với danh sách ở mock | Test pytest cho từng trường hợp ở A2 | Đã làm xong (2026-10-26) |
 | A2 | `validate_conf` kiểm `conf.env`: phải là object, mọi tên nằm trong `JOB_ENV`, mọi giá trị khớp quy tắc, `OUTPUT_DB`/`OUTPUT_TABLE` không trùng `database`/`table` của phiếu | Hợp lệ; thiếu `env`; tên lạ; giá trị sai; `env` không phải object; đích trùng bảng nguồn | Đã làm xong (2026-10-26) |
 | A3 | `build_spec`: với mỗi env trong `JOB_ENV`, luôn sinh một dòng env cho driver, giá trị lấy từ `conf.env`, thiếu thì dùng mặc định. Bỏ `OUTPUT_DB`, `OUTPUT_TABLE`, `OUTPUT_MODE`, `ENABLE_HIVE_SUPPORT`, `OUTPUT_FORMAT` cố định cũ. Giữ `render_template_as_native_obj=False` | Chạy thử phần tạo spec mà không cần Airflow: mọi giá trị env là chuỗi, đủ mọi env | Đã làm xong (2026-10-26) |
-| A4 | Thêm `dak-mock/k8s/airflow/tests/test_deid_dag.py` (unittest của Python, giả lập module `airflow`, chạy được cả bằng pytest) để chạy tự động A2 và A3 | `python3 -B -m unittest discover -s dak-mock/k8s/airflow/tests` | Đã làm xong (2026-10-26) |
+| A4 | Thêm `airflow/tests/test_deid_dag.py` (unittest của Python, giả lập module `airflow`, chạy được cả bằng pytest) để chạy tự động A2 và A3 | `python3 -B -m unittest discover -s airflow/tests` | Đã làm xong (2026-10-26) |
 
 Chạy tay DAG (không qua DAK) vẫn dùng được: không có `conf` thì DAG dùng các giá trị mặc định có sẵn trong file, như hiện nay.
 
@@ -202,6 +202,6 @@ Job còn nhận `yyyyMMddHHmm` cho `INPUT_FROM` và `INPUT_TO`, nhưng chỉ dù
 | A5 | Thêm ba env vào bảng `JOB_ENV`; chỉ đưa vào driver khi có trong `conf.env` (hoặc đặt giá trị rỗng, job coi rỗng là không đặt, cần xác nhận lại với `JobConfig`) | Test render: có và không có khoảng |
 | A6 | `check_conf` kiểm chéo giống E13 | Test từng quy tắc |
 | A7 | `OUTPUT_MODE` mặc định `overwrite-partitions` khi có khoảng (chạy tay) | Test render |
-| A8 | Cập nhật test Python | `python3 -B -m unittest discover -s dak-mock/k8s/airflow/tests` |
+| A8 | Cập nhật test Python | `python3 -B -m unittest discover -s airflow/tests` |
 
 **Thứ tự:** J1 → J5 (job), sau đó E12 → E17 và A5 → A8. Khi triển khai: **image job mới trước**, rồi DAG và mock mới **cùng lúc**. Chỉ bật các env ngày giờ ở DAK khi job đã là bản mới.

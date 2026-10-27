@@ -149,7 +149,8 @@ hợp đồng API: `docs/key-access/DAK_API_SPEC.md`.
 ## Key theo cột qua DAK `by-column` (`ColumnKeySource`)
 
 Ngoài key cấp **bảng** ở trên, `key-prefix-lib` có nguồn key cấp **cột**: mỗi cột của bảng một key, lấy qua
-`GET <DAK_ADDR>/api/v1/keys/by-column`. Thiết kế: [`DAK_BY_COLUMN_CLIENT_PLAN.md`](DAK_BY_COLUMN_CLIENT_PLAN.md); mock để test:
+`GET <DAK_ADDR>/api/v1/keys/by-column`. Hợp đồng: [`API-LAY-KEY-DUONG-DAN-COT.md`](API-LAY-KEY-DUONG-DAN-COT.md) mục 3; thiết kế:
+[`DAK_BY_COLUMN_CLIENT_PLAN.md`](DAK_BY_COLUMN_CLIENT_PLAN.md); mock để test:
 [`dak-mock/README.md`](../../dak-mock/README.md) mục 2.1.
 
 > **Bên dùng:** `cdr_encrypt`/`cdr_decrypt` (4 tham số) và `CdrCrypto` DataFrame API của `cdr-crypto-udf` đọc nguồn này
@@ -171,6 +172,17 @@ Hai cấu hình mới (đọc chung bởi nguồn `dak` của cả key bảng l�
 | ------------ | --------------------------- | ---------------- | --------------------------------------------------------------------------------------------- |
 | `dak.tag`    | `spark.cdrcrypto.dak.tag`    | `DAK_TAG`        | Client nội bộ: `internal`. Client team: để trống. Chỉ chữ thường, số, `_`, `-`               |
 | `dak.caller` | `spark.cdrcrypto.dak.caller` | `DAK_CALLER`     | Tuỳ chọn. Gửi làm header `X-Dak-Caller` (tên engine/job), DAK chỉ dùng để ghi audit. `[A-Za-z0-9._-]{1,128}` |
+
+Chờ admin DAK duyệt yêu cầu key cột (cột `PENDING`), chỉ cho job batch — mặc định **tắt** để câu lệnh SQL không bị treo:
+
+| Key logic | sql-engine | SparkApplication | Ý nghĩa |
+| --- | --- | --- | --- |
+| `dak.pendingWait.timeoutSeconds` | `spark.cdrcrypto.dak.pendingWait.timeoutSeconds` | `DAK_PENDING_WAIT_TIMEOUT_SECONDS` | Chờ tối đa bao lâu, `0..86400`, mặc định `0` = không chờ |
+| `dak.pendingWait.initialSeconds` | `spark.cdrcrypto.dak.pendingWait.initialSeconds` | `DAK_PENDING_WAIT_INITIAL_SECONDS` | Lần gọi lại đầu sau bao lâu, mặc định `30` |
+| `dak.pendingWait.multiplier` | `spark.cdrcrypto.dak.pendingWait.multiplier` | `DAK_PENDING_WAIT_MULTIPLIER` | Hệ số nhân mỗi lần, `1..10`, mặc định `2` |
+| `dak.pendingWait.maxIntervalSeconds` | `spark.cdrcrypto.dak.pendingWait.maxIntervalSeconds` | `DAK_PENDING_WAIT_MAX_INTERVAL_SECONDS` | Tối đa mỗi lần chờ, mặc định `300` |
+
+Chỉ chờ khi mọi cột chưa dùng được đều `PENDING`; cột `REJECTED`, `DISABLED`, `MISSING` báo lỗi ngay.
 
 Giá trị sai định dạng làm lib báo lỗi cấu hình ngay khi dựng nguồn (thông báo nêu tên key, không in lại giá trị).
 

@@ -181,8 +181,8 @@ Giao diện nên cho người dùng chọn `dagId` từ danh sách được phé
 
 `env` là một object `TÊN: "giá trị"`. Giá trị luôn là **chuỗi**. Người gửi phiếu **không bắt buộc** nhập gì; env nào không nhập thì DAK điền giá trị mặc định lúc duyệt.
 
-> **Phụ thuộc vào job:** ba env `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS` (khoảng ngày và giờ) cần job `pseudonymize-table-app` hỗ trợ lọc theo cột `date` và `hour` **trên nguồn là bảng**.
-> Phiên bản job hiện tại chỉ cho dùng chúng với nguồn là thư mục và báo lỗi cấu hình với nguồn là bảng; phần này đang được bổ sung vào job. Chỉ bật ba env này ở DAK khi job đã được cập nhật.
+> **Phụ thuộc vào job:** ba env `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS` (khoảng ngày và giờ) cần job `pseudonymize-table-app` bản có lọc theo cột `date` và `hour` **trên nguồn là bảng**.
+> Bản job này đã được viết và kiểm thử; job bản cũ báo lỗi cấu hình (exit 2) với nguồn là bảng. SA sẽ báo cho DAK khi **từng môi trường** (staging, production) đã có job mới và DAG mới (hai thứ được nâng cùng lúc). DAK chỉ đưa ba env này vào danh sách được phép của môi trường đó khi nhận được thông báo; trước đó giữ chúng tắt.
 
 **Các env người gửi phiếu được nhập** (đây là danh sách mặc định, DAK có thể cấu hình thêm bớt, xem mục 11):
 
@@ -384,9 +384,9 @@ Hiện tại DAK gửi job bằng cách **trigger một DAG của Airflow 2.x** 
 DAK **kiểm lại `env`** với danh sách env được phép hiện hành và quy tắc "bảng kết quả khác bảng nguồn" ngay trước khi gọi Airflow. Sai thì phiếu vào `SUBMIT_FAILED` với `submitError = "invalid job parameters"`, không gọi mạng.
 
 **Xác thực với Airflow:** do DAK và bên vận hành thống nhất. Airflow 2.8 hiện chỉ bật hai cách đăng nhập cho REST API là `basic_auth` và `session` nên không nhận Bearer token Keycloak.
-Cách đang dùng: một **user Airflow riêng cho DAK**, quyền tối thiểu (đọc DAG, tạo dag run), gọi bằng HTTP Basic. Dùng Bearer token Keycloak chỉ được khi Airflow bật thêm một backend nhận loại token đó.
+Cách đang dùng: một **user Airflow riêng cho DAK**, quyền tối thiểu (đọc DAG, tạo dag run), gọi bằng HTTP Basic. Mật khẩu DAK nạp qua biến môi trường `AIRFLOW_PASSWORD` (lấy từ Secret Kubernetes); tên user là cấu hình thường, không phải bí mật. Dùng Bearer token Keycloak chỉ được khi Airflow bật thêm một backend nhận loại token đó.
 
-**7.4 DAG phải làm đúng những điều sau** (mẫu đầy đủ: `dak-mock/k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py`):
+**7.4 DAG phải làm đúng những điều sau** (mẫu đầy đủ: `airflow/dags/sample_dag_deid_pseudonymize_table.py`):
    - Đặt tên SparkApplication bằng `dag_run_id`, tạo nó ở **cùng namespace với Secret key**.
    - Mount Secret có tên `conf.keySecretName` vào `/etc/pseudonym-keys`, đặt nguồn key `file`.
    - Các env `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS` chỉ có trong `conf.env` khi người gửi phiếu nhập; không có thì job không được đặt chúng và xử lý cả bảng.
@@ -537,7 +537,7 @@ Các giá trị sau do DAK cấu hình, không do người dùng nhập. Cột "
 | Số env tối đa một phiếu | Mục 2.2 | 10 | `dak.deid.job-env.max-entries` |
 | Namespace tạo Secret key | **Phải trùng namespace nơi DAG tạo SparkApplication**, vì Pod chỉ mount được Secret cùng namespace | không có | `dak.deid.kubernetes.namespace` |
 | Địa chỉ và cách xác thực Airflow | Mục 7 | không có | `dak.deid.airflow.*` |
-| Vị trí key bảng ở Vault | Mỗi bảng một secret, field `keyPrefix` | `kv/hla-datalake/datalake/spark-application/{database}.{table}` | `dak.vault.path-template` |
+| Vị trí key bảng ở Vault | Do **DAK** quyết định, ở kho riêng của DAK (không dùng path cũ `spark-application/*`). Mỗi bảng một secret, field `keyPrefix` là base64 chuẩn của đúng 32 byte | do DAK xác nhận | `dak.vault.path-template` (mock chỉ mượn path cũ để chạy thử, không phải đặc tả) |
 
 ## 12. Chỉ có ở bản mock
 
