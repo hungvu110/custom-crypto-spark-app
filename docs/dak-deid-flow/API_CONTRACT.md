@@ -181,15 +181,36 @@ Giao diện nên cho người dùng chọn `dagId` từ danh sách được phé
 
 `env` là một object `TÊN: "giá trị"`. Giá trị luôn là **chuỗi**. Người gửi phiếu **không bắt buộc** nhập gì; env nào không nhập thì DAK điền giá trị mặc định lúc duyệt.
 
+> **Phụ thuộc vào job:** ba env `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS` (khoảng ngày và giờ) cần job `pseudonymize-table-app` hỗ trợ lọc theo cột `date` và `hour` **trên nguồn là bảng**.
+> Phiên bản job hiện tại chỉ cho dùng chúng với nguồn là thư mục và báo lỗi cấu hình với nguồn là bảng; phần này đang được bổ sung vào job. Chỉ bật ba env này ở DAK khi job đã được cập nhật.
+
 **Các env người gửi phiếu được nhập** (đây là danh sách mặc định, DAK có thể cấu hình thêm bớt, xem mục 11):
 
 | Tên | Ý nghĩa | Giá trị hợp lệ | Nếu không nhập |
 | --- | --- | --- | --- |
 | `OUTPUT_DB` | Database chứa bảng kết quả | `[a-z0-9_]{1,128}` (chữ thường, số, gạch dưới) | Database của bảng nguồn, hoặc một database cố định do DAK cấu hình |
 | `OUTPUT_TABLE` | Tên bảng kết quả | `[a-z0-9_]{1,128}` | DAK tự đặt lúc duyệt: `{bảng nguồn}_deid_{yyyyMMdd}_{số}`, ví dụ `users_cdr_2_deid_20261023_7` |
-| `OUTPUT_MODE` | Cách ghi vào bảng kết quả | `overwrite` hoặc `append` | `overwrite` |
+| `OUTPUT_MODE` | Cách ghi vào bảng kết quả | `overwrite`, `append` hoặc `overwrite-partitions` | `overwrite-partitions` nếu phiếu có `INPUT_FROM`, `INPUT_TO` hoặc `INPUT_HOURS`; ngược lại `overwrite` |
 | `OUTPUT_FORMAT` | Định dạng bảng kết quả | `delta`, `hive` hoặc `iceberg` | `delta` |
 | `ENABLE_HIVE_SUPPORT` | Bật hỗ trợ Hive | `true` hoặc `false` | `true` |
+| `INPUT_FROM` | Ngày (giờ) bắt đầu cần khử định danh, **tính cả đầu** | `yyyyMMdd` hoặc `yyyyMMddHH` (ví dụ `20261012`, `2026101218`) | Không đặt: không giới hạn đầu |
+| `INPUT_TO` | Ngày (giờ) kết thúc, **tính cả cuối** | như `INPUT_FROM` | Không đặt: không giới hạn cuối |
+| `INPUT_HOURS` | Chỉ lấy các giờ này trong **mỗi ngày** của khoảng | `18` (một giờ) hoặc `6-18` (từ giờ 6 đến giờ 18), giờ từ 0 đến 23 | Không đặt: lấy mọi giờ |
+
+**Khoảng ngày và giờ (`INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS`).** Khử định danh thường chạy theo ngày hoặc theo giờ, nên người gửi phiếu có thể giới hạn dữ liệu cần xử lý. Job chỉ đọc các partition `(date, hour)` nằm trong khoảng.
+**Bảng nguồn phải có hai cột partition `date` (chuỗi `yyyyMMdd`) và `hour` (chuỗi `HH`, ví dụ `05`).** Bảng thiếu hai cột này thì job lỗi. **Không đặt cả ba env thì job xử lý cả bảng**, như trước đây.
+
+| Người gửi phiếu nhập | Dữ liệu được xử lý |
+| --- | --- |
+| `INPUT_FROM=20261012`, `INPUT_TO=20261012` | Cả ngày 12 |
+| `INPUT_FROM=20261012`, `INPUT_TO=20261014` | Ba ngày 12, 13, 14 |
+| `INPUT_FROM=2026101218`, `INPUT_TO=2026101218` | Đúng một giờ: 18h ngày 12 |
+| `INPUT_FROM=2026101218`, `INPUT_TO=2026101306` | Liên tục từ 18h ngày 12 đến 06h ngày 13 |
+| `INPUT_FROM=20261012`, `INPUT_TO=20261014`, `INPUT_HOURS=6-8` | Giờ 06 đến 08 của **mỗi** ngày 12, 13, 14 |
+| Chỉ `INPUT_HOURS=0-0` | Giờ 00 của **mọi** ngày trong bảng |
+
+Khi có khoảng ngày hoặc giờ, bảng kết quả được **partition theo `(date, hour)`**, và cách ghi mặc định là `overwrite-partitions`: chạy lại cùng khoảng chỉ thay đúng các partition đó, không xoá ngày và giờ khác, không nhân đôi dữ liệu.
+Nếu bảng kết quả đã tồn tại với kiểu partition khác thì job lỗi; khi đó đổi `OUTPUT_TABLE` hoặc xoá bảng cũ.
 
 Trong tên mặc định của `OUTPUT_TABLE`: `yyyyMMdd` là ngày duyệt theo giờ UTC, `số` là phần số cuối của mã phiếu bỏ số 0 đứng đầu (`PYC-2026-000007` cho `7`).
 
@@ -197,6 +218,9 @@ Trong tên mặc định của `OUTPUT_TABLE`: `yyyyMMdd` là ngày duyệt theo
 - `env` phải là một object, tối đa **10 mục**.
 - Mỗi giá trị là chuỗi, tối đa **256 ký tự**, không có ký tự xuống dòng hay ký tự điều khiển, và khớp đúng quy tắc của tên đó. **Giá trị phải đúng ngay từ đầu**: ví dụ `OUTPUT_DB` viết hoa bị từ chối, DAK không tự sửa thành chữ thường.
 - Tên **không có trong danh sách** bị từ chối bằng cùng một thông điệp: `env name is not allowed`. Không liệt kê danh sách được phép trong thông điệp lỗi.
+- **Quy tắc riêng của khoảng ngày và giờ** (kiểm ngay lúc gửi phiếu, lỗi nằm ở `env.<TÊN>`): `INPUT_FROM` và `INPUT_TO` phải là ngày có thật và giờ từ 00 đến 23; thiếu giờ thì `INPUT_FROM` hiểu là giờ 00 và `INPUT_TO` hiểu là giờ 23;
+  khi có cả hai thì `INPUT_FROM` không được lớn hơn `INPUT_TO`. `INPUT_HOURS` có hai số thì số đầu không được lớn hơn số sau.
+- **`OUTPUT_MODE=overwrite-partitions` chỉ hợp lệ khi phiếu có ít nhất một trong `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS`**, vì chế độ này cần biết partition nào để thay. Vi phạm thì lỗi ở `env.OUTPUT_MODE`.
 - **Bảng kết quả không được trùng bảng nguồn.** Cặp (`OUTPUT_DB`, `OUTPUT_TABLE`) không được bằng cặp (`database`, `table`) của phiếu. Nếu không nhập `OUTPUT_DB` thì dùng database mặc định (xem bảng trên) để so. Lý do: job ghi vào bảng kết quả, ghi nhầm vào bảng nguồn sẽ làm hỏng dữ liệu gốc. Lỗi nằm ở `env.OUTPUT_TABLE`.
 - Lỗi `env` nằm trong `problems[]` (mục 2.4) với `field` là `env.<TÊN>`, hoặc `env` nếu sai ở mức cả object. Thông điệp lỗi **không lặp lại** giá trị người dùng đã nhập.
 
@@ -207,20 +231,21 @@ Trong tên mặc định của `OUTPUT_TABLE`: `yyyyMMdd` là ngày duyệt theo
 | `DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS` | Chính là bảng và cột trên phiếu mà admin đã duyệt. DAK lấy từ phiếu |
 | `PSEUDO_MODE`, `VERIFY` | Cách khử định danh (chỉ `HASH`) và bước đối chiếu sau khi ghi. Cố định |
 | `WAREHOUSE_PATH` | Nơi lưu bảng của môi trường. Cố định |
-| `INPUT_*`, `MAPPING_TABLE_PATH` | Cho job đọc file hoặc thư mục bất kỳ trên HDFS |
+| `INPUT_*` (trừ `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS`), `MAPPING_TABLE_PATH` | Cho job đọc file hoặc thư mục bất kỳ trên HDFS (`INPUT_PATH`, `INPUT_FORMAT`...) |
 | `CRYPTO_*`, `VAULT_*`, `DAK_*` | Quyết định job lấy key từ đâu |
 | `JAVA_*`, `LD_*`, `SPARK_*`, `HADOOP_*`, `KRB5*` | Cấu hình bên trong container, nơi có keytab |
 | Tên có chứa `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `KEY` | Tránh để bí mật nằm trong phiếu, trong `conf` của Airflow và trong log |
 
-Ký hiệu `*` nghĩa là "bắt đầu bằng" (`INPUT_*` gồm `INPUT_PATH`, `INPUT_FORMAT`...). "Tên có chứa" nghĩa là chứa chuỗi đó ở bất kỳ vị trí nào (`MY_API_TOKEN` bị cấm).
+Ký hiệu `*` nghĩa là "bắt đầu bằng" (`INPUT_*` gồm `INPUT_PATH`, `INPUT_FORMAT`, `INPUT_SCHEMA`...; **ba ngoại lệ được phép** là `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS`). "Tên có chứa" nghĩa là chứa chuỗi đó ở bất kỳ vị trí nào (`MY_API_TOKEN` bị cấm).
 **DAK phải từ chối khởi động** nếu cấu hình danh sách env được phép chứa một env thuộc nhóm này.
 
-### 2.3 Hai rủi ro của `OUTPUT_TABLE` và `OUTPUT_MODE`
+### 2.3 Ba rủi ro của bảng kết quả và cách ghi
 
-Vì người gửi phiếu được chọn bảng kết quả và không giới hạn database, admin **phải đọc `OUTPUT_DB`, `OUTPUT_TABLE` và `OUTPUT_MODE` trên phiếu trước khi duyệt**:
+Vì người gửi phiếu được chọn bảng kết quả và không giới hạn database, admin **phải đọc `OUTPUT_DB`, `OUTPUT_TABLE`, `OUTPUT_MODE` và khoảng ngày giờ trên phiếu trước khi duyệt**:
 
-1. **Ghi đè bảng của người khác.** Nếu `OUTPUT_TABLE` là tên một bảng đã có cùng `OUTPUT_MODE=overwrite`, job thay toàn bộ nội dung bảng đó. DAK không biết bảng đã tồn tại hay chưa vì không hỏi Hive metastore.
-2. **`append` có thể ghi trùng.** Nếu job lỗi giữa chừng rồi được chạy lại, phần đã ghi lần trước vẫn còn và bị ghi thêm một lần nữa. Với `overwrite`, chạy lại bao nhiêu lần cũng ra cùng kết quả.
+1. **Ghi đè bảng của người khác.** Nếu `OUTPUT_TABLE` là tên một bảng đã có cùng `OUTPUT_MODE=overwrite`, job thay toàn bộ nội dung bảng đó. Với `overwrite-partitions`, các partition `(date, hour)` trùng của bảng đó bị thay. DAK không biết bảng đã tồn tại hay chưa vì không hỏi Hive metastore.
+2. **`append` có thể ghi trùng.** Nếu job lỗi giữa chừng rồi được chạy lại, phần đã ghi lần trước vẫn còn và bị ghi thêm một lần nữa. Với `overwrite` và `overwrite-partitions`, chạy lại bao nhiêu lần cũng ra cùng kết quả.
+3. **`overwrite` kèm khoảng ngày giờ xoá dữ liệu ngoài khoảng.** `overwrite` thay **cả bảng kết quả** bằng dữ liệu của lần chạy này, nên các ngày và giờ khác đang có trong bảng kết quả bị mất. Khi cần xử lý theo ngày hoặc giờ hãy dùng `overwrite-partitions` (mặc định khi có khoảng).
 
 ### 2.4 Cách báo lỗi file phiếu
 
@@ -233,7 +258,7 @@ Kiểm file **gom mọi lỗi một lượt**, để người dùng thấy hết
   "problems": [
     { "field": "columns[1].column", "code": "invalid_column", "message": "column name must match [A-Za-z0-9_]{1,128}" },
     { "field": "dagId", "code": "invalid_dag", "message": "dagId is not allowed" },
-    { "field": "env.OUTPUT_MODE", "code": "invalid_env", "message": "value must match overwrite|append" }
+    { "field": "env.OUTPUT_MODE", "code": "invalid_env", "message": "value must match overwrite|append|overwrite-partitions" }
   ],
   "requestId": "6b1f…"
 }
@@ -364,6 +389,7 @@ Cách đang dùng: một **user Airflow riêng cho DAK**, quyền tối thiểu 
 **7.4 DAG phải làm đúng những điều sau** (mẫu đầy đủ: `dak-mock/k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py`):
    - Đặt tên SparkApplication bằng `dag_run_id`, tạo nó ở **cùng namespace với Secret key**.
    - Mount Secret có tên `conf.keySecretName` vào `/etc/pseudonym-keys`, đặt nguồn key `file`.
+   - Các env `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS` chỉ có trong `conf.env` khi người gửi phiếu nhập; không có thì job không được đặt chúng và xử lý cả bảng.
    - Đưa `conf.env` vào env của **driver** (executor không nhận env nào do người gửi nhập); env còn thiếu thì dùng giá trị mặc định ghi sẵn trong DAG.
    - **Không tin `conf`:** DAG kiểm lại mọi giá trị và dừng trước khi tạo job nếu sai, vì DAG có thể bị người khác chạy tay. Env ngoài danh sách của DAG bị từ chối.
    - `render_template_as_native_obj` phải là `False`, nếu không "2" bị đổi thành số `2` và Kubernetes từ chối SparkApplication (`422`).
@@ -411,7 +437,7 @@ Cách đang dùng: một **user Airflow riêng cho DAK**, quyền tối thiểu 
 | `invalid_mode` | `columns[i].mode` | Không phải `HASH` |
 | `invalid_dag` | `dagId` | Thiếu, hoặc không nằm trong danh sách được phép |
 | `invalid_purpose` | `purpose` | Thiếu, rỗng, hoặc quá 500 ký tự |
-| `invalid_env` | `env`, `env.<TÊN>` | `env` không phải object, quá 10 mục, tên không được phép, giá trị sai quy tắc hoặc không phải chuỗi, bảng kết quả trùng bảng nguồn |
+| `invalid_env` | `env`, `env.<TÊN>` | `env` không phải object, quá 10 mục, tên không được phép, giá trị sai quy tắc hoặc không phải chuỗi, khoảng ngày giờ sai (`INPUT_FROM` lớn hơn `INPUT_TO`...), `overwrite-partitions` khi không có khoảng, bảng kết quả trùng bảng nguồn |
 | `invalid_file` | tên trường lạ | Trường không có trong mục 2.1 |
 
 ### 8.3 `submitError` của phiếu `SUBMIT_FAILED`
@@ -507,7 +533,7 @@ Các giá trị sau do DAK cấu hình, không do người dùng nhập. Cột "
 | Danh sách DAG được phép | Người gửi chọn `dagId` trong danh sách này; là điều kiện bảo mật | không có | `dak.deid.airflow.allowed-dag-ids` |
 | Database kết quả mặc định | Dùng khi người gửi không nhập `OUTPUT_DB`; để trống thì là database nguồn | trống | `dak.deid.output-database` |
 | Mẫu tên bảng kết quả mặc định | Dùng khi không nhập `OUTPUT_TABLE`. Phải chứa `{table}` và `{seq}`, ngoài ra chỉ `[a-z0-9_]` và `{yyyyMMdd}` | `{table}_deid_{yyyyMMdd}_{seq}` | `dak.deid.output-table-template` |
-| Danh sách env được phép | Tên, quy tắc giá trị, giá trị mặc định (mục 2.2). Không được chứa env thuộc nhóm bị cấm | 5 env ở mục 2.2 | `dak.deid.job-env` |
+| Danh sách env được phép | Tên, quy tắc giá trị, giá trị mặc định (mục 2.2). Không được chứa env thuộc nhóm bị cấm | 8 env ở mục 2.2 | `dak.deid.job-env` |
 | Số env tối đa một phiếu | Mục 2.2 | 10 | `dak.deid.job-env.max-entries` |
 | Namespace tạo Secret key | **Phải trùng namespace nơi DAG tạo SparkApplication**, vì Pod chỉ mount được Secret cùng namespace | không có | `dak.deid.kubernetes.namespace` |
 | Địa chỉ và cách xác thực Airflow | Mục 7 | không có | `dak.deid.airflow.*` |

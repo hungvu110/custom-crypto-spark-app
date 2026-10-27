@@ -139,3 +139,69 @@ Thứ tự: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9 → A1 �
 | Giới hạn database đích | Không giới hạn |
 | Chống trùng phiếu có tính env không | **Không tính**. Hai phiếu đang xử lý của cùng team, cùng bảng nguồn, cùng tập cột vẫn bị coi là trùng, dù `env` khác nhau. Một team phải đợi phiếu đầu kết thúc mới gửi được phiếu thứ hai cho cùng bảng và cột |
 | Giữ lớp bảo vệ "env bị cấm" (mục 4) | **Có giữ**: mock không khởi động nếu danh sách được phép chứa env bị cấm |
+
+## 11. Giai đoạn 2: khoảng ngày và giờ (đã chốt hướng, chưa làm)
+
+**Vì sao:** khử định danh thường chạy theo ngày hoặc theo giờ, nên người gửi phiếu cần giới hạn dữ liệu cần xử lý. Job `pseudonymize-table-app` đã có `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS`, nhưng **chỉ cho dùng với nguồn là thư mục** (`INPUT_PATH`); với nguồn là bảng, job báo lỗi cấu hình và thoát exit 2. Luồng của DAK dùng nguồn là bảng, nên phải mở rộng job.
+
+### 11.1 Các quyết định
+
+| Câu hỏi | Quyết định |
+| --- | --- |
+| Hướng làm | **Mở rộng job** để lọc theo ngày và giờ trên bảng (không đổi sang nguồn thư mục) |
+| Bảng nguồn có cột partition nào | Có cả hai: `date` (chuỗi `yyyyMMdd`) và `hour` (chuỗi `HH`). Tên cố định, **không cho đổi** (`INPUT_DATE_KEY`, `INPUT_HOUR_KEY` vẫn bị cấm) |
+| `overwrite-partitions` | Thêm vào giá trị hợp lệ của `OUTPUT_MODE`. **Mặc định là `overwrite-partitions` khi phiếu có khoảng ngày hoặc giờ**, còn lại giữ `overwrite` |
+| Các env phụ của job (`OUTPUT_PARTITION_BY`, `OUTPUT_SKIP_EXISTING`, `OUTPUT_WRITE_RETRIES`) | Chưa cần, không thêm |
+
+### 11.2 Env thêm vào danh sách được phép
+
+| Tên | Giá trị hợp lệ | Nếu không nhập |
+| --- | --- | --- |
+| `INPUT_FROM` | `yyyyMMdd` hoặc `yyyyMMddHH` | Không đặt: không giới hạn đầu |
+| `INPUT_TO` | như trên | Không đặt: không giới hạn cuối |
+| `INPUT_HOURS` | `18` hoặc `6-18`, giờ từ 0 đến 23 | Không đặt: mọi giờ |
+| `OUTPUT_MODE` (đổi) | `overwrite`, `append` hoặc `overwrite-partitions` | `overwrite-partitions` nếu có khoảng, ngược lại `overwrite` |
+
+Job còn nhận `yyyyMMddHHmm` cho `INPUT_FROM` và `INPUT_TO`, nhưng chỉ dùng cho thư mục chia theo batch 20 phút. Bảng của bạn chỉ có giờ (`HH`), nên không cho nhập dạng này.
+`INPUT_*` vẫn bị cấm, **trừ ba env ở trên**: `INPUT_PATH`, `INPUT_FORMAT`, `INPUT_SCHEMA`, `INPUT_OPTION_*`, `INPUT_BAD_FILES`, `INPUT_DATE_KEY`, `INPUT_HOUR_KEY` và các `INPUT_*` khác không bao giờ được nhập.
+
+### 11.3 Quy tắc kiểm thêm (mock, DAG và job đều kiểm)
+
+- `INPUT_FROM` và `INPUT_TO` là ngày có thật, giờ từ 00 đến 23. Khi có cả hai thì `INPUT_FROM` không được lớn hơn `INPUT_TO` (thiếu giờ thì `INPUT_FROM` hiểu là 00, `INPUT_TO` hiểu là 23).
+- `INPUT_HOURS` có hai số thì số đầu không được lớn hơn số sau.
+- `OUTPUT_MODE=overwrite-partitions` chỉ hợp lệ khi có ít nhất một trong ba env ngày giờ (job cũng đòi như vậy).
+- Bảng kết quả vẫn không được trùng bảng nguồn.
+
+### 11.4 Việc cần làm
+
+**Ở job `pseudonymize-table-app`** (làm trước, vì mock và DAG phụ thuộc vào nó):
+
+| # | Việc | Cách kiểm |
+| --- | --- | --- |
+| J1 | Bỏ lỗi "only valid together with INPUT_PATH" cho `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS` khi nguồn là bảng; vẫn cấm `INPUT_DATE_KEY`, `INPUT_HOUR_KEY` với bảng | Test cấu hình: có khoảng với nguồn bảng thì hợp lệ; cấu hình sai báo đủ lỗi |
+| J2 | Với nguồn bảng và có khoảng: kiểm bảng có hai cột `date` và `hour`, rồi lọc `date` và `hour` đúng khoảng (gồm khoảng qua nhiều ngày, giờ, và `INPUT_HOURS`) ngay trên nguồn, trước các bước biến đổi, để Spark chỉ đọc partition cần | Test với bảng thật trong Spark cục bộ: từng ví dụ ở mục 2.2 hợp đồng ra đúng tập dòng; bảng thiếu cột báo lỗi rõ |
+| J3 | Khi nguồn bảng có khoảng: bảng kết quả mặc định partition theo `(date, hour)` và `OUTPUT_MODE` mặc định `overwrite-partitions` | Chạy lại cùng khoảng không nhân đôi, không xoá ngày giờ khác; `overwrite` thì thay cả bảng |
+| J4 | Đối chiếu `VERIFY` chỉ so các partition vừa ghi (đã có cho nguồn thư mục) áp dụng cho nguồn bảng | Test `VERIFY` với khoảng |
+| J5 | Cập nhật README của job, build image mới và đẩy lên registry | Image chạy được trên cụm |
+
+**Ở dak-mock:**
+
+| # | Việc | Cách kiểm |
+| --- | --- | --- |
+| E12 | Thêm ba env vào danh sách mặc định; đổi giá trị hợp lệ của `OUTPUT_MODE`; sửa nhóm bị cấm: `INPUT_*` trừ ba ngoại lệ | Test cấu hình: ba env được phép, `INPUT_PATH` vẫn bị cấm |
+| E13 | Quy tắc kiểm chéo trong `JobEnvPolicy`: ngày thật, giờ 0–23, `FROM` không lớn hơn `TO`, `HOURS` đầu không lớn hơn cuối, `overwrite-partitions` phải có khoảng | Test từng quy tắc; thông điệp không lặp lại giá trị |
+| E14 | Mặc định động của `OUTPUT_MODE` khi duyệt: có khoảng thì `overwrite-partitions` | Test: có khoảng và không nhập `OUTPUT_MODE`, rồi có khoảng và nhập `overwrite` thì giữ `overwrite` |
+| E15 | Gửi Airflow kiểm lại các quy tắc trên trước khi gọi mạng (dùng chung `JobEnvPolicy`) | Test gửi job với khoảng sai |
+| E16 | File mẫu mới (`valid-request-with-date-range.json`, `invalid-date-range.json`) và cập nhật `DeidSampleFilesTest`, `JobEnvDagDriftTest` | Test mẫu, test chống lệch |
+| E17 | Tài liệu: README `dak-mock` mục 11.4, `k8s/dak-mock.yaml` | Đọc lại cho khớp |
+
+**Ở DAG mẫu:**
+
+| # | Việc | Cách kiểm |
+| --- | --- | --- |
+| A5 | Thêm ba env vào bảng `JOB_ENV`; chỉ đưa vào driver khi có trong `conf.env` (hoặc đặt giá trị rỗng, job coi rỗng là không đặt, cần xác nhận lại với `JobConfig`) | Test render: có và không có khoảng |
+| A6 | `check_conf` kiểm chéo giống E13 | Test từng quy tắc |
+| A7 | `OUTPUT_MODE` mặc định `overwrite-partitions` khi có khoảng (chạy tay) | Test render |
+| A8 | Cập nhật test Python | `python3 -B -m unittest discover -s dak-mock/k8s/airflow/tests` |
+
+**Thứ tự:** J1 → J5 (job), sau đó E12 → E17 và A5 → A8. Khi triển khai: **image job mới trước**, rồi DAG và mock mới **cùng lúc**. Chỉ bật các env ngày giờ ở DAK khi job đã là bản mới.
