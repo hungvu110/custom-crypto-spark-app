@@ -1,8 +1,11 @@
 {
   "source": "VTT",
-  "path": "vtt_cdr/20261027",
-  "batchDate": "20261027",
-  "encryptColumns": ["msisdn"],
+  "path": "f001-mpre-call/date=20261024/hour=12",
+  "batchId": "2026102412",
+  "table": "vtt_f001_mpre_call",
+  "encryptColumns": [
+    "msisdn"
+  ],
   "keyField": "start_time",
   "purpose": "Rejected: encryptColumns and keyField are only allowed for VTNET"
 }

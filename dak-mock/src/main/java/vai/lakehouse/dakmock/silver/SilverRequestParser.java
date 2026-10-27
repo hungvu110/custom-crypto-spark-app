@@ -1,6 +1,5 @@
 package vai.lakehouse.dakmock.silver;
 
-import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
@@ -23,7 +22,10 @@ import vai.lakehouse.dakmock.web.DakApiException.Problem;
  *   <li>{@code source}: {@code VTT} hoặc {@code VTNET}.</li>
  *   <li>{@code path}: tương đối theo gốc landing của nguồn, dạng chuẩn — không {@code /} đầu/cuối, không {@code //}, không {@code ..},
  *       chỉ {@code [A-Za-z0-9_.=+-]} và {@code /}, tối đa 1024 ký tự. Giữ nguyên hoa thường.</li>
- *   <li>{@code batchDate}: {@code yyyyMMdd}, ngày có thật. {@code outputMode} (tuỳ chọn): {@code overwrite-partitions} hoặc
+ *   <li>{@code batchId}: {@code yyyyMMddHH} (theo giờ) hoặc {@code yyyyMMddHHmm} (theo batch 20 phút), ngày giờ có thật. Hai lô khác nhau
+ *       của cùng một bảng phải có {@code batchId} khác nhau, không thì lô sau ghi đè lô trước.</li>
+ *   <li>{@code table}: bảng đích do người gửi chọn, {@code [a-z0-9_]{1,128}}, bắt đầu bằng tiền tố của nguồn ({@code vtt_}, {@code vtnet_}).</li>
+ *   <li> {@code outputMode} (tuỳ chọn): {@code overwrite-partitions} hoặc
  *       {@code append}.</li>
  *   <li>VTNET: {@code encryptColumns} (1 đến 100 tên cột, không trùng, không phân biệt hoa thường) và {@code keyField} (không nằm
  *       trong {@code encryptColumns}) bắt buộc. VTT: không được có hai trường này.</li>
@@ -33,17 +35,18 @@ import vai.lakehouse.dakmock.web.DakApiException.Problem;
 public final class SilverRequestParser {
 
   /** Phiếu đã kiểm. */
-  public record Parsed(SilverSource source, String path, String batchDate, String outputMode, List<String> encryptColumns,
+  public record Parsed(SilverSource source, String path, String batchId, String table, String outputMode, List<String> encryptColumns,
                        String keyField, String purpose) {}
 
   public static final String CODE = "invalid_field";
   static final Set<String> OUTPUT_MODES = Set.of("overwrite-partitions", "append");
 
-  private static final Set<String> FIELDS = Set.of("source", "path", "batchDate", "outputMode", "encryptColumns", "keyField",
+  private static final Set<String> FIELDS = Set.of("source", "path", "batchId", "table", "outputMode", "encryptColumns", "keyField",
       "purpose");
   private static final Pattern PATH = Pattern.compile("[A-Za-z0-9_.=+-]+(/[A-Za-z0-9_.=+-]+)*");
   private static final Pattern COLUMN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
-  private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
+  private static final Pattern TABLE = Pattern.compile("[a-z0-9_]{1,128}");
+    private static final DateTimeFormatter MINUTE = DateTimeFormatter.ofPattern("uuuuMMddHHmm").withResolverStyle(ResolverStyle.STRICT);
   private static final int MAX_PATH = 1024;
   private static final int MAX_COLUMNS = 100;
   private static final int MAX_PURPOSE = 500;
@@ -70,9 +73,13 @@ public final class SilverRequestParser {
       problems.add(new Problem("path", CODE, "path must be relative to the landing root of the source: no leading or trailing "
           + "'/', no '//', no '..', only [A-Za-z0-9_.=+-] and '/', at most " + MAX_PATH + " characters"));
     }
-    String batchDate = text(body, "batchDate").orElse(null);
-    if (batchDate == null || !isDate(batchDate)) {
-      problems.add(new Problem("batchDate", CODE, "batchDate must be a real date yyyyMMdd"));
+    String batchId = text(body, "batchId").orElse(null);
+    if (batchId == null || !isDate(batchId)) {
+      problems.add(new Problem("batchId", CODE, "batchId must be a real date and hour yyyyMMddHH, or with minutes yyyyMMddHHmm"));
+    }
+    String table = text(body, "table").orElse(null);
+    if (table == null || !TABLE.matcher(table).matches() || (source != null && !table.startsWith(source.tablePrefix()))) {
+      problems.add(new Problem("table", CODE, "table must be lowercase letters, digits and '_' (1 to 128), starting with the prefix of the source"));
     }
     String outputMode = text(body, "outputMode").orElse(null);
     if (body.has("outputMode") && (outputMode == null || !OUTPUT_MODES.contains(outputMode))) {
@@ -102,7 +109,7 @@ public final class SilverRequestParser {
     if (!problems.isEmpty()) {
       throw DakApiException.invalidRequest("the request has " + problems.size() + " problem(s)", problems);
     }
-    return new Parsed(source, path, batchDate, outputMode, columns, keyField, purpose);
+    return new Parsed(source, path, batchId, table, outputMode, columns, keyField, purpose);
   }
 
   private static List<String> columns(JsonNode body, List<Problem> problems) {
@@ -134,11 +141,11 @@ public final class SilverRequestParser {
   }
 
   private static boolean isDate(String value) {
-    if (value.length() != 8) {
+    if (value.length() != 10 && value.length() != 12) {
       return false;
     }
     try {
-      LocalDate.parse(value, DATE);
+      java.time.LocalDateTime.parse(value.length() == 10 ? value + "00" : value, MINUTE);
       return true;
     } catch (DateTimeParseException e) {
       return false;

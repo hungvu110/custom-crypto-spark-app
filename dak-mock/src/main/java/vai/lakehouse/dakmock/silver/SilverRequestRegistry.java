@@ -16,7 +16,7 @@ import vai.lakehouse.dakmock.web.DakApiException;
 
 /**
  * Sổ phiếu chuẩn hoá silver trong bộ nhớ (mất khi pod restart, như phiếu khử định danh). Mã phiếu {@code SLV-<năm>-<6 số>}. Chống trùng:
- * một team không có hai phiếu CHƯA KẾT THÚC cho cùng {@code (source, path, batchDate)}.
+ * một team không có hai phiếu CHƯA KẾT THÚC cho cùng {@code (source, path, batchId)}.
  */
 @Component
 public class SilverRequestRegistry {
@@ -42,7 +42,7 @@ public class SilverRequestRegistry {
   public synchronized SilverRequest create(String team, String user, SilverRequestParser.Parsed parsed) {
     byCode.values().stream()
         .filter(r -> !r.state().terminal() && r.team().equals(team) && r.source() == parsed.source()
-            && r.path().equals(parsed.path()) && r.batchDate().equals(parsed.batchDate()))
+            && r.path().equals(parsed.path()) && r.batchId().equals(parsed.batchId()))
         .findFirst()
         .ifPresent(r -> {
           throw DakApiException.duplicateBatch(r.code());

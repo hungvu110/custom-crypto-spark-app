@@ -1,11 +1,12 @@
 """Phần dùng chung của hai DAG chuẩn hoá silver (silver_ingest_vtt.py, silver_ingest_vtnet.py). Thiết kế: docs/silver-ingest/PLAN.md.
 
 DAK trigger DAG khi phiếu chuẩn hoá được duyệt: POST /api/v1/dags/<dagId>/dagRuns với conf = {"path": "<đường dẫn tương đối theo gốc
-landing của nguồn, vd vtnet_cdr/20261027>", "batchDate": "yyyyMMdd", "outputMode": ...} (+ "encryptColumns", "keyField" với VTNET). DAG
-ghép INPUT_ROOT + path thành INPUT_PATH. Job thêm cột partition BATCH_COLUMN = batchDate vào mọi dòng; mặc định chỉ thay partition của lô
-đó (chạy lại cùng lô không ghi trùng, lô khác giữ nguyên).
-Cấu hình cố định theo nguồn (gốc landing, định dạng file, schema, bảng đích) là hằng SOURCE trong file DAG của nguồn đó; conf mang những
-gì đổi theo từng phiếu. Mọi giá trị trong conf được kiểm ở task đầu `validate_conf` trước khi tạo job.
+landing của nguồn, vd ebs_3g_4g/dt=20261012/batch=1520>", "batchId": "yyyyMMddHH" hoặc "yyyyMMddHHmm", "table": "<bảng đích>",
+"outputMode": ...} (+ "encryptColumns", "keyField" với VTNET). DAG ghép INPUT_ROOT + path thành INPUT_PATH, ghi vào OUTPUT_DB.table. Job
+thêm cột partition BATCH_COLUMN = batchId vào mọi dòng; mặc định chỉ thay partition của lô đó (chạy lại cùng lô không ghi trùng, lô khác
+giữ nguyên). Hai lô khác nhau của cùng một bảng PHẢI có batchId khác nhau, không thì lô sau ghi đè lô trước.
+Cấu hình cố định theo nguồn (gốc landing, định dạng file, schema, database đích) là hằng SOURCE trong file DAG của nguồn đó; conf mang
+những gì đổi theo từng phiếu. Mọi giá trị trong conf được kiểm ở task đầu `validate_conf` trước khi tạo job.
 
 File này nằm cùng thư mục dags/ nên Airflow import được bằng `import silver_ingest_common` (thư mục dags có sẵn trong sys.path).
 Không chứa DAG nào.
@@ -33,8 +34,12 @@ JARS = ("local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/cdr-c
 OUTPUT_MODES = ("overwrite-partitions", "append")
 DEFAULT_OUTPUT_MODE = "overwrite-partitions"
 # Tên cột partition của lô trong bảng đích (env BATCH_COLUMN của job).
-BATCH_COLUMN = "batch_date"
-BATCH_DATE = re.compile(r"\d{8}")
+BATCH_COLUMN = "batch_id"
+# Mã lô: yyyyMMddHH (theo giờ) hoặc yyyyMMddHHmm (theo batch 20 phút của VTNET, vd dt=20261012/batch=1520 -> 202610121520).
+BATCH_ID = re.compile(r"\d{10}(\d{2})?")
+# Tên bảng đích do người gửi phiếu chọn: chữ thường, số, "_"; phải bắt đầu bằng tiền tố của nguồn (SOURCE["table_prefix"]) để một phiếu
+# không ghi vào bảng của nguồn khác.
+TABLE = re.compile(r"[a-z0-9_]{1,128}")
 # Đường dẫn tương đối theo gốc của nguồn, ở dạng chuẩn đã thống nhất với DAK (docs/key-access/TRA-LOI-DAK-BY-PATH.md): không "/" đầu/cuối,
 # không "//", không scheme. Không có khoảng trắng, dấu nháy hay {{ }} của Jinja.
 REL_PATH = re.compile(r"[A-Za-z0-9_.=+-]+(/[A-Za-z0-9_.=+-]+)*")
@@ -68,7 +73,7 @@ def check_columns(conf):
 def check_conf(source, conf):
     """Kiểm conf của dag run, ném ValueError nếu sai. Thông điệp không lặp lại giá trị đã nhận.
 
-    `source` là hằng SOURCE của DAG: `conf_keys` (khoá conf được nhận) và `encrypts_columns` (nguồn nhận encryptColumns/keyField)."""
+    `source` là hằng SOURCE của DAG: `conf_keys` (khoá conf được nhận), `table_prefix` (tiền tố bảng đích) và `encrypts_columns` (nguồn nhận encryptColumns/keyField)."""
     conf = conf or {}
     if not isinstance(conf, dict):
         raise ValueError("conf phải là object")
@@ -76,13 +81,16 @@ def check_conf(source, conf):
     if unknown:
         raise ValueError(f"conf có khoá không được nhận (chỉ nhận {', '.join(source['conf_keys'])})")
     check_path("path", conf.get("path"))
-    batch = conf.get("batchDate")
-    if not isinstance(batch, str) or not BATCH_DATE.fullmatch(batch):
-        raise ValueError("conf.batchDate thiếu hoặc sai định dạng (yyyyMMdd)")
+    batch = conf.get("batchId")
+    if not isinstance(batch, str) or not BATCH_ID.fullmatch(batch):
+        raise ValueError("conf.batchId thiếu hoặc sai định dạng (yyyyMMddHH hoặc yyyyMMddHHmm)")
     try:
-        datetime.datetime.strptime(batch, "%Y%m%d")
+        datetime.datetime.strptime(batch, "%Y%m%d%H" if len(batch) == 10 else "%Y%m%d%H%M")
     except ValueError:
-        raise ValueError("conf.batchDate không phải ngày có thật") from None
+        raise ValueError("conf.batchId không phải ngày giờ có thật") from None
+    table = conf.get("table")
+    if not isinstance(table, str) or not TABLE.fullmatch(table) or not table.startswith(source["table_prefix"]):
+        raise ValueError(f"conf.table thiếu hoặc sai định dạng (chữ thường, số, '_', bắt đầu bằng '{source['table_prefix']}')")
     if "outputMode" in conf and conf["outputMode"] not in OUTPUT_MODES:
         raise ValueError(f"conf.outputMode phải là một trong {', '.join(OUTPUT_MODES)}")
     if source.get("encrypts_columns"):
@@ -111,7 +119,8 @@ def build_spec(source):
         {"name": "INPUT_PATH", "value": source["input_root"] + conf_value("path")},
         {"name": "OUTPUT_MODE", "value": conf_value("outputMode", DEFAULT_OUTPUT_MODE)},
         {"name": "BATCH_COLUMN", "value": BATCH_COLUMN},
-        {"name": "BATCH_VALUE", "value": conf_value("batchDate")},
+        {"name": "BATCH_VALUE", "value": conf_value("batchId")},
+        {"name": "OUTPUT_TABLE", "value": conf_value("table")},
         {"name": "WAREHOUSE_PATH", "value": WAREHOUSE_PATH},
         {"name": "ENABLE_HIVE_SUPPORT", "value": "true"},
     ] + [{"name": k, "value": v} for k, v in source["env"].items()]

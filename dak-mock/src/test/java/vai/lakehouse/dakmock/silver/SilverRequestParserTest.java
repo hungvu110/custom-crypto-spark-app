@@ -19,8 +19,9 @@ class SilverRequestParserTest {
   private static ObjectNode vtt() {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTT");
-    n.put("path", "vtt_cdr/20261027");
-    n.put("batchDate", "20261027");
+    n.put("path", "f001-mpre-call/date=20261024/hour=12");
+    n.put("batchId", "2026102412");
+    n.put("table", "vtt_f001_mpre_call");
     n.put("purpose", "nạp lô ngày 27");
     return n;
   }
@@ -28,7 +29,9 @@ class SilverRequestParserTest {
   private static ObjectNode vtnet() {
     ObjectNode n = vtt();
     n.put("source", "vtnet");
-    n.put("path", "vtnet_cdr/20261027");
+    n.put("path", "ebs_3g_4g/dt=20261012/batch=1520");
+    n.put("batchId", "202610121520");
+    n.put("table", "vtnet_ebs_3g_4g");
     n.putArray("encryptColumns").add("msisdn").add("imei");
     n.put("keyField", "start_time");
     return n;
@@ -47,7 +50,7 @@ class SilverRequestParserTest {
     SilverRequestParser.Parsed p = SilverRequestParser.parse(vtt().put("outputMode", "append"));
 
     assertThat(p.source()).isEqualTo(SilverSource.VTT);
-    assertThat(p.path()).isEqualTo("vtt_cdr/20261027");
+    assertThat(p.path()).isEqualTo("f001-mpre-call/date=20261024/hour=12");
     assertThat(p.outputMode()).isEqualTo("append");
     assertThat(p.encryptColumns()).isEmpty();
     assertThat(p.keyField()).isNull();
@@ -74,19 +77,39 @@ class SilverRequestParserTest {
   }
 
   @Test
+  @DisplayName("batchId: yyyyMMddHH hoặc yyyyMMddHHmm, ngày giờ phút có thật; ngày không có giờ bị từ chối")
+  void batchIdRules() {
+    for (String bad : List.of("", "20261027", "2026-10-27", "2026102425", "202610271260", "202610271", "2026102412345", "20261340AB")) {
+      assertThat(fields(vtt().put("batchId", bad))).as(bad).containsExactly("batchId");
+    }
+    assertThat(SilverRequestParser.parse(vtt().put("batchId", "2026102400")).batchId()).isEqualTo("2026102400");
+    assertThat(SilverRequestParser.parse(vtnet().put("batchId", "202610121540")).batchId()).isEqualTo("202610121540");
+  }
+
+  @Test
+  @DisplayName("table: do người gửi chọn, chữ thường/số/_, bắt đầu bằng tiền tố của nguồn")
+  void tableRules() {
+    for (String bad : List.of("", "VTT_x", "vtt-x", "vtnet_x", "other", "vtt_" + "x".repeat(130), "vtt_x y")) {
+      assertThat(fields(vtt().put("table", bad))).as(bad).containsExactly("table");
+    }
+    assertThat(fields(vtnet().put("table", "vtt_x"))).containsExactly("table");
+    assertThat(fields((ObjectNode) vtt().without("table"))).containsExactly("table");
+  }
+
+  @Test
   @DisplayName("gom mọi lỗi một lượt, kể cả trường lạ; thông điệp không lặp lại giá trị")
   void allProblemsAtOnce() {
     ObjectNode body = JSON.createObjectNode();
     body.put("source", "VTX");
     body.put("path", "/abs/secret-value");
-    body.put("batchDate", "20261340");
+    body.put("batchId", "20261340");
     body.put("outputMode", "overwrite");
     body.put("evil\nfield", 1);
 
     DakApiException e = catchThrowableOfType(() -> SilverRequestParser.parse(body), DakApiException.class);
 
     assertThat(e.problems()).extracting(Problem::field)
-        .containsExactlyInAnyOrder("evil_field", "source", "path", "batchDate", "outputMode", "purpose");
+        .containsExactlyInAnyOrder("evil_field", "source", "path", "batchId", "table", "outputMode", "purpose");
     assertThat(e.problems().toString()).doesNotContain("secret-value").doesNotContain("VTX");
   }
 

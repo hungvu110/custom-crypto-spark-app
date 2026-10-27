@@ -6,8 +6,8 @@ cdr-crypto (key theo cột qua DAK by-column, onMissing=request) rồi ghi bản
 lại theo exponential backoff (PENDING_WAIT) cho tới khi admin DAK duyệt, rồi chạy tiếp. Hết timeout mà chưa duyệt, hoặc yêu cầu bị từ
 chối: job exit 5 (task failed), chưa ghi gì.
 
-DAK trigger: POST /api/v1/dags/silver_ingest_vtnet/dagRuns, conf = {"path": "<tương đối theo INPUT_ROOT, vd vtnet_cdr/20261027>",
-"batchDate": "yyyyMMdd", "encryptColumns": ["msisdn", "imei"], "keyField": "start_time",
+DAK trigger: POST /api/v1/dags/silver_ingest_vtnet/dagRuns, conf = {"path": "<tương đối theo INPUT_ROOT, vd ebs_3g_4g/dt=20261012/batch=1520>",
+"batchId": "yyyyMMddHHmm", "table": "vtnet_ebs_3g_4g", "encryptColumns": ["msisdn", "imei"], "keyField": "start_time",
 "outputMode": "overwrite-partitions|append" (tuỳ chọn, mặc định overwrite-partitions: chỉ thay partition của lô)}.
 """
 import pendulum
@@ -21,7 +21,7 @@ import silver_ingest_common as common
 DAG_ID = "silver_ingest_vtnet"
 
 # Gốc landing của nguồn (GIẢ ĐỊNH, sửa theo cụm). INPUT_PATH = INPUT_ROOT + conf.path; đường dẫn gửi by-path chính là conf.path.
-INPUT_ROOT = f"{common.HDFS}/landing/vtnet/"
+INPUT_ROOT = f"{common.HDFS}/prod8/landing/vtnet/"
 
 # Chờ admin DAK duyệt yêu cầu key cột (by-column trả PENDING): lần đầu sau `initial` giây, mỗi lần sau nhân `multiplier`, tối đa
 # `max_interval` giây một lần, bỏ cuộc sau `timeout` giây (job exit 5). Trong lúc chờ, driver và executor vẫn giữ tài nguyên.
@@ -33,13 +33,13 @@ SOURCE = {
     "name": "vtnet",
     "main_class": "vai.lakehouse.silveringest.app.VtnetSilverApp",
     "input_root": INPUT_ROOT,
-    "conf_keys": ("path", "batchDate", "outputMode", "encryptColumns", "keyField"),
+    "conf_keys": ("path", "batchId", "table", "outputMode", "encryptColumns", "keyField"),
+    "table_prefix": "vtnet_",
     "encrypts_columns": True,
     "env": {
         "INPUT_FORMAT": "csv",
         "INPUT_OPTION_header": "true",
         "OUTPUT_DB": "silver",
-        "OUTPUT_TABLE": "vtnet_cdr",
         "OUTPUT_FORMAT": "delta",
         # Thuật toán giải mã cả file, chỉ dùng khi by-path có key cho đường dẫn. GIẢ ĐỊNH cho tới khi xác nhận định dạng thật.
         "FILE_CIPHER": "aes-256-gcm",

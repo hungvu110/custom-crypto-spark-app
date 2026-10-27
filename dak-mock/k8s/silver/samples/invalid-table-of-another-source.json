@@ -1,0 +1,7 @@
+{
+  "source": "VTT",
+  "path": "f001-mpre-call/date=20261024/hour=12",
+  "batchId": "2026102412",
+  "table": "vtnet_ebs_3g_4g",
+  "purpose": "Rejected: the table must start with the prefix of the source (vtt_ for VTT, vtnet_ for VTNET)"
+}

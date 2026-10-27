@@ -19,7 +19,7 @@ import vai.lakehouse.dakmock.silver.SilverRequestService;
 
 /**
  * Phiếu chuẩn hoá silver phía người gửi (portal giả, cùng tài khoản và header {@code X-Mock-Portal-Token} với phiếu khử định danh).
- * Thân JSON: {@code source}, {@code path}, {@code batchDate}, {@code outputMode} (tuỳ chọn), {@code encryptColumns} và {@code keyField}
+ * Thân JSON: {@code source}, {@code path}, {@code batchId}, {@code outputMode} (tuỳ chọn), {@code encryptColumns} và {@code keyField}
  * (chỉ VTNET), {@code purpose}. Xem {@link SilverRequestParser}.
  */
 @RestController

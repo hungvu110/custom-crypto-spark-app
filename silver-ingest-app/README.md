@@ -13,7 +13,7 @@ Thiết kế và quyết định: [docs/silver-ingest/PLAN.md](../docs/silver-in
 ## 1. Luồng VTNET
 
 1. Hỏi DAK key theo đường dẫn (`GET /api/v1/keys/by-path`, một key cho cả file hoặc cả thư mục). Đường dẫn gửi đi **tương đối theo gốc**
-   `KEY_PATH_ROOT` của nguồn (theo bảng, theo ngày, vd `vtnet_cdr/20261027`), ở dạng chuẩn: không `/` đầu/cuối, không `//`, giữ hoa thường —
+   `KEY_PATH_ROOT` của nguồn (theo bảng, theo lô, vd `ebs_3g_4g/dt=20261012/batch=1520`), ở dạng chuẩn: không `/` đầu/cuối, không `//`, giữ hoa thường —
    như SA đã trả lời DAK ([TRA-LOI-DAK-BY-PATH.md](../docs/key-access/TRA-LOI-DAK-BY-PATH.md)). DAK so khớp nguyên chuỗi; admin DAK tạo key
    phải nhập đúng dạng này.
    - **Có key**: file bị mã hoá cả file, giải mã ở bước 3.
@@ -47,8 +47,8 @@ toán: cài `FileCipher` (`crypto/FileCipher.scala`), thêm tên vào `FileCiphe
 | `INPUT_OPTION_<tên>` | cả hai | — | Option đọc của Spark, vd `INPUT_OPTION_header=true`, `INPUT_OPTION_recursiveFileLookup=true` (VTT, thư mục lồng nhau) |
 | `OUTPUT_DB`, `OUTPUT_TABLE` | cả hai | bắt buộc | Bảng đích `[A-Za-z0-9_]{1,128}`. Database được tạo nếu chưa có |
 | `OUTPUT_FORMAT` | cả hai | `delta` | `delta` hoặc `hive` (Parquet) |
-| `BATCH_VALUE` | cả hai | không | Mã lô (DAG: `conf.batchDate`, `yyyyMMdd`), 1–64 ký tự `[A-Za-z0-9_.:-]`. Job thêm cột `BATCH_COLUMN` = giá trị này vào mọi dòng, làm partition **đầu tiên** của bảng đích |
-| `BATCH_COLUMN` | cả hai | `batch_date` | Tên cột lô. Không được trùng cột có sẵn trong dữ liệu, cột cần mã hoá hay `CDR_KEY_FIELD` |
+| `BATCH_VALUE` | cả hai | không | Mã lô (DAG: `conf.batchId`, `yyyyMMddHH` hoặc `yyyyMMddHHmm`), 1–64 ký tự `[A-Za-z0-9_.:-]`. Job thêm cột `BATCH_COLUMN` = giá trị này vào mọi dòng, làm partition **đầu tiên** của bảng đích |
+| `BATCH_COLUMN` | cả hai | `batch_date` (DAG đặt `batch_id`) | Tên cột lô. Không được trùng cột có sẵn trong dữ liệu, cột cần mã hoá hay `CDR_KEY_FIELD` |
 | `OUTPUT_MODE` | cả hai | `overwrite-partitions` nếu có `BATCH_VALUE`, ngược lại `overwrite` | `overwrite-partitions`: chỉ thay partition của lô (chạy lại cùng lô không ghi trùng, lô khác giữ nguyên; cần `BATCH_VALUE`). `overwrite`: thay **cả bảng**. `append`: ghi nối (chạy lại cùng lô là ghi trùng) |
 | `OUTPUT_PARTITION_BY` | cả hai | không | Cột partition thêm sau cột lô, phân cách bằng dấu phẩy. Không được là cột cần mã hoá |
 | `WAREHOUSE_PATH`, `ENABLE_HIVE_SUPPORT`, `APP_NAME` | cả hai | | Như pseudonymize-table-app |
@@ -68,8 +68,8 @@ theo dòng, nên `INPUT_OPTION_multiLine=true` bị từ chối và `json` phả
 
 **Ghi theo lô** (`overwrite-partitions`): lần đầu tạo bảng partition theo `BATCH_COLUMN` (rồi `OUTPUT_PARTITION_BY`). Các lần sau, Delta dùng
 `replaceWhere "<BATCH_COLUMN> = '<BATCH_VALUE>'"` (thay đúng mọi dòng của lô), `hive` dùng dynamic partition overwrite (thay các partition có
-trong dữ liệu lần này). Bảng đã có mà partition khác cấu hình thì bị từ chối trước khi ghi (exit 1). Một `batchDate` là **một** lô: chạy
-lại với cùng `batchDate` thay dữ liệu đã ghi của ngày đó.
+trong dữ liệu lần này). Bảng đã có mà partition khác cấu hình thì bị từ chối trước khi ghi (exit 1). Một mã lô (`batchId`) là **một** lô: chạy
+lại với cùng mã lô thay dữ liệu đã ghi của lô đó; hai lô khác nhau của cùng một bảng phải có mã lô khác nhau.
 
 ## 3. Exit code
 
@@ -88,8 +88,9 @@ dạng, schema, bảng đích — hiện là **giả định**, sửa theo dữ 
 
 | Khoá `conf` | VTT | VTNET | Ý nghĩa |
 | --- | --- | --- | --- |
-| `path` | bắt buộc | bắt buộc | Tương đối theo gốc landing của nguồn, dạng chuẩn (vd `vtnet_cdr/20261027`). DAG đặt `INPUT_PATH` = gốc + `path`; VTNET gửi đúng `path` này cho `by-path` |
-| `batchDate` | bắt buộc | bắt buộc | `yyyyMMdd` (ngày có thật) → partition `batch_date` |
+| `path` | bắt buộc | bắt buộc | Tương đối theo gốc landing của nguồn, dạng chuẩn (VTNET: `ebs_3g_4g/dt=20261012/batch=1520`; VTT: `f001-mpre-call/date=20261024/hour=12`). DAG đặt `INPUT_PATH` = gốc + `path`; VTNET gửi đúng `path` này cho `by-path` |
+| `batchId` | bắt buộc | bắt buộc | `yyyyMMddHH` hoặc `yyyyMMddHHmm` (ngày giờ có thật) → partition `batch_id`. VTNET có batch 20 phút (`batch=1520`) nên dùng `202610121520`, không thì ba batch cùng giờ ghi đè nhau |
+| `table` | bắt buộc | bắt buộc | Bảng đích trong `silver`, người gửi chọn; bắt đầu bằng `vtt_` / `vtnet_` |
 | `outputMode` | tuỳ chọn | tuỳ chọn | `overwrite-partitions` (mặc định) hoặc `append`. Không nhận `overwrite` (thay cả bảng) |
 | `encryptColumns` | không nhận | bắt buộc | Danh sách tên cột cần mã hoá (người gửi phiếu chọn) → `CDR_ENCRYPT_COLUMNS` |
 | `keyField` | không nhận | bắt buộc | Cột giữ plaintext → `CDR_KEY_FIELD` |
@@ -100,7 +101,7 @@ Khoá khác bị từ chối. Task đầu `validate_conf` kiểm `conf` trước
 ```bash
 curl -u dak-trigger:"$AIRFLOW_PASSWORD" -H 'Content-Type: application/json' \
   -X POST http://<airflow>/api/v1/dags/silver_ingest_vtnet/dagRuns \
-  -d '{"dag_run_id": "slv-2026-000001", "conf": {"path": "vtnet_cdr/20261027", "batchDate": "20261027",
+  -d '{"dag_run_id": "slv-2026-000001", "conf": {"path": "ebs_3g_4g/dt=20261012/batch=1520", "batchId": "202610121520", "table": "vtnet_ebs_3g_4g",
        "encryptColumns": ["msisdn", "imei"], "keyField": "start_time"}}'
 ```
 
@@ -123,7 +124,7 @@ Image chứa fat jar (app + Delta + spark-avro + patch block token) và ba jar r
 
 Chạy thử đầu-cuối với dak-mock ([dak-mock/README.md](../dak-mock/README.md) mục 2.3, 2.4):
 
-1. File thử có mã hoá: tạo key cho đường dẫn bằng `POST /mock-admin/path-keys` với `{"path": "vtnet_cdr/20261027", "keyValue": "<base64 32
+1. File thử có mã hoá: tạo key cho đường dẫn bằng `POST /mock-admin/path-keys` với `{"path": "ebs_3g_4g/dt=20261012/batch=1520", "keyValue": "<base64 32
    byte>"}` và mã hoá file bằng đúng key đó theo định dạng `aes-256-gcm` ở mục 1 (`AesGcmFileCipher.encrypt` trong test là ví dụ). File thử
    không mã hoá: bỏ qua bước này.
 2. Gửi phiếu `POST /mock-portal/silver-requests`, admin `POST /mock-admin/silver-requests/<mã>/approve` → mock trigger DAG.

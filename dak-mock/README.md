@@ -91,7 +91,7 @@ không mở YC** (đường dẫn không có key nghĩa là file không mã hoá
 [silver-ingest-app](../silver-ingest-app/README.md).
 
 ```http
-GET /api/v1/keys/by-path?path=vtnet_cdr/20261027&tag=internal
+GET /api/v1/keys/by-path?path=ebs_3g_4g/dt=20261012/batch=1520&tag=internal
 Authorization: Bearer <token của client nội bộ>
 ```
 
@@ -105,7 +105,7 @@ Authorization: Bearer <token của client nội bộ>
 | Key đang bị khoá | `403 key_disabled` (không im lặng `204`, tránh đọc dữ liệu mã hoá như nguyên trạng) |
 
 Key theo đường dẫn do **luồng mã hoá file** tạo; ở mock là `POST /mock-admin/path-keys` (mục 2.2). DAK so khớp **nguyên chuỗi**, mock cũng
-vậy (không chuẩn hoá, kể cả hoa thường), nên `path` khi tạo key phải đúng chuỗi job gửi, vd `vtnet_cdr/20261027`. Một đường dẫn một key, kể
+vậy (không chuẩn hoá, kể cả hoa thường), nên `path` khi tạo key phải đúng chuỗi job gửi, vd `ebs_3g_4g/dt=20261012/batch=1520`. Một đường dẫn một key, kể
 cả khi đó là thư mục. Key lưu ở `kv/data/hla-datalake/datalake/path-keys/{pathHash}` (`pathHash` = SHA-256 hex của đường dẫn, đổi bằng
 `dak.vault.path-key-template`), chỉ được tạo bằng `cas=0`. Token Vault của mock cần quyền `read` và `create` trên path này.
 
@@ -121,13 +121,14 @@ Thân JSON (`POST /mock-portal/silver-requests`, header `X-Mock-Portal-Token`):
 | --- | --- | --- | --- |
 | `source` | `VTT` | `VTNET` | Quyết định DAG |
 | `path` | bắt buộc | bắt buộc | Tương đối theo gốc landing của nguồn, dạng chuẩn: không `/` đầu/cuối, không `//`, không `..`, chỉ `[A-Za-z0-9_.=+-]` và `/`. Với VTNET cũng là đường dẫn job gửi `by-path` |
-| `batchDate` | bắt buộc | bắt buộc | `yyyyMMdd`, ngày có thật → partition `batch_date` |
+| `batchId` | bắt buộc | bắt buộc | Mã lô: `yyyyMMddHH` (theo giờ, vd `2026102412`) hoặc `yyyyMMddHHmm` (theo batch 20 phút của VTNET, vd `dt=20261012/batch=1520` → `202610121520`), ngày giờ có thật → giá trị cột partition `batch_id`. **Hai lô khác nhau của cùng một bảng phải có `batchId` khác nhau**, không thì lô sau ghi đè lô trước |
+| `table` | bắt buộc | bắt buộc | Bảng đích trong database silver, **người gửi chọn**: `[a-z0-9_]{1,128}`, bắt đầu bằng tiền tố của nguồn (`vtt_`, `vtnet_`) để không ghi vào bảng của nguồn khác |
 | `outputMode` | tuỳ chọn | tuỳ chọn | `overwrite-partitions` (mặc định của DAG) hoặc `append` |
 | `encryptColumns` | **không được có** | bắt buộc | Danh sách 1–100 tên cột, không trùng; job mã hoá bằng cdr-crypto |
 | `keyField` | **không được có** | bắt buộc | Cột giữ plaintext làm nguyên liệu key, không nằm trong `encryptColumns` |
 | `purpose` | bắt buộc | bắt buộc | Tối đa 500 ký tự |
 
-Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, trường lạ bị từ chối). Phiếu trùng `(team, source, path, batchDate)` còn hoạt
+Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, trường lạ bị từ chối). Phiếu trùng `(team, source, path, batchId)` còn hoạt
 động thì `409 duplicate_request`. Mã phiếu `SLV-<năm>-<6 số>`, cũng là `dag_run_id` (chữ thường).
 
 | Endpoint | Việc |
@@ -142,12 +143,13 @@ Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, tr�
 
 | File | Nội dung |
 | --- | --- |
-| `valid-vtt-request.json` | Phiếu VTT: chỉ `source`, `path`, `batchDate`, `purpose` |
+| `valid-vtt-request.json` | Phiếu VTT: chỉ `source`, `path`, `batchId`, `table`, `purpose` |
 | `valid-vtnet-request.json` | Phiếu VTNET: thêm `encryptColumns`, `keyField` |
 | `valid-vtnet-append-request.json` | VTNET, một file lẻ của lô, `outputMode=append` |
 | `invalid-vtt-with-columns.json` | VTT có `encryptColumns`/`keyField` → `400` |
 | `invalid-vtnet-missing-columns.json` | VTNET thiếu `encryptColumns`/`keyField` → `400` |
-| `invalid-many-errors.json` | Nhiều lỗi cùng lúc (nguồn lạ, `path` tuyệt đối, ngày sai, `overwrite`, trường lạ, thiếu `purpose`) → `400` liệt kê đủ |
+| `invalid-table-of-another-source.json` | Phiếu VTT đặt bảng `vtnet_…` → `400` |
+| `invalid-many-errors.json` | Nhiều lỗi cùng lúc (nguồn lạ, `path` tuyệt đối, `batchId` thiếu giờ, bảng sai, `overwrite`, trường lạ, thiếu `purpose`) → `400` liệt kê đủ |
 
 Gửi thử (đã `kubectl port-forward deploy/dak-mock 8085`; token portal và token admin đọc từ bàn phím):
 

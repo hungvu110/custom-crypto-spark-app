@@ -1,6 +1,7 @@
 {
   "source": "VTT",
-  "path": "vtt_cdr/20261027",
-  "batchDate": "20261027",
-  "purpose": "Load the VTT batch of 2026-10-27 (columns already encrypted by VTT) into silver"
+  "path": "f001-mpre-call/date=20261024/hour=12",
+  "batchId": "2026102412",
+  "table": "vtt_f001_mpre_call",
+  "purpose": "Load the VTT hour 2026-10-24 12h of f001-mpre-call (columns already encrypted by VTT) into silver"
 }

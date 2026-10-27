@@ -1,8 +1,9 @@
 {
   "source": "VTX",
-  "path": "/landing/vtnet//vtnet_cdr/",
-  "batchDate": "2026-10-27",
+  "path": "/prod8/landing/vtnet//ebs_3g_4g/",
+  "batchId": "20261012",
+  "table": "Silver.Other_Table",
   "outputMode": "overwrite",
-  "outputTable": "silver.other_table",
+  "outputDatabase": "prod",
   "purpose": ""
 }

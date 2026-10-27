@@ -9,15 +9,22 @@ import java.util.Optional;
  * {@code encryptColumns} và {@code keyField}.
  */
 public enum SilverSource {
-  VTT("silver_ingest_vtt", false),
-  VTNET("silver_ingest_vtnet", true);
+  VTT("silver_ingest_vtt", false, "vtt_"),
+  VTNET("silver_ingest_vtnet", true, "vtnet_");
 
   private final String dagId;
   private final boolean encryptsColumns;
+  private final String tablePrefix;
 
-  SilverSource(String dagId, boolean encryptsColumns) {
+  SilverSource(String dagId, boolean encryptsColumns, String tablePrefix) {
     this.dagId = dagId;
     this.encryptsColumns = encryptsColumns;
+    this.tablePrefix = tablePrefix;
+  }
+
+  /** Tiền tố bắt buộc của bảng đích, để một phiếu không ghi vào bảng của nguồn khác (khớp {@code table_prefix} của DAG). */
+  public String tablePrefix() {
+    return tablePrefix;
   }
 
   public String dagId() {

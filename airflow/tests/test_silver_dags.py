@@ -70,14 +70,14 @@ ROOT_VTNET = vtnet.INPUT_ROOT
 
 
 def vtt_conf(**extra):
-    conf = {"path": "vtt_cdr/20261027", "batchDate": "20261027"}
+    conf = {"path": "f001-mpre-call/date=20261024/hour=12", "batchId": "2026102412", "table": "vtt_f001_mpre_call"}
     conf.update(extra)
     return conf
 
 
 def vtnet_conf(**extra):
-    conf = {"path": "vtnet_cdr/20261027", "batchDate": "20261027", "encryptColumns": ["msisdn", "imei"],
-            "keyField": "start_time"}
+    conf = {"path": "ebs_3g_4g/dt=20261012/batch=1520", "batchId": "202610121520", "table": "vtnet_ebs_3g_4g",
+            "encryptColumns": ["msisdn", "imei"], "keyField": "start_time"}
     conf.update(extra)
     return conf
 
@@ -123,7 +123,7 @@ class CheckConfTest(unittest.TestCase):
     def test_path_is_required_relative_and_canonical(self):
         for bad in (None, "", 7, "/vtt_cdr/x", "vtt_cdr/x/", "vtt_cdr//x", "hdfs://nn:8020/landing/vtt/a", "a/../b",
                     "a b", "{{ 7*7 }}", "a/" + "x" * 1100):
-            conf = vtt_conf(path=bad) if bad is not None else {"batchDate": "20261027"}
+            conf = vtt_conf(path=bad) if bad is not None else {"batchId": "2026102412", "table": "vtt_x"}
             with self.assertRaises(ValueError, msg=repr(bad)):
                 common.check_conf(vtt.SOURCE, conf)
 
@@ -132,16 +132,29 @@ class CheckConfTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=mode):
                 common.check_conf(vtt.SOURCE, vtt_conf(outputMode=mode))
 
-    def test_batch_date_is_required_and_must_be_a_real_date(self):
-        for bad in (None, "", "2026-10-27", "20261340", "20230229", 20261027, "202610271"):
+    def test_batch_id_is_required_and_must_be_a_real_hour_or_minute_batch(self):
+        for bad in (None, "", "20261027", "2026-10-27", "2026102425", "202610271260", "20261340", "2026102412345", 2026102412):
             conf = vtt_conf()
             if bad is None:
-                del conf["batchDate"]
+                del conf["batchId"]
             else:
-                conf["batchDate"] = bad
+                conf["batchId"] = bad
             with self.assertRaises(ValueError, msg=repr(bad)):
                 common.check_conf(vtt.SOURCE, conf)
-        common.check_conf(vtt.SOURCE, vtt_conf(batchDate="20240229"))
+        common.check_conf(vtt.SOURCE, vtt_conf(batchId="2026102400"))
+        common.check_conf(vtnet.SOURCE, vtnet_conf(batchId="202610121540"))
+
+    def test_table_is_required_lowercase_and_must_carry_the_prefix_of_the_source(self):
+        for bad in (None, "", "VTT_x", "vtt-x", "vtt_" + "x" * 130, "vtnet_x", "other", "vtt_x y", 7):
+            conf = vtt_conf()
+            if bad is None:
+                del conf["table"]
+            else:
+                conf["table"] = bad
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_conf(vtt.SOURCE, conf)
+        with self.assertRaises(ValueError):
+            common.check_conf(vtnet.SOURCE, vtnet_conf(table="vtt_x"))
 
     def test_vtnet_needs_valid_encrypt_columns_and_key_field_from_the_request(self):
         bad_confs = (
@@ -158,7 +171,7 @@ class CheckConfTest(unittest.TestCase):
                 common.check_conf(vtnet.SOURCE, conf)
 
     def test_unknown_keys_are_rejected_and_vtt_takes_no_columns(self):
-        for module, conf in ((vtt, vtt_conf(encryptColumns=["a"])), (vtt, vtt_conf(inputPath="x")),
+        for module, conf in ((vtt, vtt_conf(encryptColumns=["a"])), (vtt, vtt_conf(batchDate="20261027")), (vtt, vtt_conf(inputPath="x")),
                              (vtnet, vtnet_conf(keyPath="x")), (vtnet, vtnet_conf(outputTable="x"))):
             with self.assertRaises(ValueError, msg=repr(conf)):
                 common.check_conf(module.SOURCE, conf)
@@ -188,11 +201,12 @@ class SpecTest(unittest.TestCase):
 
     def test_the_input_path_is_the_root_of_the_source_plus_the_relative_path(self):
         env = driver_env(render(vtt, vtt_conf()))
-        self.assertEqual(env["INPUT_PATH"], ROOT_VTT + "vtt_cdr/20261027")
+        self.assertEqual(env["INPUT_PATH"], ROOT_VTT + "f001-mpre-call/date=20261024/hour=12")
         self.assertTrue(ROOT_VTT.endswith("/") and ROOT_VTNET.endswith("/"))
         self.assertEqual(env["OUTPUT_MODE"], "overwrite-partitions")
-        self.assertEqual((env["BATCH_COLUMN"], env["BATCH_VALUE"]), ("batch_date", "20261027"))
-        self.assertEqual((env["OUTPUT_DB"], env["OUTPUT_TABLE"], env["INPUT_FORMAT"]), ("silver", "vtt_cdr", "csv"))
+        self.assertEqual((env["BATCH_COLUMN"], env["BATCH_VALUE"]), ("batch_id", "2026102412"))
+        self.assertEqual((env["OUTPUT_DB"], env["OUTPUT_TABLE"]), ("silver", "vtt_f001_mpre_call"))
+        self.assertEqual(driver_env(render(vtnet, vtnet_conf()))["OUTPUT_TABLE"], "vtnet_ebs_3g_4g")
         self.assertEqual(driver_env(render(vtt, vtt_conf(outputMode="append")))["OUTPUT_MODE"], "append")
 
     def test_vtt_has_no_dak_or_vtnet_env(self):
@@ -212,7 +226,7 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(env["FILE_CIPHER"], "aes-256-gcm")
         # Job gửi by-path đúng phần của INPUT_PATH sau KEY_PATH_ROOT, tức conf.path.
         self.assertEqual(env["KEY_PATH_ROOT"], ROOT_VTNET)
-        self.assertEqual(env["INPUT_PATH"], ROOT_VTNET + "vtnet_cdr/20261027")
+        self.assertEqual(env["INPUT_PATH"], ROOT_VTNET + "ebs_3g_4g/dt=20261012/batch=1520")
         self.assertNotIn("KEY_PATH", env)
 
     def test_vtnet_driver_reads_the_dak_secret_by_reference_and_executors_get_no_dak_env(self):

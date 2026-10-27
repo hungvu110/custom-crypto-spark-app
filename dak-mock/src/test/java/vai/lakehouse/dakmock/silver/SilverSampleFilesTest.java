@@ -48,6 +48,9 @@ class SilverSampleFilesTest {
 
     assertThat(p.source()).isEqualTo(SilverSource.VTT);
     assertThat(p.encryptColumns()).isEmpty();
+    assertThat(p.path()).isEqualTo("f001-mpre-call/date=20261024/hour=12");
+    assertThat(p.batchId()).isEqualTo("2026102412");
+    assertThat(p.table()).isEqualTo("vtt_f001_mpre_call");
   }
 
   @Test
@@ -58,6 +61,8 @@ class SilverSampleFilesTest {
     assertThat(p.encryptColumns()).containsExactly("msisdn", "imei");
     assertThat(p.keyField()).isEqualTo("start_time");
     assertThat(p.outputMode()).isNull();
+    assertThat(p.batchId()).isEqualTo("202610121520");
+    assertThat(p.table()).isEqualTo("vtnet_ebs_3g_4g");
 
     assertThat(parse("valid-vtnet-append-request.json").outputMode()).isEqualTo("append");
   }
@@ -68,6 +73,7 @@ class SilverSampleFilesTest {
     assertThat(rejectedFields("invalid-vtt-with-columns.json")).containsExactlyInAnyOrder("encryptColumns", "keyField");
     assertThat(rejectedFields("invalid-vtnet-missing-columns.json")).containsExactlyInAnyOrder("encryptColumns", "keyField");
     assertThat(rejectedFields("invalid-many-errors.json"))
-        .containsExactlyInAnyOrder("source", "path", "batchDate", "outputMode", "outputTable", "purpose");
+        .containsExactlyInAnyOrder("source", "path", "batchId", "table", "outputMode", "outputDatabase", "purpose");
+    assertThat(rejectedFields("invalid-table-of-another-source.json")).containsExactly("table");
   }
 }

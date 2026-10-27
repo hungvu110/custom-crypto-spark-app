@@ -1,8 +1,8 @@
 """DAG chuẩn hoá một lô file VTT vào silver (docs/silver-ingest/PLAN.md), trigger bởi DAK khi phiếu chuẩn hoá được duyệt. File VTT đã
 được mã hoá từng cột: job chỉ đọc rồi ghi bảng, không gọi DAK.
 
-DAK trigger: POST /api/v1/dags/silver_ingest_vtt/dagRuns, conf = {"path": "<tương đối theo INPUT_ROOT, vd vtt_cdr/20261027>",
-"batchDate": "yyyyMMdd", "outputMode": "overwrite-partitions|append" (tuỳ chọn, mặc định overwrite-partitions)}. Test không cần Airflow:
+DAK trigger: POST /api/v1/dags/silver_ingest_vtt/dagRuns, conf = {"path": "<tương đối theo INPUT_ROOT, vd f001-mpre-call/date=20261024/hour=12>",
+"batchId": "yyyyMMddHH", "table": "vtt_f001_mpre_call", "outputMode": "overwrite-partitions|append" (tuỳ chọn, mặc định overwrite-partitions)}. Test không cần Airflow:
     python3 -B -m unittest discover -s airflow/tests
 """
 import pendulum
@@ -19,13 +19,13 @@ DAG_ID = "silver_ingest_vtt"
 SOURCE = {
     "name": "vtt",
     "main_class": "vai.lakehouse.silveringest.app.VttSilverApp",
-    "input_root": f"{common.HDFS}/landing/vtt/",
-    "conf_keys": ("path", "batchDate", "outputMode"),
+    "input_root": f"{common.HDFS}/landing/vtt/lakehouse/vtt-core/",
+    "conf_keys": ("path", "batchId", "table", "outputMode"),
+    "table_prefix": "vtt_",
     "env": {
         "INPUT_FORMAT": "csv",
         "INPUT_OPTION_header": "true",
         "OUTPUT_DB": "silver",
-        "OUTPUT_TABLE": "vtt_cdr",
         "OUTPUT_FORMAT": "delta",
     },
 }

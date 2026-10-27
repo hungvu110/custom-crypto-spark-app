@@ -79,7 +79,7 @@ public final class DakApiException extends RuntimeException {
 
   /** Đã có phiếu chuẩn hoá silver đang hoạt động cho cùng nguồn, đường dẫn và ngày lô; {@code existingCode} là phiếu cũ của cùng team. */
   public static DakApiException duplicateBatch(String existingCode) {
-    String message = "An active request for the same source, path and batchDate already exists: " + existingCode;
+    String message = "An active request for the same source, path and batchId already exists: " + existingCode;
     return new DakApiException(HttpStatus.CONFLICT, "duplicate_request", message, message);
   }
 

@@ -14,13 +14,14 @@ public interface SilverDagTrigger {
   JobState state(SilverRequest request);
 
   /**
-   * {@code conf} của dag run, đúng khoá DAG nhận (airflow/dags/silver_ingest_common.py): {@code path}, {@code batchDate},
+   * {@code conf} của dag run, đúng khoá DAG nhận (airflow/dags/silver_ingest_common.py): {@code path}, {@code batchId}, {@code table},
    * {@code outputMode} nếu người gửi chọn, và với VTNET {@code encryptColumns}, {@code keyField}. Không có key hay bí mật nào.
    */
   static Map<String, Object> conf(SilverRequest r) {
     Map<String, Object> conf = new LinkedHashMap<>();
     conf.put("path", r.path());
-    conf.put("batchDate", r.batchDate());
+    conf.put("batchId", r.batchId());
+    conf.put("table", r.table());
     if (r.outputMode() != null) {
       conf.put("outputMode", r.outputMode());
     }

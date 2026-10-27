@@ -17,8 +17,8 @@ Mỗi nguồn một job riêng (case by case), hiện có hai nguồn, cả hai 
 | Câu hỏi | Quyết định |
 | --- | --- |
 | File VTNET có mã hoá không | **Do DAK quyết định lúc chạy**: job luôn gọi `by-path`; có key thì giải mã, chưa có key (DAK trả rỗng `204`, không mở YC) thì đọc nguyên trạng. **DAK đã đồng ý** ([TRA-LOI-DAK-BY-PATH.md](../key-access/TRA-LOI-DAK-BY-PATH.md) mục 5); `202` bị coi là lỗi |
-| Phiếu chuẩn hoá | Team gửi, **admin duyệt**, DAK trigger DAG của nguồn. Phiếu: `source`, `path` (tương đối), `batchDate`, `outputMode` (tuỳ chọn), `purpose`; VTNET thêm `encryptColumns`, `keyField` do **người gửi chọn**. dak-mock: [README mục 2.4](../../dak-mock/README.md) |
-| Cách ghi bảng đích | **Ghi đè theo partition của lô.** DAK gửi `conf.batchDate` (yyyyMMdd, bắt buộc); job thêm cột partition `batch_date` = giá trị đó và mặc định `OUTPUT_MODE=overwrite-partitions`: chỉ thay partition của lô, chạy lại cùng lô không ghi trùng, lô khác giữ nguyên. DAG chỉ nhận `overwrite-partitions` hoặc `append`, không nhận `overwrite` (thay cả bảng) |
+| Phiếu chuẩn hoá | Team gửi, **admin duyệt**, DAK trigger DAG của nguồn. Phiếu: `source`, `path` (tương đối), `batchId`, `table` (người gửi chọn), `outputMode` (tuỳ chọn), `purpose`; VTNET thêm `encryptColumns`, `keyField` do **người gửi chọn**. dak-mock: [README mục 2.4](../../dak-mock/README.md) |
+| Cách ghi bảng đích | **Ghi đè theo partition của lô.** DAK gửi `conf.batchId` (`yyyyMMddHH` hoặc `yyyyMMddHHmm`, bắt buộc); job thêm cột partition `batch_id` = giá trị đó và mặc định `OUTPUT_MODE=overwrite-partitions`: chỉ thay partition của lô, chạy lại cùng lô không ghi trùng, lô khác giữ nguyên. DAG chỉ nhận `overwrite-partitions` hoặc `append`, không nhận `overwrite` (thay cả bảng) |
 | DAG ở đâu | Thư mục `airflow/` ở gốc repo (cùng DAG khử định danh, chuyển ra từ `dak-mock/k8s/airflow`) |
 | Thuật toán mã hoá cả file của VTNET (khi có) | Chưa rõ → **pluggable** (`FILE_CIPHER`). Mặc định `aes-256-gcm`: file = IV 12 byte ‖ ciphertext ‖ tag 16 byte, key = `keyPrefix` của `by-path` (base64 chuẩn của đúng 32 byte). Đổi thuật toán chỉ thêm một class |
 | Định dạng file sau giải mã / file VTT | Cấu hình được: `INPUT_FORMAT` = `csv`, `tsv`, `txt`, `text`, `json`, `parquet`, `orc`, `avro`; `INPUT_SCHEMA`, `INPUT_OPTION_*` |
@@ -68,7 +68,8 @@ schema, bảng đích) là **hằng trong DAG**; `conf` do DAK gửi từ phiế
 | Khoá `conf` | VTT | VTNET | Ý nghĩa |
 | --- | --- | --- | --- |
 | `path` | bắt buộc | bắt buộc | Tương đối theo gốc landing của nguồn, dạng chuẩn. `INPUT_PATH` = gốc + `path`; VTNET gửi đúng `path` cho `by-path` |
-| `batchDate` | bắt buộc | bắt buộc | Ngày của lô, `yyyyMMdd` (ngày có thật). Thành giá trị cột partition `batch_date` |
+| `batchId` | bắt buộc | bắt buộc | Mã lô `yyyyMMddHH` hoặc `yyyyMMddHHmm` (ngày giờ có thật) → giá trị cột partition `batch_id` |
+| `table` | bắt buộc | bắt buộc | Bảng đích trong `silver`, **người gửi phiếu chọn**, bắt đầu bằng `vtt_` / `vtnet_` |
 | `outputMode` | không | không | `overwrite-partitions` (mặc định) hoặc `append` |
 | `encryptColumns`, `keyField` | không nhận | bắt buộc | Cột cần mã hoá và cột keyField, người gửi phiếu chọn |
 
@@ -95,9 +96,11 @@ DAG kiểm `conf` ở task đầu `validate_conf` trước khi tạo job, như D
   dạng thật: thêm một `FileCipher` nếu khác AES-256-GCM, đặt `FILE_CIPHER` trong DAG.
 - `by-path` không có key → `204` (DAK đã đồng ý). Nếu file thật sự mã hoá mà DAK chưa có key cho đường dẫn, job sẽ đọc ciphertext như
   plaintext: luồng mã hoá file của DAK phải tạo key **trước** khi file được đưa vào landing.
-- Hai lô khác nhau của cùng một ngày phải được DAK gộp thành **một** lần chạy (cùng `batchDate`): chạy lô thứ hai với cùng `batchDate` sẽ thay
-  dữ liệu của lô thứ nhất. Nếu một ngày có nhiều lô độc lập, cần đổi `batchDate` thành mã lô (vd `yyyyMMddHH` hoặc tên lô).
-- Bảng đích đã tồn tại mà không partition theo `batch_date` bị từ chối (exit 1): tạo bảng mới hoặc đổi `OUTPUT_TABLE`.
+- Hai lô khác nhau của cùng một bảng phải có `batchId` khác nhau: cùng `batchId` thì lô sau **thay** dữ liệu lô trước. VTNET có batch 20 phút
+  (`dt=20261012/batch=1520`) nên dùng `yyyyMMddHHmm` (`202610121520`); dùng `yyyyMMddHH` thì ba batch cùng giờ ghi đè nhau.
+- Dữ liệu thật (HDFS): VTNET `/prod8/landing/vtnet/<bảng>/dt=<ngày>/batch=<HHmm>/<file>.csv`; VTT `/landing/vtt/lakehouse/vtt-core/<bảng>/date=<ngày>/hour=<giờ>/`
+  (~98 file × 70 MB mỗi giờ). Gốc landing của hai DAG đã đặt theo đây; schema và delimiter từng bảng **chưa khai** (`INPUT_SCHEMA` để trống).
+- Bảng đích đã tồn tại mà không partition theo `batch_id` bị từ chối (exit 1): tạo bảng mới hoặc đổi `OUTPUT_TABLE`.
 - DAK thật **chưa code** `by-path` (tài liệu mới mục 5): họ chờ câu trả lời mục 6 — đã soạn ở `TRA-LOI-DAK-BY-PATH.md`, cần gửi DAK. Job VTNET chạy được với
   dak-mock; với DAK thật cần DAK làm xong `by-path`.
 - Lần đầu ghi một bảng silver mới: job chờ admin DAK duyệt yêu cầu key cột (tối đa `DAK_PENDING_WAIT_TIMEOUT_SECONDS`). Trong lúc chờ, driver

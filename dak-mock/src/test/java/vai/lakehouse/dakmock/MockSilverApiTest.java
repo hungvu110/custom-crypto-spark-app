@@ -58,7 +58,7 @@ class MockSilverApiTest {
 
   @Test
   void vtnetRequestIsApprovedTriggeredAndFinished() throws Exception {
-    String body = "{\"source\":\"VTNET\",\"path\":\"vtnet_cdr/20261027\",\"batchDate\":\"20261027\","
+    String body = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g/dt=20261012/batch=1520\",\"batchId\":\"202610121520\",\"table\":\"vtnet_ebs_3g_4g\","
         + "\"encryptColumns\":[\"msisdn\",\"imei\"],\"keyField\":\"start_time\",\"purpose\":\"nạp lô 27\"}";
 
     ResponseEntity<String> created = portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, body);
@@ -82,13 +82,13 @@ class MockSilverApiTest {
   @Test
   void invalidRequestsListEveryProblem() throws Exception {
     ResponseEntity<String> res = portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE,
-        "{\"source\":\"VTT\",\"path\":\"/abs\",\"batchDate\":\"x\",\"encryptColumns\":[\"a\"],\"purpose\":\"p\"}");
+        "{\"source\":\"VTT\",\"path\":\"/abs\",\"batchId\":\"x\",\"table\":\"vtt_t\",\"encryptColumns\":[\"a\"],\"purpose\":\"p\"}");
 
     assertThat(res.getStatusCode().value()).isEqualTo(400);
     JsonNode body = JSON.readTree(res.getBody());
     assertThat(body.path("error").asText()).isEqualTo("invalid_request");
     assertThat(body.path("problems")).extracting(p -> p.path("field").asText())
-        .containsExactlyInAnyOrder("path", "batchDate", "encryptColumns");
+        .containsExactlyInAnyOrder("path", "batchId", "encryptColumns");
   }
 
   @Test
