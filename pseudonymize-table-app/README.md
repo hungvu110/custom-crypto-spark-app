@@ -68,7 +68,7 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 | ----------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DB_NAME` + `TABLE_NAME`            | —                                                                      | **Nguồn là bảng** trong catalog. Chỉ `[A-Za-z0-9_]`. Bắt buộc nếu không dùng `INPUT_PATH`                                                                                                                                                                               |
 | `INPUT_PATH`                        | —                                                                      | **Nguồn là file/thư mục**, vd `/landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/` (đường dẫn tuyệt đối hoặc URI `hdfs://…`; glob được). Loại trừ với `DB_NAME`/`TABLE_NAME` (xem 3.5)                                                       |
-| `INPUT_FROM` / `INPUT_TO`           | —                                                                      | Khoảng thời gian **liên tục**, bao gồm hai đầu, `yyyyMMdd` hoặc `yyyyMMddHH` (FROM mặc định giờ 00, TO mặc định 23). Khi có thì `INPUT_PATH` là **gốc** của cây `date=…/hour=…/` (xem 3.8)                                                                              |
+| `INPUT_FROM` / `INPUT_TO`           | —                                                                      | Khoảng thời gian **liên tục**, bao gồm hai đầu, `yyyyMMdd` hoặc `yyyyMMddHH` (FROM mặc định giờ 00, TO mặc định 23). Với `INPUT_PATH` là **gốc** của cây `date=…/hour=…/`; với `DB_NAME`/`TABLE_NAME` là lọc trên hai cột partition `date`, `hour` (xem 3.8)                                                                              |
 | `INPUT_HOURS`                       | —                                                                      | Lọc thêm giờ trong ngày cho mọi ngày của khoảng: `6-18` hoặc `18`                                                                                                                                                                                                       |
 | `INPUT_DATE_KEY` / `INPUT_HOUR_KEY` | `date` / `hour` | Tên khoá thư mục tầng ngày / tầng giờ-batch nếu khác mặc định, vd `dt` / `batch`; cũng là tên cột partition |
 | `INPUT_FORMAT`                      | (bắt buộc khi có `INPUT_PATH`)                                         | `parquet` / `orc` / `avro` / `json` / `delta` / `csv` / `tsv` / `txt` (= `csv`, text phân tách ký tự) / `text` (mỗi dòng 1 cột `value`)                                                                                                                                 |
@@ -210,6 +210,14 @@ job trước khi `ignoreCorruptFiles` có tác dụng).
 | `FROM=2026101218 TO=2026101218`       | Đúng một giờ                            |
 | `FROM=2026101218 TO=2026101306`       | Liên tục từ 18h ngày 12 đến 06h ngày 13 |
 | `FROM=20261012 TO=20261014 HOURS=6-8` | Giờ 06–08 của mỗi ngày 12, 13, 14       |
+
+**Nguồn là bảng (`DB_NAME` + `TABLE_NAME`).** `INPUT_FROM`/`INPUT_TO`/`INPUT_HOURS` cũng dùng được, với cùng ý nghĩa ở bảng trên.
+Bảng nguồn phải có hai cột chuỗi `date` (`yyyyMMdd`) và `hour` (`HH`), tên cố định (không có `INPUT_DATE_KEY`/`INPUT_HOUR_KEY`);
+thiếu một trong hai cột thì job dừng trước khi ghi. Job lọc ngay trên nguồn bằng so sánh thẳng trên hai cột partition nên Spark
+chỉ đọc partition trong khoảng. Dạng phút `yyyyMMddHHmm` bị từ chối (bảng chỉ có giờ). Có khoảng thì bảng đích mặc định
+partition theo `(date, hour)` và `OUTPUT_MODE` mặc định `overwrite-partitions` như nguồn file; hai cột `date`, `hour` không được
+nằm trong `PSEUDO_COLUMNS`. Khác nguồn file: ghi **một lượt** (không có thử lại/bỏ qua theo từng partition vì không liệt kê
+thư mục trước).
 
 **Thư mục theo batch (vd 20 phút).** Tầng thứ hai nhận giá trị `HH` (`hour=05`) hoặc `HHMM` 3–4 chữ số (`batch=0020`,
 `batch=1740`); giá trị sai (giờ > 23, phút > 59) bị bỏ qua. Ví dụ nguồn `/landing/ebs_3g_4g/dt=20261014/batch=0020/`:

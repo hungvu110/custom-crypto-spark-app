@@ -215,11 +215,14 @@ object PseudonymizeTableJob {
 
   /** Bảng trong catalog, hoặc file/thư mục theo `INPUT_FORMAT` (+ `INPUT_SCHEMA`, `INPUT_OPTION_*`, khoảng ngày/giờ). Chỉ đọc. */
   private def readSource(spark: SparkSession, cfg: JobConfig): SourceData = cfg.input match {
-    case TableInput(db, table) =>
+    case TableInput(db, table, range) =>
       if (!spark.catalog.tableExists(db, table)) {
         throw new IllegalArgumentException(s"Source table does not exist: ${cfg.source}")
       }
-      SourceData(spark.table(quoted(db, table)), None, None)
+      val whole = spark.table(quoted(db, table))
+      range.foreach(r => Log.kv("range", s"${r.describe} on ${r.dateKey}/${r.hourKey}"))
+      // Filter the source itself (before the transformations) so Spark reads only the partitions in the range.
+      SourceData(range.fold(whole)(r => TableRange(whole, r, cfg.source)), None, None)
     case input: FileInput =>
       val fs = resolveFiles(spark, input)
       fs.partitions.foreach { ps =>

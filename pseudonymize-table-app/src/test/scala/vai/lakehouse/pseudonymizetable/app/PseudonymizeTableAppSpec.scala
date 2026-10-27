@@ -430,4 +430,55 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     result.badFiles.map(_.path.split("/").last) shouldBe Seq("bad.txt")
     partitionsOf("skip_resume_tbl") should contain allOf ("20261012/05", "20261012/19")
   }
+  private def eventsTable(name: String): Unit = {
+    spark.sql(s"CREATE TABLE crm.$name (id BIGINT, isdn STRING, date STRING, hour STRING) USING parquet PARTITIONED BY (date, hour)")
+    spark.sql(
+      s"""INSERT INTO crm.$name VALUES
+         |  (1, '84900000001', '20261012', '05'), (2, '84900000002', '20261012', '18'),
+         |  (3, '84900000003', '20261013', '05'), (4, '84900000004', '20261013', '18'),
+         |  (5, '84900000005', '20261014', '05')""".stripMargin)
+  }
+
+  private def runEvents(table: String, out: String, extra: (String, String)*): Int =
+    PseudonymizeTableApp.execute(Map("DB_NAME" -> "crm", "TABLE_NAME" -> table, "PSEUDO_COLUMNS" -> "isdn",
+      "OUTPUT_TABLE" -> out, "ENABLE_HIVE_SUPPORT" -> "false") ++ extra, Some(spark))
+
+  private def idsOf(table: String): Set[Long] = spark.table(table).select("id").collect().map(_.getLong(0)).toSet
+
+  it should "table source with INPUT_FROM/INPUT_TO/INPUT_HOURS: only the range is written, partitioned by (date, hour)" in {
+    eventsTable("events_range")
+
+    runEvents("events_range", "events_range_out", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261013", "INPUT_HOURS" -> "18") shouldBe 0
+
+    idsOf("crm.events_range_out") shouldBe Set(2L, 4L)
+    spark.table("crm.events_range_out").select("isdn").collect().map(_.getString(0)).foreach(_ should fullyMatch regex "k1_[0-9a-f]{32}")
+    spark.sql("DESCRIBE DETAIL crm.events_range_out").select("partitionColumns").head().getSeq[String](0) shouldBe Seq("date", "hour")
+    idsOf("crm.events_range") shouldBe Set(1L, 2L, 3L, 4L, 5L) // source untouched
+  }
+
+  it should "table source with a range: overwrite-partitions by default, rerun does not duplicate or delete other days" in {
+    eventsTable("events_rerun")
+
+    runEvents("events_rerun", "events_rerun_out", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012") shouldBe 0
+    runEvents("events_rerun", "events_rerun_out", "INPUT_FROM" -> "20261013", "INPUT_TO" -> "20261013") shouldBe 0
+    runEvents("events_rerun", "events_rerun_out", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012") shouldBe 0
+
+    spark.table("crm.events_rerun_out").count() shouldBe 4L
+    idsOf("crm.events_rerun_out") shouldBe Set(1L, 2L, 3L, 4L)
+  }
+
+  it should "table source with a range and OUTPUT_MODE=overwrite replaces the whole target" in {
+    eventsTable("events_full")
+
+    runEvents("events_full", "events_full_out", "INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012") shouldBe 0
+    runEvents("events_full", "events_full_out", "INPUT_FROM" -> "20261014", "INPUT_TO" -> "20261014", "OUTPUT_MODE" -> "overwrite") shouldBe 0
+
+    idsOf("crm.events_full_out") shouldBe Set(5L)
+  }
+
+  it should "table source with a range exits 1 when the table has no date/hour columns, and writes nothing" in {
+    runEvents("subscriber", "subscriber_no_range", "INPUT_FROM" -> "20261012") shouldBe PseudonymizeTableApp.ExitRuntimeError
+
+    spark.catalog.tableExists("crm", "subscriber_no_range") shouldBe false
+  }
 }

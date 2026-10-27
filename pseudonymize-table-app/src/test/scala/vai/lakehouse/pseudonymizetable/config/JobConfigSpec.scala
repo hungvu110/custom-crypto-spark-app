@@ -148,7 +148,43 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors("INPUT_HOURS" -> "18-6") should include("INPUT_HOURS")
     errors("INPUT_FROM" -> "20261012", "OUTPUT_PARTITION_BY" -> "none", "OUTPUT_MODE" -> "overwrite-partitions") should
       include("requires OUTPUT_PARTITION_BY")
-    JobConfig.fromEnv(base + ("INPUT_FROM" -> "20261012")).left.toOption.get.mkString should include("only valid together with INPUT_PATH")
+    JobConfig.fromEnv(base + ("INPUT_DATE_KEY" -> "dt")).left.toOption.get.mkString should include("only valid together with INPUT_PATH")
+  }
+
+  it should "accept a date/hour range on a table source and default to partition (date, hour) + overwrite-partitions" in {
+    val cfg = JobConfig.fromEnv(base ++ Map("INPUT_FROM" -> "20261012", "INPUT_TO" -> "2026101405", "INPUT_HOURS" -> "6-18")).toOption.get
+    val range = cfg.input.asInstanceOf[TableInput].range.get
+
+    cfg.source shouldBe "crm.subscriber"
+    range.from shouldBe 202610120000L
+    range.to shouldBe 202610140559L
+    range.hours shouldBe Some((6, 18))
+    range.dateKey shouldBe "date"
+    range.hourKey shouldBe "hour"
+    cfg.outputPartitionBy shouldBe Seq("date", "hour")
+    cfg.outputMode shouldBe "overwrite-partitions"
+  }
+
+  it should "keep overwrite as the default for a table without a range, and honour an explicit OUTPUT_MODE with a range" in {
+    val plain = JobConfig.fromEnv(base).toOption.get
+    plain.input.asInstanceOf[TableInput].range shouldBe None
+    plain.outputPartitionBy shouldBe Nil
+    plain.outputMode shouldBe "overwrite"
+    JobConfig.fromEnv(base ++ Map("INPUT_HOURS" -> "18", "OUTPUT_MODE" -> "overwrite")).toOption.get.outputMode shouldBe "overwrite"
+    JobConfig.fromEnv(base ++ Map("INPUT_HOURS" -> "18", "OUTPUT_MODE" -> "append")).toOption.get.outputMode shouldBe "append"
+  }
+
+  it should "reject an invalid range, minute resolution and a custom partition key on a table source" in {
+    def errors(extra: (String, String)*) = JobConfig.fromEnv(base ++ extra).left.toOption.get.mkString(" | ")
+
+    errors("INPUT_FROM" -> "20261340") should include("invalid date")
+    errors("INPUT_FROM" -> "20261014", "INPUT_TO" -> "20261012") should include("must be <=")
+    errors("INPUT_HOURS" -> "18-6") should include("INPUT_HOURS")
+    errors("INPUT_FROM" -> "202610140020") should include("INPUT_FROM: minutes (yyyyMMddHHmm) are only valid together with INPUT_PATH")
+    errors("INPUT_TO" -> "202610140020") should include("INPUT_TO: minutes (yyyyMMddHHmm) are only valid together with INPUT_PATH")
+    errors("INPUT_FROM" -> "20261012", "INPUT_HOUR_KEY" -> "h") should include("only valid together with INPUT_PATH")
+    errors("OUTPUT_MODE" -> "overwrite-partitions") should include("requires OUTPUT_PARTITION_BY")
+    errors("INPUT_FROM" -> "20261012", "PSEUDO_COLUMNS" -> "date") should include("must not be listed in PSEUDO_COLUMNS")
   }
 
   it should "accept minute-resolution FROM/TO (yyyyMMddHHmm) and reject a bad minute" in {

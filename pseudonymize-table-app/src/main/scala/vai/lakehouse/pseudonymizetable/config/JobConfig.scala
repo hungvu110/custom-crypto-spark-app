@@ -60,7 +60,8 @@ object BadFilePolicy {
 /** Nguồn dữ liệu: bảng trong catalog hoặc thư mục/file trên HDFS (hay file system bất kỳ Spark đọc được). */
 sealed trait InputSource { def describe: String }
 
-final case class TableInput(db: String, table: String) extends InputSource {
+/** `range` (optional) keeps only the rows whose partition columns `date` (yyyyMMdd) and `hour` (HH) fall inside it. */
+final case class TableInput(db: String, table: String, range: Option[InputRange] = None) extends InputSource {
   override def describe: String = s"$db.$table"
 }
 
@@ -194,10 +195,14 @@ object JobConfig {
         if (raw("INPUT_FORMAT").isDefined || raw("INPUT_SCHEMA").isDefined || inputOptions(env).nonEmpty) {
           errors += "INPUT_FORMAT/INPUT_SCHEMA/INPUT_OPTION_*: only valid together with INPUT_PATH"
         }
-        if (Seq("INPUT_FROM", "INPUT_TO", "INPUT_HOURS", "INPUT_DATE_KEY", "INPUT_HOUR_KEY").exists(k => raw(k).isDefined)) {
-          errors += "INPUT_FROM/INPUT_TO/INPUT_HOURS/INPUT_DATE_KEY/INPUT_HOUR_KEY: only valid together with INPUT_PATH"
+        if (Seq("INPUT_DATE_KEY", "INPUT_HOUR_KEY").exists(k => raw(k).isDefined)) {
+          errors += "INPUT_DATE_KEY/INPUT_HOUR_KEY: only valid together with INPUT_PATH (a table is always filtered on its date and hour columns)"
         }
-        TableInput(identifier("DB_NAME", None), identifier("TABLE_NAME", None))
+        // A table has hour partitions only: a minute-resolution bound (yyyyMMddHHmm) has nothing to match.
+        Seq("INPUT_FROM", "INPUT_TO").filter(k => raw(k).exists(_.length == 12)).foreach { k =>
+          errors += s"$k: minutes (yyyyMMddHHmm) are only valid together with INPUT_PATH; use yyyyMMdd or yyyyMMddHH for a table"
+        }
+        TableInput(identifier("DB_NAME", None), identifier("TABLE_NAME", None), inputRange(env, errors))
     }
 
     val mode = raw("PSEUDO_MODE").map(m => Try(PseudonymMode.parse(m)).toOption.getOrElse {
@@ -208,7 +213,7 @@ object JobConfig {
     val columns = pseudoColumns(raw("PSEUDO_COLUMNS"), mode, errors)
 
     val (outDb, outTable) = input match {
-      case TableInput(db, table) =>
+      case TableInput(db, table, _) =>
         val d = identifier("OUTPUT_DB", Some(db).filter(_.nonEmpty))
         val t = identifier("OUTPUT_TABLE", Some(s"${table}_pseudonymized").filter(_ => table.nonEmpty))
         if (db.nonEmpty && table.nonEmpty && d == db && t == table) {
@@ -235,6 +240,7 @@ object JobConfig {
         cols
       case None => input match {
         case FileInput(_, _, _, _, Some(r)) => Seq(r.dateKey, r.hourKey)
+        case TableInput(_, _, Some(r)) => Seq(r.dateKey, r.hourKey)
         case _ => Nil
       }
     }
