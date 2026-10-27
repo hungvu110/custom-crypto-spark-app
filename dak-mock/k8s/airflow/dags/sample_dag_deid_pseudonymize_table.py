@@ -7,16 +7,20 @@ như DAG vailakehouse đang chạy) thì sửa các hằng ở khối "MÔI TRƯ
 
 DAK gọi POST /api/v1/dags/<dagId>/dagRuns với:
   dag_run_id = deid-<năm>-<6 số>              (tên job, cũng là tên SparkApplication)
-  conf = {requestCode, database, table, pseudoColumns, outputDb, outputTable, keySecretName}
-`keySecretName` là TÊN Secret (cùng namespace với SparkApplication) có file pseudonym.hmac_v1 = "base64:<key bảng>". Key KHÔNG
+  conf = {requestCode, database, table, pseudoColumns, keySecretName, env}
+`env` là env CUỐI CÙNG của job (env người gửi phiếu nhập cộng giá trị mặc định do DAK điền), gồm OUTPUT_DB, OUTPUT_TABLE,
+OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT. Chỉ những env trong bảng JOB_ENV bên dưới mới được nhận, và bảng này PHẢI khớp
+`dak.deid.job-env` của dak-mock (có test chống lệch). `keySecretName` là TÊN Secret (cùng namespace với SparkApplication) có file pseudonym.hmac_v1 = "base64:<key bảng>". Key KHÔNG
 nằm trong conf. DAG này phải nằm trong dak.deid.airflow.allowed-dag-ids của dak-mock.
 
-TRIGGER TAY ĐỂ THỬ (không cần DAK): bấm Trigger DAG, bỏ trống conf. Khi đó dùng DEFAULTS bên dưới: khử định danh cột `name` của
-demo_db.users_cdr_2 sang bảng demo_db.users_cdr_2_deid_manual, đọc key từ Secret `pseudonym-keys` có sẵn
-(pseudonymize-table-app/k8s/pseudonym-keys-secret.yaml). Run do DAK tạo (dag_run_id bắt đầu bằng `deid-`) thì BẮT BUỘC có đủ conf,
-không bao giờ rơi về DEFAULTS.
+TRIGGER TAY ĐỂ THỬ (không cần DAK): bấm Trigger DAG, bỏ trống conf. Khi đó dùng DEFAULTS và MANUAL_OUTPUT bên dưới: khử định danh cột
+`name` của demo_db.users_cdr_2 sang bảng demo_db.users_cdr_2_deid_manual, đọc key từ Secret `pseudonym-keys` có sẵn
+(pseudonymize-table-app/k8s/pseudonym-keys-secret.yaml). Có thể chỉ đặt một phần, vd conf = {"env": {"OUTPUT_MODE": "append"}}.
+Run do DAK tạo (dag_run_id bắt đầu bằng `deid-`) thì BẮT BUỘC có đủ conf, gồm OUTPUT_DB và OUTPUT_TABLE trong `env`, không bao giờ
+rơi về giá trị thử.
 
-Mọi giá trị đều được kiểm lại ở task `validate_conf` vì DAG trigger tay được; sai thì DAG dừng trước khi tạo job.
+Mọi giá trị đều được kiểm lại ở task `validate_conf` (hàm `check_conf`) vì DAG trigger tay được; sai thì DAG dừng trước khi tạo job.
+Test không cần Airflow: python3 -B -m unittest discover -s dak-mock/k8s/airflow/tests
 """
 import copy
 import re
@@ -48,13 +52,23 @@ DEFAULTS = {
     "database": "demo_db",
     "table": "users_cdr_2",
     "pseudoColumns": "name:HASH",
-    "outputDb": "demo_db",
-    "outputTable": "users_cdr_2_deid_manual",
     "keySecretName": "pseudonym-keys",
 }
 
+# Env của job mà người gửi phiếu được nhập. PHẢI khớp dak.deid.job-env của dak-mock (test Java chống lệch đọc đúng khối này, nên giữ
+# nguyên định dạng mỗi dòng: "TÊN": (mặc định hoặc None, r"quy tắc khớp toàn bộ giá trị")). Tên ngoài bảng này luôn bị từ chối.
+JOB_ENV = {
+    "OUTPUT_DB": (None, r"[a-z0-9_]{1,128}"),
+    "OUTPUT_TABLE": (None, r"[a-z0-9_]{1,128}"),
+    "OUTPUT_MODE": ("overwrite", r"overwrite|append"),
+    "OUTPUT_FORMAT": ("delta", r"delta|hive|iceberg"),
+    "ENABLE_HIVE_SUPPORT": ("true", r"true|false"),
+}
+
+# OUTPUT_DB và OUTPUT_TABLE không có mặc định ở JOB_ENV vì DAK luôn gửi; giá trị này CHỈ dùng khi trigger tay.
+MANUAL_OUTPUT = {"OUTPUT_DB": "demo_db", "OUTPUT_TABLE": "users_cdr_2_deid_manual"}
+
 NAME = re.compile(r"[A-Za-z0-9_]{1,128}")
-OUTPUT_NAME = re.compile(r"[A-Za-z0-9_]{1,200}")
 PSEUDO_COLUMNS = re.compile(r"[A-Za-z0-9_]{1,128}:HASH(,[A-Za-z0-9_]{1,128}:HASH)*")
 SECRET_NAME = re.compile(r"deid-key-\d{4}-\d{6}|pseudonym-keys")
 REQUEST_CODE = re.compile(r"PYC-\d{4}-\d{6}")
@@ -65,31 +79,68 @@ CONF_RULES = {
     "database": NAME,
     "table": NAME,
     "pseudoColumns": PSEUDO_COLUMNS,
-    "outputDb": OUTPUT_NAME,
-    "outputTable": OUTPUT_NAME,
     "keySecretName": SECRET_NAME,
 }
 
 
-def validate_conf(**context):
-    """Dừng DAG nếu conf thiếu hoặc có ký tự ngoài bộ cho phép (chống chèn vào env/volume của SparkApplication)."""
-    dag_run = context["dag_run"]
-    conf = dag_run.conf or {}
-    from_dak = dag_run.run_id.startswith("deid-")
-    if from_dak and not DAK_RUN_ID.fullmatch(dag_run.run_id):
-        raise AirflowFailException("dag_run_id phải dạng deid-<năm>-<6 số> (do DAK đặt)")
+def check_conf(run_id, conf):
+    """Kiểm conf của dag run, ném ValueError nếu sai. Thông điệp không lặp lại giá trị đã nhận (có thể do người dùng nhập).
+
+    Run do DAK tạo (dag_run_id bắt đầu bằng `deid-`) phải có đủ conf, không rơi về giá trị mặc định. Run trigger tay thì khoá nào
+    thiếu sẽ dùng giá trị thử; env đặt thì vẫn bị kiểm như của DAK."""
+    conf = conf or {}
+    from_dak = run_id.startswith("deid-")
+    if from_dak and not DAK_RUN_ID.fullmatch(run_id):
+        raise ValueError("dag_run_id phải dạng deid-<năm>-<6 số> (do DAK đặt)")
+    values = {}
     for key, rule in CONF_RULES.items():
-        if key not in conf and not from_dak:
-            value = DEFAULTS[key]  # trigger tay: rơi về DEFAULTS
-        else:
-            value = conf.get(key)  # run của DAK: không có giá trị mặc định
+        value = DEFAULTS[key] if (key not in conf and not from_dak) else conf.get(key)
         if not isinstance(value, str) or not rule.fullmatch(value):
-            raise AirflowFailException(f"conf.{key} thiếu hoặc sai định dạng")
+            raise ValueError(f"conf.{key} thiếu hoặc sai định dạng")
+        values[key] = value
+    env = conf.get("env")
+    env = {} if env is None else env
+    if not isinstance(env, dict):
+        raise ValueError("conf.env phải là object")
+    for name, value in env.items():
+        if name not in JOB_ENV:
+            raise ValueError("conf.env có env không được phép")
+        if not isinstance(value, str) or not re.fullmatch(JOB_ENV[name][1], value):
+            raise ValueError(f"conf.env.{name} sai định dạng")
+    if from_dak:
+        for name in MANUAL_OUTPUT:
+            if name not in env:
+                raise ValueError(f"conf.env.{name} thiếu (DAK luôn gửi)")
+    effective = {name: env.get(name, MANUAL_OUTPUT.get(name)) for name in ("OUTPUT_DB", "OUTPUT_TABLE")}
+    if effective["OUTPUT_DB"] == values["database"] and effective["OUTPUT_TABLE"] == values["table"]:
+        raise ValueError("bảng kết quả phải khác bảng nguồn")
+
+
+def validate_conf(**context):
+    """Task đầu của DAG: dừng DAG trước khi tạo job nếu conf sai (chống chèn vào env/volume của SparkApplication)."""
+    dag_run = context["dag_run"]
+    try:
+        check_conf(dag_run.run_id, dag_run.conf)
+    except ValueError as error:
+        raise AirflowFailException(str(error)) from None
 
 
 def conf_value(key):
-    """Biểu thức Jinja lấy conf.<key>, rơi về DEFAULTS khi trigger tay (validate_conf đã chặn run của DAK thiếu key)."""
-    return "{{ dag_run.conf.get('" + key + "', '" + DEFAULTS[key] + "') }}"
+    """Biểu thức Jinja lấy conf.<key>, rơi về DEFAULTS khi trigger tay (check_conf đã chặn run của DAK thiếu key)."""
+    return "{{ (dag_run.conf or {}).get('" + key + "', '" + DEFAULTS[key] + "') }}"
+
+
+def env_value(name):
+    """Biểu thức Jinja lấy conf.env.<name>; thiếu thì dùng mặc định của JOB_ENV (hoặc giá trị thử cho OUTPUT_DB, OUTPUT_TABLE)."""
+    default = JOB_ENV[name][0]
+    if default is None:
+        default = MANUAL_OUTPUT[name]
+    return "{{ ((dag_run.conf or {}).get('env') or {}).get('" + name + "', '" + default + "') }}"
+
+
+def job_env_entries():
+    """Mỗi env của JOB_ENV luôn có đúng một dòng trong driver.env: danh sách cố định, chỉ giá trị thay đổi."""
+    return [{"name": name, "value": env_value(name)} for name in JOB_ENV]
 
 
 # Tên SparkApplication = dag_run_id của DAK; trigger tay thì sinh tên hợp lệ DNS-1123 từ ts_nodash.
@@ -136,12 +187,10 @@ def build_spec():
                     {"name": "TABLE_NAME", "value": conf_value("table")},
                     {"name": "PSEUDO_COLUMNS", "value": conf_value("pseudoColumns")},  # vd name:HASH
                     {"name": "PSEUDO_MODE", "value": "HASH"},
-                    {"name": "OUTPUT_DB", "value": conf_value("outputDb")},
-                    {"name": "OUTPUT_TABLE", "value": conf_value("outputTable")},
-                    {"name": "OUTPUT_MODE", "value": "overwrite"},
-                    # Đối chiếu nguồn/đích sau khi ghi (số dòng, null, số giá trị khác nhau, không sót giá trị gốc).
+                    # ---- Env do người gửi phiếu nhập (JOB_ENV): OUTPUT_DB, OUTPUT_TABLE, OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT ----
+                    *job_env_entries(),
+                    # Đối chiếu nguồn/đích sau khi ghi (số dòng, null, số giá trị khác nhau, không sót giá trị gốc). Cố định.
                     {"name": "VERIFY", "value": "true"},
-                    {"name": "ENABLE_HIVE_SUPPORT", "value": "true"},
                     {"name": "WAREHOUSE_PATH", "value": WAREHOUSE_PATH},
                     # ---- Env của pseudonym-udf: khoá đọc từ file trong Secret của phiếu (chỉ driver cần) ----
                     {"name": "CRYPTO_PREFIX_SOURCE", "value": "file"},
