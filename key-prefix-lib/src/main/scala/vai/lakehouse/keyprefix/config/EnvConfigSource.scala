@@ -30,7 +30,11 @@ class EnvConfigSource(env: Map[String, String] = sys.env) extends ConfigSource {
     Keys.DakClientSecret      -> "DAK_CLIENT_SECRET",
     Keys.DakAllowInsecureHttp -> "DAK_ALLOW_INSECURE_HTTP",
     Keys.DakTag               -> "DAK_TAG",
-    Keys.DakCaller            -> "DAK_CALLER"
+    Keys.DakCaller            -> "DAK_CALLER",
+    Keys.DakPendingTimeoutSeconds     -> "DAK_PENDING_WAIT_TIMEOUT_SECONDS",
+    Keys.DakPendingInitialSeconds     -> "DAK_PENDING_WAIT_INITIAL_SECONDS",
+    Keys.DakPendingMaxIntervalSeconds -> "DAK_PENDING_WAIT_MAX_INTERVAL_SECONDS",
+    Keys.DakPendingMultiplier         -> "DAK_PENDING_WAIT_MULTIPLIER"
   )
 
   override def describe(key: String): String = names.getOrElse(key, key)

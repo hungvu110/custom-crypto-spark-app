@@ -26,7 +26,8 @@ object ColumnKeysUnavailableException {
       case ("MISSING", Some("yc_limit_reached")) =>
         "too many open key requests for this table; retry after a DAK administrator handles them"
       case ("MISSING", _) =>
-        "no key for this column; when decrypting, check the table/column name or that the column was ever encrypted"
+        "no key for this column and no key request was opened (onMissing=none): check the table/column name; if it is " +
+          "right, a DAK administrator must create the key of this column"
       case ("REJECTED", _) => "the key request was rejected by DAK; do not retry"
       case ("DISABLED", _) => "the key of this column is disabled in DAK"
       case _ => "not usable"

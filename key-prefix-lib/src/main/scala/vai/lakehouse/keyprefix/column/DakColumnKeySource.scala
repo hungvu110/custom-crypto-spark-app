@@ -105,6 +105,8 @@ class DakColumnKeySource(cfg: DakConfig, tokens: KeycloakTokenProvider, http: Js
       case (401, _) =>
         s"DAK rejected the access token for '$q' (${result.detail}) even after requesting a new token. " +
           "Check that the client is registered and enabled in DAK."
+      case (429, _) =>
+        s"DAK rate limit reached for the column keys of '$q' (${result.detail}): retry later."
       case _ =>
         s"DAK column key request for '$q' failed (${result.detail})"
     }

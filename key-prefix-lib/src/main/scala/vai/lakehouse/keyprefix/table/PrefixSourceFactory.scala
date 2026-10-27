@@ -49,6 +49,10 @@ object PrefixSourceFactory {
     val DakAllowInsecureHttp = "dak.allowInsecureHttp"
     val DakTag               = "dak.tag"
     val DakCaller            = "dak.caller"
+    val DakPendingTimeoutSeconds     = "dak.pendingWait.timeoutSeconds"
+    val DakPendingInitialSeconds     = "dak.pendingWait.initialSeconds"
+    val DakPendingMaxIntervalSeconds = "dak.pendingWait.maxIntervalSeconds"
+    val DakPendingMultiplier         = "dak.pendingWait.multiplier"
   }
 
   val FileSource  = "file"

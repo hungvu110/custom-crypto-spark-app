@@ -27,6 +27,11 @@ class ColumnKeySourceFactorySpec extends AnyFlatSpec with Matchers {
     ColumnKeySourceFactory.create(cfg(dakSettings: _*)) shouldBe a[CachedColumnKeySource]
   }
 
+  it should "bọc lớp chờ DAK duyệt khi dak.pendingWait.timeoutSeconds > 0" in {
+    ColumnKeySourceFactory.create(cfg((dakSettings :+ (Keys.DakPendingTimeoutSeconds -> "3600")): _*)) shouldBe
+      a[WaitingColumnKeySource]
+  }
+
   it should "không bọc cache khi cacheTtlSeconds = 0" in {
     ColumnKeySourceFactory.create(cfg((dakSettings :+ (Keys.CacheTtlSeconds -> "0")): _*)) shouldBe a[DakColumnKeySource]
   }
