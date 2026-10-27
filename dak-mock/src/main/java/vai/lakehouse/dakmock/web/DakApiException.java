@@ -57,6 +57,32 @@ public final class DakApiException extends RuntimeException {
         "onMissing must be 'request' or 'none'", "invalid onMissing");
   }
 
+  public static DakApiException invalidPath(String publicMessage) {
+    return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_path", publicMessage, publicMessage);
+  }
+
+  /** Key của đường dẫn đang bị khoá: lỗi, KHÔNG phải "không có key" (file vẫn mã hoá). */
+  public static DakApiException keyDisabled() {
+    return new DakApiException(HttpStatus.FORBIDDEN, "key_disabled", "The key of this path is disabled", "path key disabled");
+  }
+
+  /** {@code by-path} chỉ dành cho client nội bộ (tài liệu mục 2: client không đúng loại → 403). */
+  public static DakApiException pathAccessDenied() {
+    return new DakApiException(HttpStatus.FORBIDDEN, "access_denied", "Path keys are for the internal client only",
+        "team client asked for a path key");
+  }
+
+  /** Thân request JSON sai: {@code problems} liệt kê từng trường (rỗng nếu cả thân hỏng). */
+  public static DakApiException invalidRequest(String publicMessage, List<Problem> problems) {
+    return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_request", publicMessage, publicMessage, problems);
+  }
+
+  /** Đã có phiếu chuẩn hoá silver đang hoạt động cho cùng nguồn, đường dẫn và ngày lô; {@code existingCode} là phiếu cũ của cùng team. */
+  public static DakApiException duplicateBatch(String existingCode) {
+    String message = "An active request for the same source, path and batchDate already exists: " + existingCode;
+    return new DakApiException(HttpStatus.CONFLICT, "duplicate_request", message, message);
+  }
+
   public static DakApiException invalidRequest(String publicMessage) {
     return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_request", publicMessage, publicMessage);
   }

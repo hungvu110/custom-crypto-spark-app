@@ -50,6 +50,7 @@ class ColumnKeyApiTest {
 
   private static final String JWKS_PATH = "/realms/tenant-a/protocol/openid-connect/certs";
   private static final String COLUMN_KEYS = "/v1/kv/data/dak/column-keys/";
+  private static final String PATH_KEYS = "/v1/kv/data/dak/path-keys/";
   private static final String VAULT_TOKEN = "vault-test-token";
   private static final String ADMIN_TOKEN = "admin-secret";
   private static final String INTERNAL = "dak.internal";
@@ -112,6 +113,7 @@ class ColumnKeyApiTest {
     r.add("dak.vault.token", () -> VAULT_TOKEN);
     r.add("dak.vault.path-template", () -> "base/{database}.{table}");
     r.add("dak.vault.column-path-template", () -> "dak/column-keys/{database}/{table}/{column}");
+    r.add("dak.vault.path-key-template", () -> "dak/path-keys/{pathHash}");
     r.add("dak.yc.max-open-per-table", () -> "3");
     r.add("dak.admin.token", () -> ADMIN_TOKEN);
   }
@@ -358,14 +360,117 @@ class ColumnKeyApiTest {
         .getStatusCode().value()).isEqualTo(404);
   }
 
+  // ---------------------------------------------------------------- by-path (204 khi chưa có key: docs/key-access/TRA-LOI-DAK-BY-PATH.md)
+
+  @Test
+  void byPathReturnsNoContentAndOpensNoYcWhenThePathHasNoKey() throws Exception {
+    String path = "vtnet_cdr/20261027";
+
+    ResponseEntity<String> res = byPath(INTERNAL, path, "internal");
+
+    assertThat(res.getStatusCode().value()).isEqualTo(204);
+    assertThat(res.getBody()).isNull();
+    assertThat(res.getHeaders().getFirst("X-Request-Id")).isNotBlank();
+    assertThat(admin(HttpMethod.GET, "/mock-admin/yc", null, ADMIN_TOKEN).getBody()).doesNotContain(path);
+    assertThat(vaultWrites()).isEmpty();
+  }
+
+  @Test
+  void byPathReturnsTheKeyCreatedByTheAdmin() throws Exception {
+    String path = "vtnet_cdr/20261028";
+
+    ResponseEntity<String> created = admin(HttpMethod.POST, "/mock-admin/path-keys",
+        "{\"path\":\"" + path + "\",\"keyValue\":\"k-path\"}", ADMIN_TOKEN);
+    ResponseEntity<String> again = admin(HttpMethod.POST, "/mock-admin/path-keys",
+        "{\"path\":\"" + path + "\",\"keyValue\":\"other\"}", ADMIN_TOKEN);
+
+    assertThat(created.getStatusCode().value()).isEqualTo(200);
+    assertThat(json.readTree(created.getBody()).path("path").asText()).isEqualTo(path);
+    assertThat(created.getBody()).doesNotContain("k-path");
+    assertThat(again.getStatusCode().value()).isEqualTo(200); // đã có key: giữ key cũ, không ghi đè
+    JsonNode found = ok(byPath(INTERNAL, path, "internal"));
+    assertThat(found.path("path").asText()).isEqualTo(path);
+    assertThat(found.path("keyPrefix").asText()).isEqualTo("k-path");
+    assertThat(found.path("keyVersion").asLong()).isEqualTo(1);
+    // key nằm ở Vault theo SHA-256 của đường dẫn, không phải đường dẫn thô
+    assertThat(vault.keySet()).anyMatch(k -> k.matches("dak/path-keys/[0-9a-f]{64}"));
+  }
+
+  @Test
+  void aDisabledPathKeyIsForbiddenNotSilentlyEmptyAndEnableRestoresIt() throws Exception {
+    String path = "vtnet_cdr/20261029";
+    admin(HttpMethod.POST, "/mock-admin/path-keys", "{\"path\":\"" + path + "\",\"keyValue\":\"k-dis\"}", ADMIN_TOKEN);
+
+    assertThat(admin(HttpMethod.POST, "/mock-admin/path-keys/disable", "{\"path\":\"" + path + "\"}", ADMIN_TOKEN)
+        .getStatusCode().value()).isEqualTo(204);
+    ResponseEntity<String> res = byPath(INTERNAL, path, "internal");
+
+    assertError(res, 403, "key_disabled");
+    assertThat(res.getBody()).doesNotContain("k-dis");
+    assertThat(admin(HttpMethod.POST, "/mock-admin/path-keys/enable", "{\"path\":\"" + path + "\"}", ADMIN_TOKEN)
+        .getStatusCode().value()).isEqualTo(204);
+    assertThat(ok(byPath(INTERNAL, path, "internal")).path("keyPrefix").asText()).isEqualTo("k-dis");
+    // chưa có key thì không khoá được
+    assertThat(admin(HttpMethod.POST, "/mock-admin/path-keys/disable", "{\"path\":\"vtnet_cdr/never\"}", ADMIN_TOKEN)
+        .getStatusCode().value()).isEqualTo(404);
+  }
+
+  @Test
+  void byPathMatchesThePathExactlyAsStored() throws Exception {
+    admin(HttpMethod.POST, "/mock-admin/path-keys", "{\"path\":\"VTNET_cdr/File.enc\"}", ADMIN_TOKEN);
+
+    assertThat(byPath(INTERNAL, "VTNET_cdr/File.enc", "internal").getStatusCode().value()).isEqualTo(200);
+    assertThat(byPath(INTERNAL, "vtnet_cdr/file.enc", "internal").getStatusCode().value()).isEqualTo(204);
+  }
+
+  @Test
+  void byPathIsForTheInternalClientOnly() throws Exception {
+    assertError(byPath(TEAM_A, "vtnet_cdr/x", "internal"), 403, "access_denied");
+  }
+
+  @Test
+  void byPathRejectsBadParametersBeforeCheckingTheToken() throws Exception {
+    assertError(byPath(null, "a/../b", "internal"), 400, "invalid_path");
+    assertError(byPath(null, "", "internal"), 400, "invalid_path");
+    assertError(byPath(null, "a/" + "x".repeat(1100), "internal"), 400, "invalid_path");
+    assertError(byPath(null, "vtnet_cdr/x", null), 400, "invalid_tag");
+    assertError(byPath(null, "vtnet_cdr/x", "external"), 400, "invalid_tag");
+    assertThat(seen).isEmpty();
+    assertError(byPath(null, "vtnet_cdr/x", "internal"), 401, "invalid_token");
+  }
+
+  @Test
+  void adminCreatesAColumnKeyDirectlyWithoutAYc() throws Exception {
+    ResponseEntity<String> created = admin(HttpMethod.POST, "/mock-admin/column-keys",
+        "{\"database\":\"Silver\",\"table\":\"t_direct\",\"column\":\"MSISDN\",\"keyValue\":\"k-col\"}", ADMIN_TOKEN);
+
+    assertThat(created.getStatusCode().value()).isEqualTo(200);
+    assertThat(json.readTree(created.getBody()).path("column").asText()).isEqualTo("msisdn");
+    JsonNode col = ok(byColumn(INTERNAL, "silver", "t_direct", "msisdn", "none", "internal")).path("columns").get(0);
+    assertThat(col.path("state").asText()).isEqualTo("READY");
+    assertThat(col.path("keyPrefix").asText()).isEqualTo("k-col");
+    assertThat(admin(HttpMethod.POST, "/mock-admin/path-keys", "{\"path\":\"a/../b\"}", ADMIN_TOKEN).getStatusCode().value())
+        .isEqualTo(400);
+  }
+
   // ---------------------------------------------------------------- helpers
+
+  private ResponseEntity<String> byPath(String clientId, String path, String tag) {
+    String uri = org.springframework.web.util.UriComponentsBuilder.fromPath("/api/v1/keys/by-path")
+        .queryParam("path", path).queryParamIfPresent("tag", java.util.Optional.ofNullable(tag))
+        .encode().build().toUriString();
+    HttpHeaders headers = clientId == null ? new HttpHeaders() : auth(clientId);
+    return rest.exchange(java.net.URI.create(rest.getRootUri() + uri), HttpMethod.GET, new HttpEntity<>(headers),
+        String.class);
+  }
+
 
   private static MockResponse route(RecordedRequest request) {
     String path = request.getPath() == null ? "" : request.getPath();
     if (path.equals(JWKS_PATH)) {
       return jsonResponse(200, new JWKSet(signingKey.toPublicJWK()).toString());
     }
-    if (!path.startsWith(COLUMN_KEYS) || !VAULT_TOKEN.equals(request.getHeader("X-Vault-Token"))) {
+    if (!(path.startsWith(COLUMN_KEYS) || path.startsWith(PATH_KEYS)) || !VAULT_TOKEN.equals(request.getHeader("X-Vault-Token"))) {
       return new MockResponse().setResponseCode(404);
     }
     String key = path.substring("/v1/kv/data/".length());

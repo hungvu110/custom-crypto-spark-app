@@ -1,0 +1,8 @@
+{
+  "source": "VTX",
+  "path": "/landing/vtnet//vtnet_cdr/",
+  "batchDate": "2026-10-27",
+  "outputMode": "overwrite",
+  "outputTable": "silver.other_table",
+  "purpose": ""
+}

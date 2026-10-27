@@ -90,7 +90,9 @@ public record DakProperties(
   /**
    * Vault KV v2. {@code pathTemplate} (key cả bảng) nhận {@code {tenant}}, {@code {workspace}}, {@code {database}},
    * {@code {table}}; mặc định trùng path cũ của column/cdr crypto. {@code columnPathTemplate} (key cột) nhận
-   * {@code {database}}, {@code {table}}, {@code {column}}, mỗi phần là một đoạn đường dẫn riêng.
+   * {@code {database}}, {@code {table}}, {@code {column}}, mỗi phần là một đoạn đường dẫn riêng. {@code pathKeyTemplate} (key
+   * của {@code by-path}) nhận {@code {pathHash}} = SHA-256 hex của đường dẫn, vì đường dẫn chứa ký tự không đặt thẳng được
+   * vào path Vault.
    */
   public record Vault(
       String addr,
@@ -100,12 +102,26 @@ public record DakProperties(
       @DefaultValue("hla-datalake/datalake/column-keys/{database}/{table}/{column}") String columnPathTemplate,
       @DefaultValue("keyPrefix") String keyField,
       @DefaultValue("2s") Duration connectTimeout,
-      @DefaultValue("5s") Duration readTimeout) {
+      @DefaultValue("5s") Duration readTimeout,
+      @DefaultValue(DEFAULT_PATH_KEY_TEMPLATE) String pathKeyTemplate) {
+
+    public static final String DEFAULT_PATH_KEY_TEMPLATE = "hla-datalake/datalake/path-keys/{pathHash}";
+
+    @ConstructorBinding
+    public Vault {
+      pathKeyTemplate = pathKeyTemplate == null ? DEFAULT_PATH_KEY_TEMPLATE : pathKeyTemplate;
+    }
+
+    /** Cấu hình không khai {@code path-key-template}: dùng mặc định. */
+    public Vault(String addr, String token, String kvMount, String pathTemplate, String columnPathTemplate, String keyField,
+                 Duration connectTimeout, Duration readTimeout) {
+      this(addr, token, kvMount, pathTemplate, columnPathTemplate, keyField, connectTimeout, readTimeout, null);
+    }
 
     @Override
     public String toString() {
       return "Vault[addr=" + addr + ", kvMount=" + kvMount + ", pathTemplate=" + pathTemplate
-          + ", columnPathTemplate=" + columnPathTemplate + ", keyField=" + keyField
+          + ", columnPathTemplate=" + columnPathTemplate + ", pathKeyTemplate=" + pathKeyTemplate + ", keyField=" + keyField
           + ", token=" + (isBlank(token) ? "<none>" : "***") + "]";
     }
   }
@@ -140,6 +156,7 @@ public record DakProperties(
     require(vault.columnPathTemplate().contains("{database}") && vault.columnPathTemplate().contains("{table}")
             && vault.columnPathTemplate().contains("{column}"),
         "dak.vault.column-path-template must contain {database}, {table} and {column}");
+    require(vault.pathKeyTemplate().contains("{pathHash}"), "dak.vault.file-path-template must contain {pathHash}");
     require(yc.maxOpenPerTable() > 0, "dak.yc.max-open-per-table must be positive");
 
     Set<String> issuers = new HashSet<>();

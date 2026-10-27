@@ -33,7 +33,9 @@ Tất cả chạy trong cluster: build image → push registry nội bộ → `k
 | Ánh xạ `(realm, client_id)` → (tenant, workspace, team) từ ConfigMap; client **nội bộ** không có team | Giao diện quản trị của DAK (tạo client, phiếu PYC, cảnh báo hết hạn)                |
 | Đọc `keyPrefix` từ **Vault KV v2 bằng token tĩnh**, cùng path với luồng column/cdr cũ                 | Database: mock không có DB; cấu hình ở ConfigMap, YC và danh sách khoá ở bộ nhớ     |
 | `GET /api/v1/keys/by-column` (mục 2.1): key theo cột, YC, grant theo cột cho client team              | Đọc đúng `vault_version` đã lưu (mock đọc version mới nhất), rate limit, kiểm `aud` |
-| Endpoint quản trị `/mock-admin/**` đóng vai người có quyền bên DAK (mục 2.2)                          | `GET /api/v1/keys/by-file`                                                          |
+| Endpoint quản trị `/mock-admin/**` đóng vai người có quyền bên DAK (mục 2.2)                          | Rate limit (`429`) của `by-path` và `by-column`                                      |
+| `GET /api/v1/keys/by-path` (mục 2.3): key giải mã toàn bộ file/thư mục theo đường dẫn, `204` khi chưa có key |                                                                                     |
+| Phiếu chuẩn hoá silver (mục 2.4): gửi → duyệt → trigger DAG VTT/VTNET → theo dõi dag run                |                                                                                     |
 | Mã lỗi, body lỗi, `X-Request-Id`, `Cache-Control: no-store` đúng spec                                 |                                                                                     |
 
 Đường `/{database}/{table}` vẫn không phân quyền: **mọi team có token hợp lệ đều lấy được mọi key bảng có trong Vault**. Chỉ
@@ -70,13 +72,100 @@ Bật khi có Secret `dak-mock-admin-token`; mọi request phải có header `X-
 
 | Endpoint                                                       | Việc                                                                  |
 | -------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `GET /mock-admin/yc`                                           | Liệt kê YC                                                            |
+| `GET /mock-admin/yc`                                           | Liệt kê YC của cột                                                    |
 | `POST /mock-admin/yc/{requestCode}/fulfill`                    | Tạo key (ngẫu nhiên 32 byte, hoặc body `{"keyValue":"..."}`), đóng YC |
 | `POST /mock-admin/yc/{requestCode}/reject`                     | Body `{"reasonText":"..."}`. Lời gọi sau cho cột đó nhận `REJECTED`   |
 | `POST /mock-admin/columns/{database}/{table}/{column}/disable` | Khoá cột đã có key: lời gọi sau nhận `DISABLED`                       |
 | `POST /mock-admin/columns/{database}/{table}/{column}/enable`  | Mở khoá: cột trả lại đúng key cũ                                      |
+| `POST /mock-admin/path-keys`                                   | Body `{"path":"...","keyValue":"..."}` (`keyValue` tuỳ chọn): tạo key theo đường dẫn — vai trò luồng mã hoá file của DAK |
+| `POST /mock-admin/path-keys/disable`, `.../enable`            | Body `{"path":"..."}`: khoá/mở khoá key đã có của đường dẫn → `by-path` trả `403 key_disabled` / trả lại key |
+| `POST /mock-admin/column-keys`                                 | Body `{"database","table","column","keyValue"}`: tạo key cột trực tiếp, không qua YC |
 
 YC và danh sách khoá nằm trong bộ nhớ: **pod restart là mất** (YC mở lại với mã mới, cột hết bị khoá). Key cột trong Vault không mất.
+
+### 2.3. `GET /api/v1/keys/by-path`
+
+Theo [API-LAY-KEY-DUONG-DAN-COT.md](../docs/key-access/API-LAY-KEY-DUONG-DAN-COT.md) mục 2, với hai điểm đã thống nhất với DAK
+([TRA-LOI-DAK-BY-PATH.md](../docs/key-access/TRA-LOI-DAK-BY-PATH.md)): `path` tương đối theo gốc của nguồn, và **chưa có key thì trả rỗng `204`,
+không mở YC** (đường dẫn không có key nghĩa là file không mã hoá). DAK thật **chưa code** đường này. Dùng bởi job VTNET của
+[silver-ingest-app](../silver-ingest-app/README.md).
+
+```http
+GET /api/v1/keys/by-path?path=vtnet_cdr/20261027&tag=internal
+Authorization: Bearer <token của client nội bộ>
+```
+
+| Trường hợp | Kết quả |
+| --- | --- |
+| Có key | `200 {"path": "...", "keyPrefix": "...", "keyVersion": 1}` |
+| Chưa có key | `204` rỗng, không mở YC |
+| `path` rỗng, có `..`, ký tự điều khiển, quá 1024 ký tự | `400 invalid_path` (kiểm trước khi xác thực) |
+| `tag` thiếu hoặc khác `internal` | `400 invalid_tag` |
+| Client không phải nội bộ | `403 access_denied` |
+| Key đang bị khoá | `403 key_disabled` (không im lặng `204`, tránh đọc dữ liệu mã hoá như nguyên trạng) |
+
+Key theo đường dẫn do **luồng mã hoá file** tạo; ở mock là `POST /mock-admin/path-keys` (mục 2.2). DAK so khớp **nguyên chuỗi**, mock cũng
+vậy (không chuẩn hoá, kể cả hoa thường), nên `path` khi tạo key phải đúng chuỗi job gửi, vd `vtnet_cdr/20261027`. Một đường dẫn một key, kể
+cả khi đó là thư mục. Key lưu ở `kv/data/hla-datalake/datalake/path-keys/{pathHash}` (`pathHash` = SHA-256 hex của đường dẫn, đổi bằng
+`dak.vault.path-key-template`), chỉ được tạo bằng `cas=0`. Token Vault của mock cần quyền `read` và `create` trên path này.
+
+### 2.4. Phiếu chuẩn hoá silver `/mock-portal/silver-requests`
+
+Team gửi phiếu chuẩn hoá một lô file → admin duyệt → mock trigger DAG của nguồn (`silver_ingest_vtt` hoặc `silver_ingest_vtnet`, thư mục
+[airflow/dags/](../airflow/dags/)) → trạng thái dag run được cập nhật khi xem phiếu. Dùng chung tài khoản portal giả, token quản trị và cấu
+hình Airflow (`dak.deid.submitter`, `dak.deid.airflow`) với phiếu khử định danh; `submitter=noop` thì chỉ log và coi dag run đã xong.
+
+Thân JSON (`POST /mock-portal/silver-requests`, header `X-Mock-Portal-Token`):
+
+| Trường | VTT | VTNET | Quy tắc |
+| --- | --- | --- | --- |
+| `source` | `VTT` | `VTNET` | Quyết định DAG |
+| `path` | bắt buộc | bắt buộc | Tương đối theo gốc landing của nguồn, dạng chuẩn: không `/` đầu/cuối, không `//`, không `..`, chỉ `[A-Za-z0-9_.=+-]` và `/`. Với VTNET cũng là đường dẫn job gửi `by-path` |
+| `batchDate` | bắt buộc | bắt buộc | `yyyyMMdd`, ngày có thật → partition `batch_date` |
+| `outputMode` | tuỳ chọn | tuỳ chọn | `overwrite-partitions` (mặc định của DAG) hoặc `append` |
+| `encryptColumns` | **không được có** | bắt buộc | Danh sách 1–100 tên cột, không trùng; job mã hoá bằng cdr-crypto |
+| `keyField` | **không được có** | bắt buộc | Cột giữ plaintext làm nguyên liệu key, không nằm trong `encryptColumns` |
+| `purpose` | bắt buộc | bắt buộc | Tối đa 500 ký tự |
+
+Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, trường lạ bị từ chối). Phiếu trùng `(team, source, path, batchDate)` còn hoạt
+động thì `409 duplicate_request`. Mã phiếu `SLV-<năm>-<6 số>`, cũng là `dag_run_id` (chữ thường).
+
+| Endpoint | Việc |
+| --- | --- |
+| `GET /mock-portal/silver-requests`, `GET .../{code}`, `POST .../{code}/cancel` | Người gửi xem phiếu của team, huỷ phiếu chưa duyệt |
+| `GET /mock-admin/silver-requests`, `GET .../{code}` | Admin xem mọi phiếu |
+| `POST /mock-admin/silver-requests/{code}/approve` | Duyệt rồi trigger DAG ngay: `JOB_SUBMITTED`, lỗi thì `SUBMIT_FAILED` kèm thông điệp cố định |
+| `POST /mock-admin/silver-requests/{code}/reject` | Body `{"reasonText":"..."}` |
+| `POST /mock-admin/silver-requests/{code}/retry-submit` | Gửi lại phiếu `SUBMIT_FAILED` |
+
+**Phiếu mẫu** ([k8s/silver/samples/](k8s/silver/samples/), `SilverSampleFilesTest` kiểm các mẫu này với parser thật):
+
+| File | Nội dung |
+| --- | --- |
+| `valid-vtt-request.json` | Phiếu VTT: chỉ `source`, `path`, `batchDate`, `purpose` |
+| `valid-vtnet-request.json` | Phiếu VTNET: thêm `encryptColumns`, `keyField` |
+| `valid-vtnet-append-request.json` | VTNET, một file lẻ của lô, `outputMode=append` |
+| `invalid-vtt-with-columns.json` | VTT có `encryptColumns`/`keyField` → `400` |
+| `invalid-vtnet-missing-columns.json` | VTNET thiếu `encryptColumns`/`keyField` → `400` |
+| `invalid-many-errors.json` | Nhiều lỗi cùng lúc (nguồn lạ, `path` tuyệt đối, ngày sai, `overwrite`, trường lạ, thiếu `purpose`) → `400` liệt kê đủ |
+
+Gửi thử (đã `kubectl port-forward deploy/dak-mock 8085`; token portal và token admin đọc từ bàn phím):
+
+```bash
+read -rs -p "Portal token: " PT; echo
+curl -s -X POST localhost:8085/mock-portal/silver-requests -H "X-Mock-Portal-Token: $PT" \
+  -H 'Content-Type: application/json' --data @dak-mock/k8s/silver/samples/valid-vtnet-request.json
+read -rs -p "Admin token: " AT; echo
+curl -s -X POST localhost:8085/mock-admin/silver-requests/SLV-2026-000001/approve -H "X-Mock-Admin-Token: $AT"
+curl -s localhost:8085/mock-portal/silver-requests/SLV-2026-000001 -H "X-Mock-Portal-Token: $PT"
+unset PT AT
+```
+
+Trạng thái: `PENDING_APPROVAL` → `JOB_SUBMITTED` → `RUNNING` → `SUCCEEDED`/`FAILED` (theo dag run); hoặc `REJECTED`, `CANCELLED`,
+`SUBMIT_FAILED`. Lần đầu ghi bảng VTNET mới, `by-column` (`onMissing=request`) mở YC cho cột chưa có key và trả `PENDING`; job **chờ** và
+gọi lại theo exponential backoff, phiếu vẫn `RUNNING` (dag run đang chạy). Admin duyệt YC cột (`GET /mock-admin/yc`, `POST
+/mock-admin/yc/<mã>/fulfill`) → lần gọi sau cột `READY` → job ghi bảng → phiếu `SUCCEEDED`. Hết thời gian chờ của job (hoặc YC bị từ
+chối) → job exit 5 → phiếu `FAILED`.
 
 ## 3. Cấu trúc code
 
@@ -432,7 +521,7 @@ key và PHẢI là namespace nơi DAG tạo SparkApplication; `airflow.base-url`
 (`client-credentials`: `token-url`, `client-id`, `scope`, env `AIRFLOW_CLIENT_SECRET`; `bearer`: env `AIRFLOW_TOKEN`). Tài khoản portal giả (có token) khai ở Secret `dak-mock-portal-users`.
 
 **Triển khai thật:** làm theo các bước ở đầu `k8s/dak-mock.yaml` (RBAC `k8s/dak-mock-deid-rbac.yaml`, Secret portal/airflow), key bảng phải có sẵn
-trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.py](k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py).
+trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.py](../airflow/dags/sample_dag_deid_pseudonymize_table.py).
 Quét Secret key sót: `kubectl get secret -l dak.vai/kind=deid-key -n <namespace>`.
 
 **File mẫu** (trong `k8s/deid/`): `portal-users.example.yml` (mẫu Secret `dak-mock-portal-users`, token là chỗ trống để bạn điền, hướng dẫn tạo ở đầu file) và
@@ -486,7 +575,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -u "dak-trigger:<mật khẩu>" "$BASE/
 | **Key bảng trong Vault** | Mỗi bảng được khử định danh phải có sẵn: `vault kv put kv/hla-datalake/datalake/spark-application/<database>.<table> keyPrefix="$(openssl rand -base64 32)"`. Phải là base64 chuẩn của **đúng 32 byte**, nếu không phiếu báo `table key has unsupported format`. Tạo bằng pod `k8s/vault-cli-pod.yaml` |
 | RBAC | `kubectl apply -f dak-mock/k8s/dak-mock-deid-rbac.yaml` (ServiceAccount `dak-mock`, quyền `secrets create/delete`) rồi rollout lại Deployment |
 | Mạng | Pod mock tới được: Airflow webserver (cổng 8080), Keycloak (đã có `hostAliases` và truststore CA nội bộ), Vault, Kubernetes API. Namespace có NetworkPolicy thì mở egress các đích này |
-| DAG | Theo [sample_dag_deid_pseudonymize_table.py](k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py): `DAG_ID` nằm trong `allowed-dag-ids`, `NAMESPACE` trùng `kubernetes.namespace`, đọc `conf` (`requestCode, database, table, pseudoColumns, outputDb, outputTable, keySecretName`) và mount Secret `keySecretName` vào `/etc/pseudonym-keys`. Image `pseudonymize-table-app`, `hadoopConfigMap`, `serviceAccount: spark-application-sa` phải có ở namespace đó |
+| DAG | Theo [sample_dag_deid_pseudonymize_table.py](../airflow/dags/sample_dag_deid_pseudonymize_table.py): `DAG_ID` nằm trong `allowed-dag-ids`, `NAMESPACE` trùng `kubernetes.namespace`, đọc `conf` (`requestCode, database, table, pseudoColumns, outputDb, outputTable, keySecretName`) và mount Secret `keySecretName` vào `/etc/pseudonym-keys`. Image `pseudonymize-table-app`, `hadoopConfigMap`, `serviceAccount: spark-application-sa` phải có ở namespace đó |
 
 **C. Chạy thử đầu-cuối** (theo thứ tự; dừng ở bước nào lỗi thì sửa bước đó):
 
@@ -637,11 +726,11 @@ Log `AUDIT` ghi `envNames` và `envCount`, không ghi giá trị.
 **Gửi cho Airflow:** `conf` gồm `requestCode`, `database`, `table`, `pseudoColumns`, `keySecretName` và `env` (env cuối cùng). Hai khoá `outputDb`/`outputTable` cũ **không còn**, DAG đọc `env.OUTPUT_DB` và
 `env.OUTPUT_TABLE`. Mock kiểm lại env với danh sách hiện hành trước khi gọi mạng. **DAG mới và mock mới phải lên cùng lúc**; trong lúc chuyển nên tạm dừng nhận phiếu.
 
-**DAG** nằm ở [k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py](k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py): bảng `JOB_ENV` (tên, mặc định, quy tắc) phải khớp `dak.deid.job-env`; test Java
+**DAG** nằm ở [airflow/dags/sample_dag_deid_pseudonymize_table.py](../airflow/dags/sample_dag_deid_pseudonymize_table.py): bảng `JOB_ENV` (tên, mặc định, quy tắc) phải khớp `dak.deid.job-env`; test Java
 `JobEnvDagDriftTest` đọc thẳng file DAG nên lệch là đỏ (nhưng không kiểm được DAG đã triển khai trên Airflow). Test DAG không cần Airflow:
 
 ```bash
-python3 -B -m unittest discover -s dak-mock/k8s/airflow/tests -v     # cần Python 3 và jinja2
+python3 -B -m unittest discover -s airflow/tests -v     # cần Python 3 và jinja2
 ```
 
 **Hai rủi ro cần biết** (không giới hạn database đích, như đã chốt):

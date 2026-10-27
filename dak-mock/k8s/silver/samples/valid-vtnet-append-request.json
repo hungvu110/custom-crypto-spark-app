@@ -1,0 +1,9 @@
+{
+  "source": "VTNET",
+  "path": "vtnet_cdr/20261027/part-00002.csv",
+  "batchDate": "20261027",
+  "outputMode": "append",
+  "encryptColumns": ["msisdn"],
+  "keyField": "start_time",
+  "purpose": "Append one late file of the 2026-10-27 VTNET batch; append writes duplicates if run twice"
+}

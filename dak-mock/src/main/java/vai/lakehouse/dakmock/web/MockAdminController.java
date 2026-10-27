@@ -3,6 +3,7 @@ package vai.lakehouse.dakmock.web;
 import java.time.Instant;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -17,10 +18,13 @@ import vai.lakehouse.dakmock.column.ColumnId;
 import vai.lakehouse.dakmock.column.ColumnKeyRequest;
 import vai.lakehouse.dakmock.column.ColumnKeyStore;
 import vai.lakehouse.dakmock.column.YcRegistry;
+import vai.lakehouse.dakmock.path.PathKeyRequest;
+import vai.lakehouse.dakmock.path.PathKeyStore;
 import vai.lakehouse.dakmock.key.VaultKeyReader.KeyMaterial;
 
 /**
- * Endpoint quản trị riêng của mock, đóng vai "người có quyền bên DAK": xem YC, tạo key cho YC, từ chối YC, khoá/mở khoá cột.
+ * Endpoint quản trị riêng của mock, đóng vai "người có quyền bên DAK": xem YC, tạo key cho YC, từ chối YC, khoá/mở khoá cột, và tạo key
+ * trực tiếp (không qua YC) cho một đường dẫn ({@code by-path}, do luồng mã hoá file tạo) hoặc một cột.
  * Chỉ bật khi {@code dak.admin.token} có giá trị và request mang đúng header {@code X-Mock-Admin-Token}; ngược lại trả
  * {@code 404} như endpoint không tồn tại. Không response nào chứa giá trị key.
  */
@@ -53,12 +57,86 @@ public class MockAdminController {
 
   private final MockAdminAuth auth;
   private final YcRegistry registry;
-  private final ColumnKeyStore store;
+  /** Tạo key cho một đường dẫn ({@code path} tương đối theo gốc, đúng chuỗi SA sẽ gửi {@code by-path}). */
+  public record PathKeyCreate(String path, String keyValue) {}
 
-  public MockAdminController(MockAdminAuth auth, YcRegistry registry, ColumnKeyStore store) {
+  /** Tạo key cho một cột. */
+  public record ColumnKeyCreate(String database, String table, String column, String keyValue) {}
+
+  /** Key đang lưu sau khi tạo (đã có thì là key cũ, không ghi đè). Không có giá trị key. */
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public record KeyCreated(String path, String database, String table, String column, long keyVersion) {}
+
+  private final ColumnKeyStore store;
+  private final PathKeyStore pathStore;
+
+  public MockAdminController(MockAdminAuth auth, YcRegistry registry, ColumnKeyStore store, PathKeyStore pathStore) {
     this.auth = auth;
     this.registry = registry;
     this.store = store;
+    this.pathStore = pathStore;
+  }
+
+  /**
+   * Tạo key cho đường dẫn (sinh ngẫu nhiên 32 byte, hoặc lấy {@code keyValue}), vai trò luồng mã hoá file của DAK. Đường dẫn kiểm như
+   * {@code by-path} và lưu NGUYÊN CHUỖI. Đã có key thì giữ key cũ.
+   */
+  @PostMapping("/path-keys")
+  public KeyCreated createPathKey(@RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                  @RequestBody(required = false) PathKeyCreate body) {
+    authorize(token);
+    if (body == null) {
+      throw DakApiException.invalidRequest("body must be {\"path\": ..., \"keyValue\": ... (optional)}");
+    }
+    String path = PathKeyRequest.parse(body.path(), ColumnKeyRequest.INTERNAL_TAG).path();
+    KeyMaterial key = pathStore.create(path, keyValue(body.keyValue()));
+    log.info("MOCK_ADMIN action=create-path-key path={} keyVersion={}", path, key.version());
+    return new KeyCreated(path, null, null, null, key.version());
+  }
+
+  /** Khoá key của đường dẫn đã có key: {@code by-path} trả {@code 403 key_disabled}. Body {@code {"path": ...}}. */
+  @PostMapping("/path-keys/disable")
+  public ResponseEntity<Void> disablePathKey(@RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                             @RequestBody(required = false) PathKeyCreate body) {
+    authorize(token);
+    String path = pathOf(body);
+    if (pathStore.read(path).isEmpty()) {
+      throw DakApiException.notFound("Path " + path + " has no key");
+    }
+    pathStore.disable(path);
+    log.info("MOCK_ADMIN action=disable-path-key path={}", path);
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/path-keys/enable")
+  public ResponseEntity<Void> enablePathKey(@RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                            @RequestBody(required = false) PathKeyCreate body) {
+    authorize(token);
+    String path = pathOf(body);
+    pathStore.enable(path);
+    log.info("MOCK_ADMIN action=enable-path-key path={}", path);
+    return ResponseEntity.noContent().build();
+  }
+
+  private static String pathOf(PathKeyCreate body) {
+    if (body == null) {
+      throw DakApiException.invalidRequest("body must be {\"path\": ...}");
+    }
+    return PathKeyRequest.parse(body.path(), ColumnKeyRequest.INTERNAL_TAG).path();
+  }
+
+  /** Tạo key cho cột (sinh ngẫu nhiên 32 byte, hoặc lấy {@code keyValue}). Đã có key thì giữ key cũ. */
+  @PostMapping("/column-keys")
+  public KeyCreated createColumnKey(@RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                    @RequestBody(required = false) ColumnKeyCreate body) {
+    authorize(token);
+    if (body == null) {
+      throw DakApiException.invalidRequest("body must be {\"database\", \"table\", \"column\", \"keyValue\" (optional)}");
+    }
+    ColumnId id = columnId(body.database(), body.table(), body.column());
+    KeyMaterial key = store.create(id, keyValue(body.keyValue()));
+    log.info("MOCK_ADMIN action=create-column-key column={} keyVersion={}", id.qualified(), key.version());
+    return new KeyCreated(null, id.database(), id.table(), id.column(), key.version());
   }
 
   @GetMapping("/yc")
@@ -74,7 +152,7 @@ public class MockAdminController {
                                @RequestBody(required = false) FulfillRequest body) {
     authorize(token);
     YcRegistry.Yc yc = registry.byCode(requestCode);
-    String value = body == null || body.keyValue() == null ? ColumnKeyStore.newKeyValue() : checkedKeyValue(body.keyValue());
+    String value = keyValue(body == null ? null : body.keyValue());
     KeyMaterial key = store.create(yc.column(), value);
     // Xoá YC SAU khi key đã nằm trong Vault: tạo key lỗi thì YC còn nguyên để làm lại.
     registry.remove(requestCode);
@@ -133,6 +211,10 @@ public class MockAdminController {
   private static ColumnId columnId(String database, String table, String column) {
     return new ColumnId(ColumnKeyRequest.tableName(database), ColumnKeyRequest.tableName(table),
         ColumnKeyRequest.columnName(column));
+  }
+
+  private static String keyValue(String given) {
+    return given == null ? ColumnKeyStore.newKeyValue() : checkedKeyValue(given);
   }
 
   private static String checkedKeyValue(String value) {
