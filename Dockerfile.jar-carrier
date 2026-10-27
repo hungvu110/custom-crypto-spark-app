@@ -48,6 +48,8 @@ COPY DataLakeSecurity_jv8.jar                                          /opt/arti
 # --- App + patch block token ---
 COPY spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT.jar                    /opt/artifacts/
 COPY spark-app/target/sample-spark-application-privacy-1.0-SNAPSHOT-block-token-patch.jar  /opt/artifacts/
+COPY k8s/* /opt/artifacts/k8s/
+COPY dak-mock/k8s/* /opt/artifacts/dak-mock/k8s/
 
 RUN chown -R carrier:carrier /opt/artifacts
 
