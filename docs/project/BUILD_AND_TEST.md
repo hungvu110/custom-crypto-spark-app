@@ -5,20 +5,83 @@
 Yêu cầu: JDK 11+, Maven 3.8+ (lần build đầu cần mạng, hoặc Nexus nội bộ — xem [`internal-repo/README.md`](../../internal-repo/README.md)).
 Scala/Spark/Hadoop khai `provided`; riêng `delta-spark` đóng gói vào fat jar. Chạy lệnh ở thư mục gốc.
 
-## Build cả project
+## Các module và phụ thuộc
+
+| Module | Loại | Phụ thuộc module khác (`-am` build luôn) | Sản phẩm (`target/`) | Profile |
+| --- | --- | --- | --- | --- |
+| `key-prefix-lib` | lib | — | `key-prefix-lib-1.0-SNAPSHOT.jar` | mặc định |
+| `column-crypto-lib` | lib | `key-prefix-lib` | `column-crypto-lib-1.0-SNAPSHOT.jar` | mặc định |
+| `pseudonym-udf` | lib | `key-prefix-lib` | `pseudonym-udf-1.0-SNAPSHOT.jar` | mặc định |
+| `cdr-crypto-udf` | lib | `key-prefix-lib` + jar đối tác `DataLakeSecurity_jv8.jar` | `cdr-crypto-udf-1.0-SNAPSHOT.jar` | **`cdr-crypto`** |
+| `spark-app` | app | `column-crypto-lib`, `key-prefix-lib` (chỉ cho test) | `sample-spark-application-privacy-1.0-SNAPSHOT.jar` (+ `-block-token-patch.jar`) | mặc định |
+| `hdfs-load-stress-test` | app | `spark-app` (jar `block-token-patch`) | `hdfs-load-stress-test.jar` | mặc định |
+| `pseudonymize-table-app` | app | `pseudonym-udf`, `key-prefix-lib`, `spark-app` (patch) | `pseudonymize-table-app.jar` | mặc định |
+| `pseudonym-verify-utils` | app | `pseudonym-udf`, `key-prefix-lib` | `pseudonym-verify-utils.jar` | mặc định |
+| `silver-ingest-app` | app | `cdr-crypto-udf`, `key-prefix-lib`, `spark-app` (patch) | `silver-ingest-app.jar` | **`cdr-crypto`** |
+| `dak-mock` | Spring Boot, **dự án Maven riêng** (không nằm trong `pom.xml` gốc) | — | `dak-mock-0.1.0-SNAPSHOT.jar` | — |
+
+Hai module cần jar đối tác nằm trong profile `cdr-crypto` nên **không** bị build mặc định: người chưa cài jar đó vẫn build được phần còn lại.
+Cài jar đối tác một lần (xem mục "Build & test `cdr-crypto-udf`"):
 
 ```bash
-mvn -B clean package                 # build mặc định, KHÔNG cần jar đối tác
-mvn -B -Pcdr-crypto clean package    # build TẤT CẢ: thêm cdr-crypto-udf (cần jar đối tác đã cài vào ~/.m2, xem mục "Build & test `cdr-crypto-udf`")
+mvn install:install-file -Dfile=DataLakeSecurity_jv8.jar \
+  -DgroupId=com.viettel.datalake -DartifactId=datalake-security -Dversion=jv8 -Dpackaging=jar
 ```
 
-| Lệnh                                | Module được build                                                | Cần `DataLakeSecurity_jv8.jar` | Dùng khi                                                 |
-| ----------------------------------- | ---------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------- |
-| `mvn -B clean package`              | `key-prefix-lib`, `column-crypto-lib`, `spark-app`, `hdfs-load-stress-test`, `pseudonym-udf`, `pseudonymize-table-app`, `pseudonym-verify-utils` | Không | Image `no-crypto` / `column-crypto`, phát triển hằng ngày |
-| `mvn -B -Pcdr-crypto clean package` | các module trên + `cdr-crypto-udf` + `silver-ingest-app`         | Có                             | Trước khi `docker build --target cdr-crypto` hoặc build image `silver-ingest-app` |
+Mọi lệnh dưới đây chạy ở **thư mục gốc repo**. Thêm `-B` cho CI, `-o` khi `~/.m2` đã đủ dependency và không có mạng, `-DskipTests` để chỉ lấy jar.
 
-`docker build --target cdr-crypto` cần thêm `cdr-crypto-udf/target/*.jar` và `DataLakeSecurity_jv8.jar` ở thư mục gốc, nên phải build bằng lệnh có `-Pcdr-crypto`.
+## Build toàn bộ
 
+```bash
+mvn -B clean package                   # mặc định: 7 module, KHÔNG cần jar đối tác
+mvn -B -Pcdr-crypto clean package      # TẤT CẢ 9 module: thêm cdr-crypto-udf và silver-ingest-app (cần jar đối tác)
+mvn -B -Pcdr-crypto clean install -DskipTests   # build tất cả và cài vào ~/.m2 (để sau đó build từng module không cần -am)
+mvn -f dak-mock/pom.xml clean package  # dak-mock build riêng, không thuộc lệnh ở trên
+```
+
+| Lệnh | Module được build | Cần `DataLakeSecurity_jv8.jar` | Dùng khi |
+| --- | --- | --- | --- |
+| `mvn -B clean package` | `key-prefix-lib`, `column-crypto-lib`, `spark-app`, `hdfs-load-stress-test`, `pseudonym-udf`, `pseudonym-verify-utils`, `pseudonymize-table-app` | Không | Image `no-crypto` / `column-crypto`, phát triển hằng ngày |
+| `mvn -B -Pcdr-crypto clean package` | 7 module trên + `cdr-crypto-udf` + `silver-ingest-app` | Có | Trước khi `docker build --target cdr-crypto` hoặc build image `silver-ingest-app` |
+
+Maven tự xếp thứ tự build theo phụ thuộc. `docker build --target cdr-crypto` cần thêm `cdr-crypto-udf/target/*.jar` và `DataLakeSecurity_jv8.jar` ở thư mục gốc, nên phải build bằng lệnh có `-Pcdr-crypto`.
+
+## Build và test từng module
+
+Khuôn chung: `-pl <module>` chọn module, **`-am`** (also-make) build luôn các module nó phụ thuộc. Thiếu `-am` thì Maven tìm phụ thuộc trong `~/.m2` và fail nếu chưa `install`.
+
+| Module | Test | Build jar (bỏ test thêm `-DskipTests`) |
+| --- | --- | --- |
+| `key-prefix-lib` | `mvn -B -pl key-prefix-lib test` | `mvn -B -pl key-prefix-lib clean package` |
+| `column-crypto-lib` | `mvn -B -pl column-crypto-lib -am test` | `mvn -B -pl column-crypto-lib -am clean package` |
+| `pseudonym-udf` | `mvn -B -pl pseudonym-udf -am test` | `mvn -B -pl pseudonym-udf -am clean package` |
+| `cdr-crypto-udf` | `mvn -B -Pcdr-crypto -pl cdr-crypto-udf -am test` | `mvn -B -Pcdr-crypto -pl cdr-crypto-udf -am clean package` |
+| `spark-app` | `mvn -B -pl spark-app -am test` | `mvn -B -pl spark-app -am clean package` |
+| `hdfs-load-stress-test` | `mvn -B -pl hdfs-load-stress-test -am test` | `mvn -B -pl hdfs-load-stress-test -am clean package` |
+| `pseudonymize-table-app` | `mvn -B -pl pseudonymize-table-app -am test` | `mvn -B -pl pseudonymize-table-app -am clean package` |
+| `pseudonym-verify-utils` | `mvn -B -pl pseudonym-verify-utils -am test` | `mvn -B -pl pseudonym-verify-utils -am clean package` |
+| `silver-ingest-app` | `mvn -B -Pcdr-crypto -pl silver-ingest-app -am test` | `mvn -B -Pcdr-crypto -pl silver-ingest-app -am clean package` |
+| `dak-mock` | `mvn -B -f dak-mock/pom.xml test` | `mvn -B -f dak-mock/pom.xml clean package` |
+
+Test DAG Airflow (Python, không cần cài Airflow, cần `python3` và `jinja2`):
+
+```bash
+python3 -B -m unittest discover -s airflow/tests        # DAG khử định danh + hai DAG chuẩn hoá silver
+```
+
+**Chạy một suite/package** (Scalatest): đừng kèm `-am` với `-Dsuites`, vì tuỳ chọn áp cho cả module phụ thuộc và Scalatest báo "Missing class"
+ở module không có suite đó. Cài phụ thuộc vào `~/.m2` trước, rồi chạy riêng module:
+
+```bash
+mvn -B -Pcdr-crypto -pl key-prefix-lib,cdr-crypto-udf -am install -DskipTests      # 1 lần: cài phụ thuộc
+mvn -B -Pcdr-crypto -pl silver-ingest-app test \
+    -Dsuites=vai.lakehouse.silveringest.config.IngestConfigSpec                     # 1 suite (tên đầy đủ, nhiều suite cách nhau bằng dấu phẩy)
+mvn -B -pl pseudonymize-table-app test \
+    -DwildcardSuites=vai.lakehouse.pseudonymizetable                                # cả một package
+mvn -B -f dak-mock/pom.xml test -Dtest=SilverSampleFilesTest                        # dak-mock dùng JUnit: -Dtest=<Lớp>
+```
+
+Khi sửa một lib rồi muốn app dùng bản mới mà không build lại cả chuỗi: `mvn -B -pl <lib> install -DskipTests`, sau đó build app (không cần `-am`).
 
 ## Build riêng lib mã hoá (`column-crypto-lib`)
 
@@ -48,7 +111,9 @@ nếu chỉ `-pl spark-app` Maven đi tìm chúng trong `~/.m2` và fail khi ch�
 **không** đóng gói lib crypto nào: lúc deploy phải nạp jar lib qua Dockerfile + `spark.jars` (mục "Build & push image" bên dưới).
 Kiểm tra: `unzip -l <fat jar> | grep -E 'columncrypto|keyprefix'` phải KHÔNG ra dòng nào.
 
-## Chạy test
+## Chạy test (chi tiết)
+
+Lệnh cho từng module ở bảng "Build và test từng module" phía trên; mục này liệt kê thêm tuỳ chọn và nội dung các suite.
 
 ```bash
 mvn -B test                                                   # test mọi module mặc định
@@ -184,6 +249,20 @@ mvn -Pcdr-crypto -pl cdr-crypto-udf -am clean package -DskipTests
 docker build --target cdr-crypto -t hub.vtcc.vn:8989/sample-spark-application-privacy:v1-cdr-crypto .
 docker push hub.vtcc.vn:8989/sample-spark-application-privacy:v1-cdr-crypto
 ```
+
+### Image của từng app riêng
+
+Mỗi app dưới đây có `Dockerfile` riêng, **build context = gốc repo** (trừ `dak-mock`), build jar trước rồi `docker build`:
+
+| App | Build jar | Build image | Chi tiết |
+| --- | --- | --- | --- |
+| `pseudonymize-table-app` | `mvn -B -pl pseudonymize-table-app -am clean package -DskipTests` | `docker build -f pseudonymize-table-app/Dockerfile -t <registry>/pseudonymize-table-app:<tag> .` | [README](../../pseudonymize-table-app/README.md) |
+| `silver-ingest-app` | `mvn -B -Pcdr-crypto -pl silver-ingest-app -am clean package -DskipTests` | `docker build -f silver-ingest-app/Dockerfile -t <registry>/silver-ingest-app:<tag> .` | [README](../../silver-ingest-app/README.md); cần `DataLakeSecurity_jv8.jar` ở thư mục gốc; đổi tag thì sửa `IMAGE` trong `airflow/dags/silver_ingest_common.py` |
+| `hdfs-load-stress-test` | `mvn -B -pl hdfs-load-stress-test -am clean package -DskipTests` | `docker build -t <registry>/hdfs-load-stress-test:<tag> hdfs-load-stress-test` | [README](../../hdfs-load-stress-test/README.md) |
+| `dak-mock` | `mvn -B -f dak-mock/pom.xml clean package` (cách B) | `docker build -f dak-mock/Dockerfile.jar -t <registry>/dak-mock:<tag> dak-mock` (hoặc `docker build -t … dak-mock` để build trọn trong Docker) | [README mục 6.1](../../dak-mock/README.md) |
+
+Fat jar của hai app dùng lib (`pseudonymize-table-app`, `silver-ingest-app`) **không** chứa lib crypto: image copy các jar lib rời vào `/opt/app` và DAG/manifest
+nạp qua `spark.jars` (xem Dockerfile của từng app). DAG Airflow nằm ở [`airflow/dags/`](../../airflow/dags/), không đóng vào image.
 
 Tên/tag trên là giả định theo convention `hub.vtcc.vn:8989/<tên>:<tag>` — đổi cho khớp
 registry thực tế và sửa `image:` trong manifest tương ứng. Image nào chứa jar nào thì manifest phải khớp
