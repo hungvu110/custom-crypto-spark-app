@@ -1,0 +1,13 @@
+{
+  "database": "demo_db",
+  "table": "users_cdr_2",
+  "columns": [{ "column": "name", "mode": "HASH" }],
+  "dagId": "deid_pseudonymize_table",
+  "env": {
+    "INPUT_FROM": "20261014",
+    "INPUT_TO": "20261012",
+    "INPUT_HOURS": "18-6",
+    "INPUT_PATH": "/some/other/path"
+  },
+  "purpose": "Contains a range that must be rejected: FROM after TO, hours going backwards, and a forbidden INPUT_ env"
+}

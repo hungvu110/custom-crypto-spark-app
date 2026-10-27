@@ -77,7 +77,7 @@ class JobEnvPolicyTest {
       assertThat(problems).hasSize(1);
       assertThat(problems.get(0).field()).isEqualTo("env.OUTPUT_MODE");
       assertThat(problems.get(0).code()).isEqualTo("invalid_env");
-      assertThat(problems.get(0).message()).isEqualTo("value must match overwrite|append");
+      assertThat(problems.get(0).message()).isEqualTo("value must match overwrite|append|overwrite-partitions");
     }
     for (String bad : List.of("Demo_DB", "a-b", "a b", "../x", "x".repeat(129))) {
       List<Problem> problems = defaults().validate(env("OUTPUT_DB", bad));
@@ -140,6 +140,103 @@ class JobEnvPolicyTest {
     assertThat(problems).extracting(Problem::field).containsExactly("env.OUTPUT_MODE", "env.OUTPUT_TABLE", "env.ZZZ");
   }
 
+  // ---------------------------------------------------------------- date and hour range
+
+  private static List<String> messages(JobEnvPolicy policy, Map<String, ?> env) {
+    return policy.validate(env).stream().map(p -> p.field() + ": " + p.message()).toList();
+  }
+
+  @Test
+  @DisplayName("khoảng ngày giờ hợp lệ: ngày hoặc ngày kèm giờ, FROM bằng TO, INPUT_HOURS một giờ hoặc một khoảng")
+  void validate_dateHourRange_valid() {
+    JobEnvPolicy policy = defaults();
+
+    assertThat(policy.validate(env("INPUT_FROM", "20261012"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_FROM", "20261012", "INPUT_TO", "20261014"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_FROM", "2026101218", "INPUT_TO", "2026101306"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_FROM", "20261012", "INPUT_TO", "20261012"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_FROM", "2026101205", "INPUT_TO", "2026101205"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_HOURS", "18"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_HOURS", "6-18"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_HOURS", "0-23", "INPUT_TO", "20261231"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_FROM", "20240229"))).isEmpty(); // leap day
+  }
+
+  @Test
+  @DisplayName("khoảng ngày giờ sai định dạng: dạng phút, tháng 13, giờ 24, giờ nhiều chữ số đều bị từ chối bằng thông điệp cố định")
+  void validate_dateHourRange_badFormatOrCalendar() {
+    JobEnvPolicy policy = defaults();
+
+    assertThat(messages(policy, env("INPUT_FROM", "202610120030"))).containsExactly("env.INPUT_FROM: value must match [0-9]{8}([0-9]{2})?");
+    assertThat(messages(policy, env("INPUT_FROM", "2026-10-12"))).hasSize(1);
+    assertThat(messages(policy, env("INPUT_FROM", "20261340"))).containsExactly("env.INPUT_FROM: not a real calendar date");
+    assertThat(messages(policy, env("INPUT_TO", "20230229"))).containsExactly("env.INPUT_TO: not a real calendar date");
+    assertThat(messages(policy, env("INPUT_FROM", "2026101224"))).containsExactly("env.INPUT_FROM: hour must be 00..23");
+    assertThat(messages(policy, env("INPUT_TO", "2026101225"))).containsExactly("env.INPUT_TO: hour must be 00..23");
+    assertThat(policy.validate(env("INPUT_HOURS", "24"))).hasSize(1);
+    assertThat(policy.validate(env("INPUT_HOURS", "6-"))).hasSize(1);
+    assertThat(policy.validate(env("INPUT_HOURS", "-6"))).hasSize(1);
+    assertThat(policy.validate(env("INPUT_HOURS", "1-2-3"))).hasSize(1);
+    assertThat(policy.validate(env("INPUT_FROM", 20261012))).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("FROM không được sau TO: ngày thiếu giờ tính FROM là 00 và TO là 23")
+  void validate_dateHourRange_fromAfterTo() {
+    JobEnvPolicy policy = defaults();
+
+    assertThat(messages(policy, env("INPUT_FROM", "20261014", "INPUT_TO", "20261012")))
+        .containsExactly("env.INPUT_TO: must not be earlier than INPUT_FROM");
+    assertThat(messages(policy, env("INPUT_FROM", "2026101218", "INPUT_TO", "2026101217")))
+        .containsExactly("env.INPUT_TO: must not be earlier than INPUT_FROM");
+    assertThat(policy.validate(env("INPUT_FROM", "2026101223", "INPUT_TO", "20261012"))).isEmpty(); // 23 <= 23
+    assertThat(policy.validate(env("INPUT_FROM", "20261012", "INPUT_TO", "2026101200"))).isEmpty(); // 00 <= 00
+    assertThat(messages(policy, env("INPUT_FROM", "2026101201", "INPUT_TO", "2026101200")))
+        .containsExactly("env.INPUT_TO: must not be earlier than INPUT_FROM");
+  }
+
+  @Test
+  @DisplayName("INPUT_HOURS hai số: số đầu không được lớn hơn số sau")
+  void validate_dateHourRange_hoursOrder() {
+    JobEnvPolicy policy = defaults();
+
+    assertThat(messages(policy, env("INPUT_HOURS", "18-6")))
+        .containsExactly("env.INPUT_HOURS: the first hour must not be after the last hour");
+    assertThat(policy.validate(env("INPUT_HOURS", "6-6"))).isEmpty();
+    assertThat(policy.validate(env("INPUT_HOURS", "06-18"))).isEmpty();
+  }
+
+  @Test
+  @DisplayName("OUTPUT_MODE=overwrite-partitions chỉ hợp lệ khi có ít nhất một env ngày giờ; các chế độ khác không đòi")
+  void validate_overwritePartitions_requiresARange() {
+    JobEnvPolicy policy = defaults();
+
+    assertThat(messages(policy, env("OUTPUT_MODE", "overwrite-partitions")))
+        .containsExactly("env.OUTPUT_MODE: overwrite-partitions needs INPUT_FROM, INPUT_TO or INPUT_HOURS");
+    assertThat(policy.validate(env("OUTPUT_MODE", "overwrite-partitions", "INPUT_FROM", "20261012"))).isEmpty();
+    assertThat(policy.validate(env("OUTPUT_MODE", "overwrite-partitions", "INPUT_TO", "20261012"))).isEmpty();
+    assertThat(policy.validate(env("OUTPUT_MODE", "overwrite-partitions", "INPUT_HOURS", "5"))).isEmpty();
+    assertThat(policy.validate(env("OUTPUT_MODE", "overwrite", "INPUT_FROM", "20261012"))).isEmpty();
+    assertThat(policy.validate(env("OUTPUT_MODE", "append", "INPUT_HOURS", "5"))).isEmpty();
+    assertThat(policy.validate(env("OUTPUT_MODE", "overwrite"))).isEmpty();
+  }
+
+  @Test
+  @DisplayName("INPUT_PATH và các INPUT_* khác vẫn bị từ chối bằng thông điệp chung")
+  void validate_otherInputEnv_stillRejected() {
+    for (String name : List.of("INPUT_PATH", "INPUT_DATE_KEY", "INPUT_HOUR_KEY", "INPUT_FORMAT", "INPUT_OPTION_X", "INPUT_BAD_FILES")) {
+      assertThat(messages(defaults(), env(name, "x"))).containsExactly("env." + name + ": env name is not allowed");
+    }
+  }
+
+  @Test
+  @DisplayName("thông điệp lỗi khoảng ngày giờ không lặp lại giá trị đã nhập")
+  void validate_dateHourRange_doesNotEchoValues() {
+    List<String> all = messages(defaults(), env("INPUT_FROM", "20261340", "INPUT_TO", "2026101299", "INPUT_HOURS", "99-1"));
+
+    assertThat(String.join(" | ", all)).doesNotContain("20261340").doesNotContain("2026101299").doesNotContain("99-1");
+  }
+
   // ---------------------------------------------------------------- complete
 
   @Test
@@ -150,6 +247,24 @@ class JobEnvPolicyTest {
     assertThat(result).containsExactly(
         Map.entry("ENABLE_HIVE_SUPPORT", "true"), Map.entry("OUTPUT_DB", "demo_db"), Map.entry("OUTPUT_FORMAT", "delta"),
         Map.entry("OUTPUT_MODE", "overwrite"), Map.entry("OUTPUT_TABLE", "users_cdr_deid_20261026_1"));
+  }
+
+  @Test
+  @DisplayName("complete: có env ngày giờ thì OUTPUT_MODE mặc định là overwrite-partitions, không có thì overwrite; người gửi chọn thì giữ")
+  void complete_outputModeDependsOnTheRange() {
+    JobEnvPolicy policy = defaults();
+
+    assertThat(policy.complete(strings("INPUT_FROM", "20261012"), "d", "t")).containsEntry("OUTPUT_MODE", "overwrite-partitions");
+    assertThat(policy.complete(strings("INPUT_TO", "20261012"), "d", "t")).containsEntry("OUTPUT_MODE", "overwrite-partitions");
+    assertThat(policy.complete(strings("INPUT_HOURS", "5"), "d", "t")).containsEntry("OUTPUT_MODE", "overwrite-partitions");
+    assertThat(policy.complete(strings(), "d", "t")).containsEntry("OUTPUT_MODE", "overwrite");
+    assertThat(policy.complete(strings("INPUT_FROM", "20261012", "OUTPUT_MODE", "overwrite"), "d", "t"))
+        .containsEntry("OUTPUT_MODE", "overwrite");
+    assertThat(policy.complete(strings("INPUT_FROM", "20261012", "OUTPUT_MODE", "append"), "d", "t"))
+        .containsEntry("OUTPUT_MODE", "append");
+    // the range env themselves have no static default: they are only set when the requester gave them
+    assertThat(policy.complete(strings(), "d", "t")).doesNotContainKeys("INPUT_FROM", "INPUT_TO", "INPUT_HOURS");
+    assertThat(policy.validate(policy.complete(strings("INPUT_FROM", "20261012"), "d", "t"))).isEmpty();
   }
 
   @Test

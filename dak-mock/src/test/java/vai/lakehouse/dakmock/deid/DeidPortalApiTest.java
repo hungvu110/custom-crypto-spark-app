@@ -496,10 +496,12 @@ class DeidPortalApiTest {
     assertThat(body.get("maxEntries").asInt()).isEqualTo(10);
     List<String> names = new ArrayList<>();
     body.get("env").forEach(e -> names.add(e.get("name").asText()));
-    assertThat(names).containsExactly("OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT");
+    assertThat(names).containsExactly("OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT",
+        "INPUT_FROM", "INPUT_TO", "INPUT_HOURS");
     JsonNode mode = body.get("env").get(2);
-    assertThat(mode.get("pattern").asText()).isEqualTo("overwrite|append");
-    assertThat(mode.get("defaultValue").asText()).isEqualTo("overwrite");
+    assertThat(mode.get("pattern").asText()).isEqualTo("overwrite|append|overwrite-partitions");
+    assertThat(mode.has("defaultValue")).as("OUTPUT_MODE default depends on the date/hour range").isFalse();
+    assertThat(body.get("env").get(5).get("pattern").asText()).isEqualTo("[0-9]{8}([0-9]{2})?");
     assertThat(body.get("env").get(0).has("defaultValue")).as("OUTPUT_DB is computed when approving").isFalse();
     assertThat(response.getBody()).doesNotContain("DB_NAME").doesNotContain("VAULT").doesNotContain("CRYPTO");
   }

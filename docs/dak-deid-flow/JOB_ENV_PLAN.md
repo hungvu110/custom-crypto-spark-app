@@ -140,7 +140,7 @@ Thứ tự: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9 → A1 �
 | Chống trùng phiếu có tính env không | **Không tính**. Hai phiếu đang xử lý của cùng team, cùng bảng nguồn, cùng tập cột vẫn bị coi là trùng, dù `env` khác nhau. Một team phải đợi phiếu đầu kết thúc mới gửi được phiếu thứ hai cho cùng bảng và cột |
 | Giữ lớp bảo vệ "env bị cấm" (mục 4) | **Có giữ**: mock không khởi động nếu danh sách được phép chứa env bị cấm |
 
-## 11. Giai đoạn 2: khoảng ngày và giờ (đã chốt hướng, chưa làm)
+## 11. Giai đoạn 2: khoảng ngày và giờ (J1–J4, E12–E17, A5–A8 đã làm; J5 build và đẩy image cần làm tay)
 
 **Vì sao:** khử định danh thường chạy theo ngày hoặc theo giờ, nên người gửi phiếu cần giới hạn dữ liệu cần xử lý. Job `pseudonymize-table-app` đã có `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS`, nhưng **chỉ cho dùng với nguồn là thư mục** (`INPUT_PATH`); với nguồn là bảng, job báo lỗi cấu hình và thoát exit 2. Luồng của DAK dùng nguồn là bảng, nên phải mở rộng job.
 

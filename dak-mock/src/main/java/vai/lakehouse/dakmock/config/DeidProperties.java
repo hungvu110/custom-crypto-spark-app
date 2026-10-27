@@ -94,6 +94,8 @@ public record DeidProperties(
         "WAREHOUSE_PATH", "MAPPING_TABLE_PATH");
     private static final List<String> FORBIDDEN_PREFIXES = List.of("INPUT_", "CRYPTO_", "VAULT_", "DAK_", "JAVA_", "LD_", "SPARK_",
         "HADOOP_", "KRB5");
+    /** Ba env ngày giờ là ngoại lệ duy nhất của nhóm {@code INPUT_}: người gửi giới hạn dữ liệu cần xử lý, không đổi nguồn. */
+    private static final Set<String> RANGE_NAMES = Set.of("INPUT_FROM", "INPUT_TO", "INPUT_HOURS");
     private static final List<String> FORBIDDEN_WORDS = List.of("SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY");
 
     /** Một env được phép: {@code defaultValue} là {@code null} nếu không có giá trị mặc định tĩnh. */
@@ -103,7 +105,7 @@ public record DeidProperties(
       allowed = allowed == null ? defaultAllowed() : List.copyOf(allowed);
     }
 
-    /** Danh sách mặc định: bảng kết quả, cách ghi, định dạng và hỗ trợ Hive. */
+    /** Danh sách mặc định: bảng kết quả, cách ghi, định dạng, hỗ trợ Hive và khoảng ngày giờ. */
     public static JobEnv defaults() {
       return new JobEnv(DEFAULT_MAX_ENTRIES, null);
     }
@@ -115,6 +117,9 @@ public record DeidProperties(
     /** Env thuộc nhóm không bao giờ được cho người gửi phiếu nhập (tên đúng, tiền tố hoặc từ khoá bí mật). */
     public static boolean isForbidden(String name) {
       String upper = name.toUpperCase(Locale.ROOT);
+      if (RANGE_NAMES.contains(upper)) {
+        return false;
+      }
       return FORBIDDEN_NAMES.contains(upper)
           || FORBIDDEN_PREFIXES.stream().anyMatch(upper::startsWith)
           || FORBIDDEN_WORDS.stream().anyMatch(upper::contains);
@@ -124,9 +129,13 @@ public record DeidProperties(
       return List.of(
           new Entry("OUTPUT_DB", "[a-z0-9_]{1,128}", null),
           new Entry("OUTPUT_TABLE", "[a-z0-9_]{1,128}", null),
-          new Entry("OUTPUT_MODE", "overwrite|append", "overwrite"),
+          // Không có mặc định tĩnh: overwrite-partitions khi có khoảng ngày giờ, ngược lại overwrite (xem JobEnvPolicy.complete).
+          new Entry("OUTPUT_MODE", "overwrite|append|overwrite-partitions", null),
           new Entry("OUTPUT_FORMAT", "delta|hive|iceberg", "delta"),
-          new Entry("ENABLE_HIVE_SUPPORT", "true|false", "true"));
+          new Entry("ENABLE_HIVE_SUPPORT", "true|false", "true"),
+          new Entry("INPUT_FROM", "[0-9]{8}([0-9]{2})?", null),
+          new Entry("INPUT_TO", "[0-9]{8}([0-9]{2})?", null),
+          new Entry("INPUT_HOURS", "([01]?[0-9]|2[0-3])(-([01]?[0-9]|2[0-3]))?", null));
     }
   }
 

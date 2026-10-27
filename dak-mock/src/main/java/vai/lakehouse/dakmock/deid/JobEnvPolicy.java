@@ -1,5 +1,8 @@
 package vai.lakehouse.dakmock.deid;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +27,13 @@ public final class JobEnvPolicy {
   public static final String CODE = "invalid_env";
   public static final String OUTPUT_DB = "OUTPUT_DB";
   public static final String OUTPUT_TABLE = "OUTPUT_TABLE";
+  public static final String OUTPUT_MODE = "OUTPUT_MODE";
+  public static final String INPUT_FROM = "INPUT_FROM";
+  public static final String INPUT_TO = "INPUT_TO";
+  public static final String INPUT_HOURS = "INPUT_HOURS";
+  private static final String MODE_OVERWRITE = "overwrite";
+  private static final String MODE_OVERWRITE_PARTITIONS = "overwrite-partitions";
+  private static final List<String> RANGE_ENV = List.of(INPUT_FROM, INPUT_TO, INPUT_HOURS);
 
   private static final int MAX_VALUE_LENGTH = 256;
   private static final int MAX_FIELD_NAME_LENGTH = 64;
@@ -40,7 +50,7 @@ public final class JobEnvPolicy {
   }
 
   /**
-   * Kiểm env người gửi nhập; trả mọi lỗi tìm thấy (rỗng nếu hợp lệ), sắp theo tên env. Giá trị phải là chuỗi, tối đa 256 ký tự,
+   * Kiểm env người gửi nhập; trả mọi lỗi tìm thấy (rỗng nếu hợp lệ), sắp theo tên env, gồm cả luật giữa các env ngày giờ. Giá trị phải là chuỗi, tối đa 256 ký tự,
    * không có ký tự điều khiển và khớp toàn bộ quy tắc của env đó.
    */
   public List<Problem> validate(Map<String, ?> env) {
@@ -52,7 +62,67 @@ public final class JobEnvPolicy {
       problems.add(new Problem("env", CODE, "at most " + config.maxEntries() + " entries are allowed"));
     }
     new TreeMap<String, Object>(env).forEach((name, value) -> checkEntry(name, value).ifPresent(problems::add));
+    checkRange(env, problems);
+    problems.sort(java.util.Comparator.comparing(Problem::field));
     return problems;
+  }
+
+  /**
+   * Quy tắc giữa các env ngày giờ (chỉ xét env đã qua kiểm từng mục, để một giá trị sai không sinh thêm lỗi thứ hai): ngày có thật,
+   * giờ 00..23, FROM không sau TO, hai số của INPUT_HOURS tăng dần, và overwrite-partitions phải có khoảng. Cùng luật với job.
+   */
+  private void checkRange(Map<String, ?> env, List<Problem> problems) {
+    Map<String, String> ok = new TreeMap<>();
+    for (String name : RANGE_ENV) {
+      if (env.get(name) instanceof String text && rules.containsKey(name) && rules.get(name).matcher(text).matches()
+          && problems.stream().noneMatch(p -> p.field().equals(FIELD_PREFIX + name))) {
+        ok.put(name, text);
+      }
+    }
+    boolean validPoints = true;
+    for (String name : List.of(INPUT_FROM, INPUT_TO)) {
+      String text = ok.get(name);
+      if (text == null) {
+        continue;
+      }
+      if (!isRealDate(text.substring(0, 8))) {
+        problems.add(new Problem(FIELD_PREFIX + name, CODE, "not a real calendar date"));
+        validPoints = false;
+      } else if (text.length() == 10 && Integer.parseInt(text.substring(8)) > 23) {
+        problems.add(new Problem(FIELD_PREFIX + name, CODE, "hour must be 00..23"));
+        validPoints = false;
+      }
+    }
+    if (validPoints && ok.containsKey(INPUT_FROM) && ok.containsKey(INPUT_TO)
+        && pointKey(ok.get(INPUT_FROM), 0) > pointKey(ok.get(INPUT_TO), 23)) {
+      problems.add(new Problem(FIELD_PREFIX + INPUT_TO, CODE, "must not be earlier than " + INPUT_FROM));
+    }
+    String hours = ok.get(INPUT_HOURS);
+    if (hours != null && hours.contains("-")) {
+      String[] parts = hours.split("-");
+      if (Integer.parseInt(parts[0]) > Integer.parseInt(parts[1])) {
+        problems.add(new Problem(FIELD_PREFIX + INPUT_HOURS, CODE, "the first hour must not be after the last hour"));
+      }
+    }
+    if (MODE_OVERWRITE_PARTITIONS.equals(env.get(OUTPUT_MODE)) && RANGE_ENV.stream().noneMatch(env::containsKey)) {
+      problems.add(new Problem(FIELD_PREFIX + OUTPUT_MODE, CODE,
+          MODE_OVERWRITE_PARTITIONS + " needs " + INPUT_FROM + ", " + INPUT_TO + " or " + INPUT_HOURS));
+    }
+  }
+
+  private static boolean isRealDate(String yyyymmdd) {
+    try {
+      LocalDate.parse(yyyymmdd, DateTimeFormatter.BASIC_ISO_DATE);
+      return true;
+    } catch (DateTimeParseException e) {
+      return false;
+    }
+  }
+
+  /** yyyyMMddHH as a number; a missing hour counts as {@code defaultHour} (00 for FROM, 23 for TO). */
+  private static long pointKey(String value, int defaultHour) {
+    long date = Long.parseLong(value.substring(0, 8));
+    return date * 100 + (value.length() == 10 ? Integer.parseInt(value.substring(8)) : defaultHour);
   }
 
   private Optional<Problem> checkEntry(String name, Object value) {
@@ -78,13 +148,18 @@ public final class JobEnvPolicy {
   }
 
   /**
-   * Env cuối cùng của phiếu khi duyệt: mặc định tĩnh của danh sách, rồi giá trị người gửi nhập đè lên, rồi bảng kết quả mặc định do
+   * Env cuối cùng của phiếu khi duyệt: mặc định tĩnh của danh sách, rồi giá trị người gửi nhập đè lên, rồi {@code OUTPUT_MODE} theo khoảng ngày giờ nếu còn thiếu, rồi bảng kết quả mặc định do
    * mock tính cho {@code OUTPUT_DB} và {@code OUTPUT_TABLE} nếu còn thiếu (bảng kết quả luôn có). Sắp theo tên.
    */
   public Map<String, String> complete(Map<String, String> env, String defaultOutputDb, String defaultOutputTable) {
     Map<String, String> result = new TreeMap<>();
     config.allowed().stream().filter(e -> e.defaultValue() != null).forEach(e -> result.put(e.name(), e.defaultValue()));
     result.putAll(env);
+    if (config.find(OUTPUT_MODE).isPresent()) {
+      // Mặc định phụ thuộc phiếu: có khoảng ngày giờ thì chỉ thay các partition của khoảng đó, không thì thay cả bảng.
+      result.putIfAbsent(OUTPUT_MODE,
+          RANGE_ENV.stream().anyMatch(env::containsKey) ? MODE_OVERWRITE_PARTITIONS : MODE_OVERWRITE);
+    }
     result.putIfAbsent(OUTPUT_DB, defaultOutputDb);
     result.putIfAbsent(OUTPUT_TABLE, defaultOutputTable);
     return result;

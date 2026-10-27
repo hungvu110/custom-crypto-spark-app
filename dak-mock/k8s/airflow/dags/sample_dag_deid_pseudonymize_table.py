@@ -9,7 +9,7 @@ DAK gọi POST /api/v1/dags/<dagId>/dagRuns với:
   dag_run_id = deid-<năm>-<6 số>              (tên job, cũng là tên SparkApplication)
   conf = {requestCode, database, table, pseudoColumns, keySecretName, env}
 `env` là env CUỐI CÙNG của job (env người gửi phiếu nhập cộng giá trị mặc định do DAK điền), gồm OUTPUT_DB, OUTPUT_TABLE,
-OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT. Chỉ những env trong bảng JOB_ENV bên dưới mới được nhận, và bảng này PHẢI khớp
+OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT và (nếu người gửi nhập) khoảng ngày giờ INPUT_FROM, INPUT_TO, INPUT_HOURS. Chỉ những env trong bảng JOB_ENV bên dưới mới được nhận, và bảng này PHẢI khớp
 `dak.deid.job-env` của dak-mock (có test chống lệch). `keySecretName` là TÊN Secret (cùng namespace với SparkApplication) có file pseudonym.hmac_v1 = "base64:<key bảng>". Key KHÔNG
 nằm trong conf. DAG này phải nằm trong dak.deid.airflow.allowed-dag-ids của dak-mock.
 
@@ -23,6 +23,7 @@ Mọi giá trị đều được kiểm lại ở task `validate_conf` (hàm `ch
 Test không cần Airflow: python3 -B -m unittest discover -s dak-mock/k8s/airflow/tests
 """
 import copy
+import datetime
 import re
 
 import pendulum
@@ -60,10 +61,17 @@ DEFAULTS = {
 JOB_ENV = {
     "OUTPUT_DB": (None, r"[a-z0-9_]{1,128}"),
     "OUTPUT_TABLE": (None, r"[a-z0-9_]{1,128}"),
-    "OUTPUT_MODE": ("overwrite", r"overwrite|append"),
+    "OUTPUT_MODE": (None, r"overwrite|append|overwrite-partitions"),
     "OUTPUT_FORMAT": ("delta", r"delta|hive|iceberg"),
     "ENABLE_HIVE_SUPPORT": ("true", r"true|false"),
+    "INPUT_FROM": (None, r"[0-9]{8}([0-9]{2})?"),
+    "INPUT_TO": (None, r"[0-9]{8}([0-9]{2})?"),
+    "INPUT_HOURS": (None, r"([01]?[0-9]|2[0-3])(-([01]?[0-9]|2[0-3]))?"),
 }
+
+# Khoảng ngày giờ lọc dữ liệu nguồn (cột date yyyyMMdd và hour HH của bảng). Không có mặc định: không nhập thì driver nhận giá trị rỗng
+# (job coi rỗng là không đặt). OUTPUT_MODE cũng không có mặc định tĩnh: có khoảng thì overwrite-partitions, không thì overwrite.
+RANGE_ENV = ("INPUT_FROM", "INPUT_TO", "INPUT_HOURS")
 
 # OUTPUT_DB và OUTPUT_TABLE không có mặc định ở JOB_ENV vì DAK luôn gửi; giá trị này CHỈ dùng khi trigger tay.
 MANUAL_OUTPUT = {"OUTPUT_DB": "demo_db", "OUTPUT_TABLE": "users_cdr_2_deid_manual"}
@@ -111,9 +119,36 @@ def check_conf(run_id, conf):
         for name in MANUAL_OUTPUT:
             if name not in env:
                 raise ValueError(f"conf.env.{name} thiếu (DAK luôn gửi)")
+    check_range(env)
     effective = {name: env.get(name, MANUAL_OUTPUT.get(name)) for name in ("OUTPUT_DB", "OUTPUT_TABLE")}
     if effective["OUTPUT_DB"] == values["database"] and effective["OUTPUT_TABLE"] == values["table"]:
         raise ValueError("bảng kết quả phải khác bảng nguồn")
+
+
+def check_range(env):
+    """Luật giữa các env ngày giờ, cùng luật với JobEnvPolicy của dak-mock và job: ngày có thật, giờ 00..23, FROM không sau TO,
+    INPUT_HOURS tăng dần, overwrite-partitions phải có khoảng. Env đã qua kiểm định dạng ở check_conf."""
+    points = {}
+    for name, missing_hour in (("INPUT_FROM", 0), ("INPUT_TO", 23)):
+        value = env.get(name)
+        if value is None:
+            continue
+        try:
+            datetime.datetime.strptime(value[:8], "%Y%m%d")
+        except ValueError:
+            raise ValueError(f"conf.env.{name} không phải ngày có thật") from None
+        if len(value) == 10 and int(value[8:]) > 23:
+            raise ValueError(f"conf.env.{name}: giờ phải từ 00 đến 23")
+        points[name] = int(value[:8]) * 100 + (int(value[8:]) if len(value) == 10 else missing_hour)
+    if len(points) == 2 and points["INPUT_FROM"] > points["INPUT_TO"]:
+        raise ValueError("conf.env.INPUT_TO không được sớm hơn INPUT_FROM")
+    hours = env.get("INPUT_HOURS")
+    if hours is not None and "-" in hours:
+        first, last = (int(part) for part in hours.split("-"))
+        if first > last:
+            raise ValueError("conf.env.INPUT_HOURS: giờ đầu không được lớn hơn giờ cuối")
+    if env.get("OUTPUT_MODE") == "overwrite-partitions" and not any(name in env for name in RANGE_ENV):
+        raise ValueError("conf.env.OUTPUT_MODE=overwrite-partitions cần INPUT_FROM, INPUT_TO hoặc INPUT_HOURS")
 
 
 def validate_conf(**context):
@@ -131,11 +166,16 @@ def conf_value(key):
 
 
 def env_value(name):
-    """Biểu thức Jinja lấy conf.env.<name>; thiếu thì dùng mặc định của JOB_ENV (hoặc giá trị thử cho OUTPUT_DB, OUTPUT_TABLE)."""
+    """Biểu thức Jinja lấy conf.env.<name>; thiếu thì dùng mặc định của JOB_ENV (giá trị thử cho OUTPUT_DB, OUTPUT_TABLE; rỗng cho
+    khoảng ngày giờ). OUTPUT_MODE thiếu thì overwrite-partitions khi có khoảng ngày giờ, ngược lại overwrite."""
+    env = "((dag_run.conf or {}).get('env') or {})"
+    if name == "OUTPUT_MODE":
+        has_range = " or ".join(f"{env}.get('{key}')" for key in RANGE_ENV)
+        return ("{{ " + env + ".get('OUTPUT_MODE') or ('overwrite-partitions' if (" + has_range + ") else 'overwrite') }}")
     default = JOB_ENV[name][0]
     if default is None:
-        default = MANUAL_OUTPUT[name]
-    return "{{ ((dag_run.conf or {}).get('env') or {}).get('" + name + "', '" + default + "') }}"
+        default = MANUAL_OUTPUT.get(name, "")
+    return "{{ " + env + ".get('" + name + "', '" + default + "') }}"
 
 
 def job_env_entries():
@@ -187,7 +227,7 @@ def build_spec():
                     {"name": "TABLE_NAME", "value": conf_value("table")},
                     {"name": "PSEUDO_COLUMNS", "value": conf_value("pseudoColumns")},  # vd name:HASH
                     {"name": "PSEUDO_MODE", "value": "HASH"},
-                    # ---- Env do người gửi phiếu nhập (JOB_ENV): OUTPUT_DB, OUTPUT_TABLE, OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT ----
+                    # ---- Env do người gửi phiếu nhập (JOB_ENV): OUTPUT_DB, OUTPUT_TABLE, OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT, INPUT_FROM, INPUT_TO, INPUT_HOURS ----
                     *job_env_entries(),
                     # Đối chiếu nguồn/đích sau khi ghi (số dòng, null, số giá trị khác nhau, không sót giá trị gốc). Cố định.
                     {"name": "VERIFY", "value": "true"},

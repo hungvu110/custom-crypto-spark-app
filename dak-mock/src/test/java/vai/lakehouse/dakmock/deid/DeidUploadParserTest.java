@@ -561,7 +561,7 @@ class DeidUploadParserTest {
 
       assertThat(e.problems()).extracting(Problem::field, Problem::message).containsExactly(
           tuple("env.OUTPUT_FORMAT", "value must be a string"),
-          tuple("env.OUTPUT_MODE", "value must match overwrite|append"));
+          tuple("env.OUTPUT_MODE", "value must match overwrite|append|overwrite-partitions"));
       assertThat(e.problems().toString()).doesNotContain("replace-all");
     }
 

@@ -78,6 +78,36 @@ class DeidSampleFilesTest {
   }
 
   @Test
+  @DisplayName("the date range sample is accepted and keeps the range env")
+  void sampleWithDateRange_keepsTheRange() throws IOException {
+    DeidUpload upload = parse("valid-request-with-date-range.json");
+
+    assertThat(upload.env()).containsEntry("INPUT_FROM", "20261012").containsEntry("INPUT_TO", "20261014")
+        .containsEntry("INPUT_HOURS", "6-18").doesNotContainKey("OUTPUT_MODE");
+  }
+
+  @Test
+  @DisplayName("the invalid date range sample reports one problem per bad env and echoes no value")
+  void invalidDateRangeSample_reportedPerEnv() {
+    DakApiException e = rejected("invalid-date-range.json");
+
+    assertThat(e.problems()).extracting(DakApiException.Problem::field, DakApiException.Problem::message)
+        .containsExactly(org.assertj.core.groups.Tuple.tuple("env.INPUT_HOURS", "the first hour must not be after the last hour"),
+            org.assertj.core.groups.Tuple.tuple("env.INPUT_PATH", "env name is not allowed"),
+            org.assertj.core.groups.Tuple.tuple("env.INPUT_TO", "must not be earlier than INPUT_FROM"));
+    assertThat(e.problems().toString()).doesNotContain("/some/other/path").doesNotContain("20261012");
+  }
+
+  @Test
+  @DisplayName("overwrite-partitions without a range is rejected")
+  void overwritePartitionsWithoutRange_rejected() {
+    DakApiException e = rejected("invalid-overwrite-partitions-without-range.json");
+
+    assertThat(e.problems()).extracting(DakApiException.Problem::field)
+        .containsExactly("env.OUTPUT_MODE");
+  }
+
+  @Test
   @DisplayName("the sample whose output table equals the source table is rejected")
   void envOutputSameAsSource_rejected() {
     DakApiException e = rejected("invalid-env-output-same-as-source.json");

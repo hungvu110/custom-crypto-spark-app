@@ -105,9 +105,12 @@ data:
         #  allowed:
         #    - {name: OUTPUT_DB, pattern: "[a-z0-9_]{1,128}"}
         #    - {name: OUTPUT_TABLE, pattern: "[a-z0-9_]{1,128}"}
-        #    - {name: OUTPUT_MODE, pattern: "overwrite|append", default-value: overwrite}
+        #    - {name: OUTPUT_MODE, pattern: "overwrite|append|overwrite-partitions"}  # mặc định: overwrite-partitions nếu có khoảng ngày giờ, ngược lại overwrite
         #    - {name: OUTPUT_FORMAT, pattern: "delta|hive|iceberg", default-value: delta}
         #    - {name: ENABLE_HIVE_SUPPORT, pattern: "true|false", default-value: "true"}
+        #    - {name: INPUT_FROM, pattern: "[0-9]{8}([0-9]{2})?"}
+        #    - {name: INPUT_TO, pattern: "[0-9]{8}([0-9]{2})?"}
+        #    - {name: INPUT_HOURS, pattern: "([01]?[0-9]|2[0-3])(-([01]?[0-9]|2[0-3]))?"}
         kubernetes:
           # Namespace tạo Secret key; PHẢI là namespace nơi DAG tạo SparkApplication (Pod chỉ mount được Secret cùng namespace).
           namespace: vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy

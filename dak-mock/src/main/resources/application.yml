@@ -103,16 +103,19 @@ dak:
     #     client-id: <client-airflow>
     # Env của job khử định danh mà người gửi phiếu được nhập (docs/dak-deid-flow/JOB_ENV_PLAN.md). Không khai thì dùng danh sách mặc định
     # bên dưới. Khai thì THAY HẲN danh sách mặc định. Mỗi mục: name, pattern (khớp toàn bộ giá trị), default-value (tuỳ chọn).
-    # OUTPUT_DB và OUTPUT_TABLE không có default-value vì mock tính khi duyệt phiếu. Tên thuộc nhóm bị cấm (DB_NAME, INPUT_*, CRYPTO_*,
+    # OUTPUT_DB và OUTPUT_TABLE không có default-value vì mock tính khi duyệt phiếu. Tên thuộc nhóm bị cấm (DB_NAME, INPUT_* trừ INPUT_FROM/INPUT_TO/INPUT_HOURS, CRYPTO_*,
     # VAULT_*, tên có SECRET/TOKEN/PASSWORD/KEY...) làm ứng dụng không khởi động.
     #   job-env:
     #     max-entries: 10
     #     allowed:
     #       - {name: OUTPUT_DB, pattern: "[a-z0-9_]{1,128}"}
     #       - {name: OUTPUT_TABLE, pattern: "[a-z0-9_]{1,128}"}
-    #       - {name: OUTPUT_MODE, pattern: "overwrite|append", default-value: overwrite}
+    #       - {name: OUTPUT_MODE, pattern: "overwrite|append|overwrite-partitions"}  # mặc định: overwrite-partitions nếu có khoảng ngày giờ, ngược lại overwrite
     #       - {name: OUTPUT_FORMAT, pattern: "delta|hive|iceberg", default-value: delta}
     #       - {name: ENABLE_HIVE_SUPPORT, pattern: "true|false", default-value: "true"}
+    #       - {name: INPUT_FROM, pattern: "[0-9]{8}([0-9]{2})?"}
+    #       - {name: INPUT_TO, pattern: "[0-9]{8}([0-9]{2})?"}
+    #       - {name: INPUT_HOURS, pattern: "([01]?[0-9]|2[0-3])(-([01]?[0-9]|2[0-3]))?"}
     airflow:
       client-secret: ${AIRFLOW_CLIENT_SECRET:}
       token: ${AIRFLOW_TOKEN:}

@@ -1,0 +1,10 @@
+{
+  "database": "demo_db",
+  "table": "users_cdr_2",
+  "columns": [{ "column": "name", "mode": "HASH" }],
+  "dagId": "deid_pseudonymize_table",
+  "env": {
+    "OUTPUT_MODE": "overwrite-partitions"
+  },
+  "purpose": "overwrite-partitions replaces only the partitions of the range, so it needs INPUT_FROM, INPUT_TO or INPUT_HOURS"
+}

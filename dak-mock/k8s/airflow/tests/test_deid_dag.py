@@ -215,6 +215,65 @@ class CheckConfTest(unittest.TestCase):
             self.check(MANUAL_RUN_ID, {"table": "users_cdr_2_deid_manual"})
 
 
+class DateHourRangeCheckTest(unittest.TestCase):
+    """INPUT_FROM / INPUT_TO / INPUT_HOURS: cùng luật với JobEnvPolicy của dak-mock và với job pseudonymize-table-app."""
+
+    def accepted(self, **env):
+        dag.check_conf(DAK_RUN_ID, dak_conf(**env))
+
+    def rejected(self, **env):
+        with self.assertRaises(ValueError, msg=repr(env)) as caught:
+            dag.check_conf(DAK_RUN_ID, dak_conf(**env))
+        return str(caught.exception)
+
+    def test_valid_ranges_are_accepted(self):
+        self.accepted(INPUT_FROM="20261012")
+        self.accepted(INPUT_FROM="20261012", INPUT_TO="20261014")
+        self.accepted(INPUT_FROM="2026101218", INPUT_TO="2026101306")
+        self.accepted(INPUT_FROM="20261012", INPUT_TO="20261012")
+        self.accepted(INPUT_FROM="2026101223", INPUT_TO="20261012")  # 23 <= 23
+        self.accepted(INPUT_HOURS="18")
+        self.accepted(INPUT_HOURS="6-18")
+        self.accepted(INPUT_HOURS="06-18")
+        self.accepted(INPUT_FROM="20240229")  # leap day
+
+    def test_bad_format_date_or_hour_is_rejected_without_echoing_the_value(self):
+        for name, value in (("INPUT_FROM", "202610120030"), ("INPUT_FROM", "2026-10-12"), ("INPUT_FROM", "20261340"),
+                            ("INPUT_TO", "20230229"), ("INPUT_FROM", "2026101224"), ("INPUT_TO", "2026101225"),
+                            ("INPUT_HOURS", "24"), ("INPUT_HOURS", "6-"), ("INPUT_HOURS", "-6"), ("INPUT_HOURS", "1-2-3"),
+                            ("INPUT_FROM", 20261012), ("INPUT_HOURS", ""), ("INPUT_FROM", None)):
+            message = self.rejected(**{name: value})
+            if isinstance(value, str) and value:
+                self.assertNotIn(value, message)
+
+    def test_from_after_to_is_rejected_and_a_missing_hour_means_00_for_from_and_23_for_to(self):
+        self.rejected(INPUT_FROM="20261014", INPUT_TO="20261012")
+        self.rejected(INPUT_FROM="2026101218", INPUT_TO="2026101217")
+        self.rejected(INPUT_FROM="2026101201", INPUT_TO="2026101200")
+        self.accepted(INPUT_FROM="20261012", INPUT_TO="2026101200")
+
+    def test_hours_must_not_go_backwards(self):
+        self.rejected(INPUT_HOURS="18-6")
+        self.accepted(INPUT_HOURS="6-6")
+
+    def test_overwrite_partitions_needs_a_range(self):
+        self.rejected(OUTPUT_MODE="overwrite-partitions")
+        self.accepted(OUTPUT_MODE="overwrite-partitions", INPUT_FROM="20261012")
+        self.accepted(OUTPUT_MODE="overwrite-partitions", INPUT_TO="20261012")
+        self.accepted(OUTPUT_MODE="overwrite-partitions", INPUT_HOURS="5")
+        self.accepted(OUTPUT_MODE="overwrite", INPUT_FROM="20261012")
+        self.accepted(OUTPUT_MODE="append", INPUT_HOURS="5")
+
+    def test_the_other_input_env_are_still_rejected(self):
+        for name in ("INPUT_PATH", "INPUT_DATE_KEY", "INPUT_HOUR_KEY", "INPUT_FORMAT", "INPUT_BAD_FILES"):
+            self.rejected(**{name: "x"})
+
+    def test_a_manual_run_may_use_a_range(self):
+        dag.check_conf(MANUAL_RUN_ID, {"env": {"INPUT_FROM": "20261012", "INPUT_HOURS": "5-6"}})
+        with self.assertRaises(ValueError):
+            dag.check_conf(MANUAL_RUN_ID, {"env": {"OUTPUT_MODE": "overwrite-partitions"}})
+
+
 class SpecTest(unittest.TestCase):
     def test_the_dag_does_not_use_native_rendering(self):
         dag_kwargs = [r.kwargs for r in dag.recorded if "render_template_as_native_obj" in r.kwargs]
@@ -243,6 +302,32 @@ class SpecTest(unittest.TestCase):
         env = driver_env(render(DAK_RUN_ID, conf))
 
         self.assertEqual((env["OUTPUT_MODE"], env["OUTPUT_FORMAT"], env["ENABLE_HIVE_SUPPORT"]), ("overwrite", "delta", "true"))
+
+    def test_a_range_goes_into_the_driver_and_an_absent_range_is_an_empty_value(self):
+        # An empty value is "not set" for the job (it ignores blank env), so the env list stays fixed.
+        with_range = driver_env(render(DAK_RUN_ID, dak_conf(INPUT_FROM="2026101218", INPUT_TO="20261013", INPUT_HOURS="6-18",
+                                                            OUTPUT_MODE="overwrite-partitions")))
+        without = driver_env(render(DAK_RUN_ID, dak_conf()))
+
+        self.assertEqual((with_range["INPUT_FROM"], with_range["INPUT_TO"], with_range["INPUT_HOURS"]),
+                         ("2026101218", "20261013", "6-18"))
+        self.assertEqual(with_range["OUTPUT_MODE"], "overwrite-partitions")
+        self.assertEqual((without["INPUT_FROM"], without["INPUT_TO"], without["INPUT_HOURS"]), ("", "", ""))
+
+    def test_output_mode_defaults_to_overwrite_partitions_with_a_range_and_to_overwrite_without(self):
+        def mode(**env):
+            conf = dak_conf(**env)
+            del conf["env"]["OUTPUT_MODE"]
+            return driver_env(render(DAK_RUN_ID, conf))["OUTPUT_MODE"]
+
+        self.assertEqual(mode(), "overwrite")
+        self.assertEqual(mode(INPUT_FROM="20261012"), "overwrite-partitions")
+        self.assertEqual(mode(INPUT_TO="20261012"), "overwrite-partitions")
+        self.assertEqual(mode(INPUT_HOURS="5"), "overwrite-partitions")
+        self.assertEqual(driver_env(render(MANUAL_RUN_ID, None))["OUTPUT_MODE"], "overwrite")
+        self.assertEqual(driver_env(render(MANUAL_RUN_ID, {"env": {"INPUT_HOURS": "5"}}))["OUTPUT_MODE"], "overwrite-partitions")
+        self.assertEqual(driver_env(render(MANUAL_RUN_ID, {"env": {"INPUT_HOURS": "5", "OUTPUT_MODE": "append"}}))["OUTPUT_MODE"],
+                         "append")
 
     def test_a_manual_run_with_empty_conf_renders_the_manual_defaults(self):
         spec = render(MANUAL_RUN_ID, None)

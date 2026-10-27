@@ -436,8 +436,8 @@ trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.p
 Quét Secret key sót: `kubectl get secret -l dak.vai/kind=deid-key -n <namespace>`.
 
 **File mẫu** (trong `k8s/deid/`): `portal-users.example.yml` (mẫu Secret `dak-mock-portal-users`, token là chỗ trống để bạn điền, hướng dẫn tạo ở đầu file) và
-`samples/` gồm phiếu hợp lệ (`valid-request.json`, `valid-request-with-env.json` có nhập env và bảng kết quả, `valid-single-column.json`) và phiếu lỗi để thử thông báo
-(`invalid-many-errors.json`, `invalid-unknown-field.json`, `invalid-env.json`, `invalid-env-output-same-as-source.json`, `invalid-broken-json.json`). `DeidSampleFilesTest` kiểm các mẫu này với
+`samples/` gồm phiếu hợp lệ (`valid-request.json`, `valid-request-with-env.json` có nhập env và bảng kết quả, `valid-request-with-date-range.json` có khoảng ngày giờ, `valid-single-column.json`) và phiếu lỗi để thử thông báo
+(`invalid-many-errors.json`, `invalid-unknown-field.json`, `invalid-env.json`, `invalid-env-output-same-as-source.json`, `invalid-date-range.json`, `invalid-overwrite-partitions-without-range.json`, `invalid-broken-json.json`). `DeidSampleFilesTest` kiểm các mẫu này với
 parser thật. Chạy thử bằng `curl` (đã `kubectl port-forward deploy/dak-mock 8085`):
 
 ```bash
@@ -609,17 +609,25 @@ Admin **chỉ duyệt hoặc từ chối**, không sửa env. Env chỉ áp dụ
 | --- | --- | --- |
 | `OUTPUT_DB` | chữ thường, số, `_`, 1 đến 128 ký tự | `dak.deid.output-database`, để trống thì là database nguồn |
 | `OUTPUT_TABLE` | như trên | mock đặt theo `output-table-template`, vd `users_cdr_2_deid_20261026_1` |
-| `OUTPUT_MODE` | `overwrite` hoặc `append` | `overwrite` |
+| `OUTPUT_MODE` | `overwrite`, `append` hoặc `overwrite-partitions` | `overwrite-partitions` nếu phiếu có khoảng ngày giờ, ngược lại `overwrite` |
 | `OUTPUT_FORMAT` | `delta`, `hive`, `iceberg` | `delta` |
 | `ENABLE_HIVE_SUPPORT` | `true` hoặc `false` | `true` |
+| `INPUT_FROM` | `yyyyMMdd` hoặc `yyyyMMddHH` | không đặt: không giới hạn đầu |
+| `INPUT_TO` | như trên | không đặt: không giới hạn cuối |
+| `INPUT_HOURS` | `18` hoặc `6-18` (giờ 0 đến 23) | không đặt: mọi giờ |
+
+Ba env cuối giới hạn dữ liệu nguồn theo hai cột partition `date` (`yyyyMMdd`) và `hour` (`HH`) của bảng; job `pseudonymize-table-app` phải là bản có lọc bảng theo khoảng ngày giờ
+(commit `feat(pseudonymize-table-app): filter a table source by date and hour range`), bản cũ thoát exit 2. Chi tiết ở `docs/dak-deid-flow/API_CONTRACT.md` mục 2.2.
 
 Giao diện lấy danh sách này bằng `GET /mock-portal/deid-job-env`. Danh sách cấu hình ở `dak.deid.job-env` (mẫu comment trong `application.yml` và `k8s/dak-mock.yaml`): mỗi mục có `name`, `pattern`
 (khớp toàn bộ giá trị), `default-value` tuỳ chọn; khai danh sách thì **thay hẳn** danh sách mặc định. Thêm env mới cần sửa **cả cấu hình mock và bảng `JOB_ENV` trong DAG**.
 
 **Quy tắc khi gửi phiếu** (sai thì `400 invalid_file`, `problems[]` có `field` dạng `env.<TÊN>` và `code=invalid_env`, thông điệp không lặp lại giá trị đã nhập):
 - `env` là object, tối đa 10 mục; giá trị là chuỗi, tối đa 256 ký tự, không có ký tự xuống dòng hay điều khiển, và đúng quy tắc của tên đó (viết hoa/thường phải đúng, mock không tự sửa).
-- Tên ngoài danh sách bị từ chối với thông điệp chung `env name is not allowed`. Các env quyết định job xử lý bảng nào và lấy key ở đâu (`DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS`, `INPUT_*`, `CRYPTO_*`, `VAULT_*`,
+- Tên ngoài danh sách bị từ chối với thông điệp chung `env name is not allowed`. Các env quyết định job xử lý bảng nào và lấy key ở đâu (`DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS`, `INPUT_*` (trừ `INPUT_FROM`, `INPUT_TO`, `INPUT_HOURS`), `CRYPTO_*`, `VAULT_*`,
   `DAK_*`, `JAVA_*`, `SPARK_*`, tên có `SECRET`/`TOKEN`/`PASSWORD`/`KEY`...) **không bao giờ** được đưa vào danh sách: cấu hình như vậy làm mock không khởi động.
+- Khoảng ngày giờ: ngày có thật, giờ 00 đến 23, `INPUT_FROM` không sau `INPUT_TO` (thiếu giờ thì FROM là 00 và TO là 23), `INPUT_HOURS` hai số thì số đầu không lớn hơn số sau,
+  `OUTPUT_MODE=overwrite-partitions` chỉ hợp lệ khi có ít nhất một trong ba env này (cùng luật với job). Thông điệp cố định, không lặp lại giá trị.
 - Bảng kết quả không được trùng bảng nguồn (so `OUTPUT_DB` + `OUTPUT_TABLE`; thiếu `OUTPUT_DB` thì dùng `dak.deid.output-database` hoặc database nguồn). Kiểm lại lúc duyệt.
 
 **Lúc duyệt:** mock điền giá trị mặc định cho env còn thiếu và lưu **env cuối cùng** vào phiếu (`env`, kèm `outputDatabase`/`outputTable` chỉ để xem). Phiếu `PENDING_APPROVAL` chỉ có env người gửi nhập,

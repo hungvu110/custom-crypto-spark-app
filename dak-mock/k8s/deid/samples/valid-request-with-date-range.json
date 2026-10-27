@@ -1,0 +1,14 @@
+{
+  "database": "demo_db",
+  "table": "users_cdr_2",
+  "columns": [{ "column": "name", "mode": "HASH" }],
+  "dagId": "deid_pseudonymize_table",
+  "env": {
+    "OUTPUT_DB": "demo_db",
+    "OUTPUT_TABLE": "users_cdr_2_pseudonymized_oct",
+    "INPUT_FROM": "20261012",
+    "INPUT_TO": "20261014",
+    "INPUT_HOURS": "6-18"
+  },
+  "purpose": "Share the working hours (06-18) of 12-14 October 2026 with partner X; OUTPUT_MODE defaults to overwrite-partitions"
+}

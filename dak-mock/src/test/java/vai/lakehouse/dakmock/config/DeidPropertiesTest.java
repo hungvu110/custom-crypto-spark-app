@@ -164,16 +164,20 @@ class DeidPropertiesTest {
   class JobEnvConfig {
 
     @Test
-    @DisplayName("không cấu hình thì dùng danh sách mặc định: 5 env, tối đa 10 mục, OUTPUT_DB và OUTPUT_TABLE không có giá trị mặc định tĩnh")
+    @DisplayName("không cấu hình thì dùng danh sách mặc định: 8 env, tối đa 10 mục, chỉ OUTPUT_FORMAT và ENABLE_HIVE_SUPPORT có giá trị mặc định tĩnh")
     void defaults() {
       JobEnv jobEnv = DeidProperties.defaults().jobEnv();
 
       assertThat(jobEnv.maxEntries()).isEqualTo(10);
       assertThat(jobEnv.allowed()).extracting(JobEnv.Entry::name)
-          .containsExactly("OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT");
+          .containsExactly("OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT", "INPUT_FROM",
+              "INPUT_TO", "INPUT_HOURS");
       assertThat(jobEnv.find("OUTPUT_DB").orElseThrow().defaultValue()).isNull();
+      assertThat(jobEnv.find("INPUT_FROM").orElseThrow().defaultValue()).isNull();
+      assertThat(jobEnv.find("INPUT_TO").orElseThrow().defaultValue()).isNull();
+      assertThat(jobEnv.find("INPUT_HOURS").orElseThrow().defaultValue()).isNull();
       assertThat(jobEnv.find("OUTPUT_TABLE").orElseThrow().defaultValue()).isNull();
-      assertThat(jobEnv.find("OUTPUT_MODE").orElseThrow().defaultValue()).isEqualTo("overwrite");
+      assertThat(jobEnv.find("OUTPUT_MODE").orElseThrow().defaultValue()).isNull(); // overwrite-partitions with a range, else overwrite
       assertThat(jobEnv.find("OUTPUT_FORMAT").orElseThrow().defaultValue()).isEqualTo("delta");
       assertThat(jobEnv.find("ENABLE_HIVE_SUPPORT").orElseThrow().defaultValue()).isEqualTo("true");
       assertThat(jobEnv.find("NOT_THERE")).isEmpty();
@@ -211,7 +215,8 @@ class DeidPropertiesTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"DB_NAME", "TABLE_NAME", "PSEUDO_COLUMNS", "PSEUDO_MODE", "VERIFY", "WAREHOUSE_PATH",
-        "MAPPING_TABLE_PATH", "INPUT_PATH", "INPUT_FORMAT", "INPUT_OPTION_DELIMITER", "CRYPTO_PREFIX_SOURCE",
+        "MAPPING_TABLE_PATH", "INPUT_PATH", "INPUT_FORMAT", "INPUT_OPTION_DELIMITER", "INPUT_DATE_KEY", "INPUT_HOUR_KEY",
+        "INPUT_SCHEMA", "INPUT_BAD_FILES", "CRYPTO_PREFIX_SOURCE",
         "CRYPTO_KEY_PREFIX_DIR", "VAULT_ADDR", "VAULT_TOKEN", "DAK_ADDR", "DAK_CLIENT_ID", "JAVA_TOOL_OPTIONS", "LD_PRELOAD",
         "SPARK_LOCAL_DIRS", "HADOOP_CONF_DIR", "KRB5CCNAME", "KRB5_CONFIG", "MY_TOKEN", "API_SECRET", "DB_PASSWORD",
         "USER_PASSWD", "ENCRYPTION_KEY", "KEYTAB_PATH", "MONKEY"})
@@ -226,7 +231,7 @@ class DeidPropertiesTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT", "TZ",
+    @ValueSource(strings = {"OUTPUT_DB", "OUTPUT_TABLE", "OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT", "INPUT_FROM", "INPUT_TO", "INPUT_HOURS", "TZ",
         "MALLOC_ARENA_MAX"})
     @DisplayName("env bình thường, kể cả OUTPUT_DB, OUTPUT_TABLE và OUTPUT_MODE, được phép đưa vào danh sách")
     void ordinaryName_accepted(String name) {
@@ -282,6 +287,11 @@ class DeidPropertiesTest {
       assertThat(JobEnv.isForbidden("CRYPTO_X")).isTrue();
       assertThat(JobEnv.isForbidden("SOME_API_TOKEN")).isTrue();
       assertThat(JobEnv.isForbidden("INPUTS")).isFalse();
+      assertThat(JobEnv.isForbidden("INPUT_FROM")).isFalse();
+      assertThat(JobEnv.isForbidden("INPUT_TO")).isFalse();
+      assertThat(JobEnv.isForbidden("INPUT_HOURS")).isFalse();
+      assertThat(JobEnv.isForbidden("INPUT_HOURS_EXTRA")).isTrue();
+      assertThat(JobEnv.isForbidden("input_path")).isTrue();
       assertThat(JobEnv.isForbidden("OUTPUT_DB")).isFalse();
       assertThat(JobEnv.isForbidden("OUTPUT_TABLE")).isFalse();
       assertThat(JobEnv.isForbidden("OUTPUT_MODE")).isFalse();
