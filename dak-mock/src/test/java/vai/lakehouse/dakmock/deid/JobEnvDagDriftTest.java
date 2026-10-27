@@ -22,7 +22,7 @@ import vai.lakehouse.dakmock.config.DeidProperties.JobEnv;
  */
 class JobEnvDagDriftTest {
 
-  private static final Path DAG = Path.of("k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py");
+  private static final Path DAG = Path.of("../airflow/dags/sample_dag_deid_pseudonymize_table.py");
   private static final Pattern ENTRY = Pattern.compile(
       "\"([A-Z][A-Z0-9_]*)\":\\s*\\((None|\"([^\"]*)\"),\\s*r\"([^\"]*)\"\\)");
 

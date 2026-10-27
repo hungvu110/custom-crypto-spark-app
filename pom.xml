@@ -55,6 +55,8 @@
       <id>cdr-crypto</id>
       <modules>
         <module>cdr-crypto-udf</module>
+        <!-- Chuẩn hoá VTT/VTNET vào silver: mã hoá cột bằng cdr-crypto nên cũng cần jar đối tác. -->
+        <module>silver-ingest-app</module>
       </modules>
     </profile>
   </profiles>

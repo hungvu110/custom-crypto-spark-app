@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>vai.lakehouse</groupId>
+    <artifactId>sample-spark-application-privacy-parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>silver-ingest-app</artifactId>
+  <name>silver-ingest-app</name>
+  <description>
+    Spark job chuẩn hoá file nguồn vào silver, mỗi nguồn một entry point: VTT (file đã mã hoá cột -> đọc, ghi bảng) và VTNET
+    (file mã hoá cả file -> key DAK by-file, giải mã, mã hoá cột bằng cdr-crypto, ghi bảng). Xem silver-ingest-app/README.md.
+  </description>
+
+  <dependencies>
+    <!--
+      Lib mã hoá cột + hạ tầng lấy key + jar đối tác: "provided" — KHÔNG shade vào fat jar. Image copy các jar này vào /opt/app và
+      manifest nạp qua spark.jars (cdr_encrypt là UDF thật nên executor cũng cần), giống spark-application-cdr.yaml.
+    -->
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>cdr-crypto-udf</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>key-prefix-lib</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.viettel.datalake</groupId>
+      <artifactId>datalake-security</artifactId>
+      <version>jv8</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Patch lenient block token (HDFS Isilon có wire encryption): shade vào fat jar, như pseudonymize-table-app. -->
+    <dependency>
+      <groupId>vai.lakehouse</groupId>
+      <artifactId>sample-spark-application-privacy</artifactId>
+      <version>${project.version}</version>
+      <classifier>block-token-patch</classifier>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!-- Ghi bảng Delta; image apache/spark không có Delta -> đóng gói vào fat jar. -->
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-spark_${scala.binary.version}</artifactId>
+      <version>${delta.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Đọc avro (INPUT_FORMAT=avro): spark-avro không có sẵn trong image Spark -> đóng gói vào fat jar. -->
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-avro_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-common</artifactId>
+      <version>${hadoop.version}</version>
+      <scope>provided</scope>
+      <exclusions>
+        <!-- commons-text 1.4 của hadoop-common đè bản 1.10.0 của Spark -> NoSuchMethodError trong test. -->
+        <exclusion>
+          <groupId>org.apache.commons</groupId>
+          <artifactId>commons-text</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- Tên jar cố định: Dockerfile và mainApplicationFile của DAG trỏ đúng tên này. -->
+    <finalName>silver-ingest-app</finalName>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <!-- BẮT BUỘC: giữ META-INF/services của patch block token, Delta và avro. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <!-- Không có Main-Class: mỗi nguồn một entry point, DAG đặt mainClass. -->
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
