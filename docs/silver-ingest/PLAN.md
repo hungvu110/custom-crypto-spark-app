@@ -2,6 +2,8 @@
 
 Ngày: 2026-10-27. Trạng thái: K1, M1, M2, S1–S5, A1 đã làm; build và đẩy image làm tay.
 
+Kịch bản test từng bước cho bảng `ebs_3g_4g` (key, path Vault, phiếu, kiểm kết quả): [TEST_SCENARIO_VTNET_EBS.md](TEST_SCENARIO_VTNET_EBS.md).
+
 ## 1. Bài toán
 
 Team gửi phiếu chuẩn hoá một lô file ở DAK, admin duyệt, DAK trigger DAG Airflow của nguồn. DAG tạo SparkApplication đọc file, ghi thành bảng ở vùng silver.

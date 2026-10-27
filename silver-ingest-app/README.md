@@ -10,6 +10,8 @@ Thiết kế và quyết định: [docs/silver-ingest/PLAN.md](../docs/silver-in
 | VTT | `vai.lakehouse.silveringest.app.VttSilverApp` | `silver_ingest_vtt` | File đã được VTT mã hoá từng cột: đọc → ghi bảng |
 | VTNET | `vai.lakehouse.silveringest.app.VtnetSilverApp` | `silver_ingest_vtnet` | DAK `by-path`: có key thì giải mã cả file, không có thì đọc nguyên trạng → mã hoá các cột phiếu chọn bằng cdr-crypto (DAK `by-column`) → ghi bảng |
 
+Kịch bản test từng bước (key, path Vault, phiếu): [docs/silver-ingest/TEST_SCENARIO_VTNET_EBS.md](../docs/silver-ingest/TEST_SCENARIO_VTNET_EBS.md).
+
 ## 1. Luồng VTNET
 
 1. Hỏi DAK key theo đường dẫn (`GET /api/v1/keys/by-path`, một key cho cả file hoặc cả thư mục). Đường dẫn gửi đi **tương đối theo gốc**
