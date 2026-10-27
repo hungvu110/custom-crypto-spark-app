@@ -10,13 +10,18 @@ DAK trigger: POST /api/v1/dags/silver_ingest_vtnet/dagRuns, conf = {"path": "<t�
 "batchId": "yyyyMMddHHmm", "table": "vtnet_ebs_3g_4g", "encryptColumns": ["msisdn", "imei"], "keyField": "start_time",
 "outputMode": "overwrite-partitions|append" (tuỳ chọn, mặc định overwrite-partitions: chỉ thay partition của lô)}.
 """
+import os
+import sys
+
 import pendulum
 from airflow import DAG
 from airflow.exceptions import AirflowFailException
 from airflow.operators.python import PythonOperator
 from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
 
-import silver_ingest_common as common
+# Airflow chỉ thêm gốc thư mục DAG vào sys.path; khi file nằm trong thư mục con (vd. .../dags/dags/) thì phải thêm thư mục của file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import silver_ingest_common as common  # noqa: E402
 
 DAG_ID = "silver_ingest_vtnet"
 

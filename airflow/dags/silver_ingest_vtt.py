@@ -5,13 +5,18 @@ DAK trigger: POST /api/v1/dags/silver_ingest_vtt/dagRuns, conf = {"path": "<tư�
 "batchId": "yyyyMMddHH", "table": "vtt_f001_mpre_call", "outputMode": "overwrite-partitions|append" (tuỳ chọn, mặc định overwrite-partitions)}. Test không cần Airflow:
     python3 -B -m unittest discover -s airflow/tests
 """
+import os
+import sys
+
 import pendulum
 from airflow import DAG
 from airflow.exceptions import AirflowFailException
 from airflow.operators.python import PythonOperator
 from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
 
-import silver_ingest_common as common
+# Airflow chỉ thêm gốc thư mục DAG vào sys.path; khi file nằm trong thư mục con (vd. .../dags/dags/) thì phải thêm thư mục của file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import silver_ingest_common as common  # noqa: E402
 
 DAG_ID = "silver_ingest_vtt"
 
