@@ -107,7 +107,16 @@ curl -u dak-trigger:"$AIRFLOW_PASSWORD" -H 'Content-Type: application/json' \
        "encryptColumns": ["msisdn", "imei"], "keyField": "start_time"}}'
 ```
 
-Job VTNET cần Secret `spark-dak-client` (key `clientSecret`) cùng namespace, như `k8s/spark-application-cdr.yaml`.
+Job VTNET cần, cùng namespace với SparkApplication (như `k8s/spark-application-cdr.yaml`):
+- Secret `spark-dak-client` (key `clientSecret`): secret của client nội bộ DAK.
+- ConfigMap `keycloak-ca` (key `ca.pem`, có thể chứa nhiều cert): CA nội bộ của Keycloak.
+  `kubectl create configmap keycloak-ca --from-file=ca.pem=<file CA> -n <namespace>`
+
+Driver VTNET gọi Keycloak qua `https://sso-lakehouse.cyberspace.vn` nên DAG thêm vào **driver** (executor không gọi Keycloak/DAK; DAG VTT không có
+các phần này): `hostAliases` (`KEYCLOAK_IP` → `KEYCLOAK_HOST`), initContainer `build-truststore` (truststore = `cacerts` của JDK + CA nội bộ,
+chạy bằng chính image của app), mount `keycloak-ca` và `truststore`, và `-Djavax.net.ssl.trustStore=…` trong `spark.driver.extraJavaOptions`.
+Cấu hình giống `k8s/spark-application-cdr.yaml` và initContainer của `dak-mock/k8s/dak-mock.yaml` (cùng `securityContext`, có `runAsUser: 185`, không đặt `readOnlyRootFilesystem`); `hostAliases`/`initContainers`/`volumeMounts` cần mutating webhook của Spark Operator bật.
+Sửa IP/host/tên ConfigMap ở hằng `KEYCLOAK_*` trong `airflow/dags/silver_ingest_common.py`.
 
 ## 5. Build, test, image
 

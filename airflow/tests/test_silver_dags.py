@@ -237,6 +237,44 @@ class SpecTest(unittest.TestCase):
         executor = {item["name"] for item in spec["spec"]["executor"]["env"]}
         self.assertFalse({n for n in executor if n.startswith(("DAK_", "CDR_", "FILE_", "CRYPTO_", "KEY_"))})
 
+    def test_vtnet_driver_trusts_the_internal_ca_and_resolves_keycloak_like_the_cdr_manifest(self):
+        # k8s/spark-application-cdr.yaml: hostAliases + truststore dựng bằng initContainer + mount ConfigMap keycloak-ca + trustStore của driver.
+        spec = render(vtnet, vtnet_conf())["spec"]
+        driver = spec["driver"]
+
+        self.assertEqual(driver["hostAliases"], [{"ip": common.KEYCLOAK_IP, "hostnames": [common.KEYCLOAK_HOST]}])
+        init = driver["initContainers"][0]
+        self.assertEqual(init["name"], "build-truststore")
+        self.assertEqual(init["image"], common.IMAGE)
+        self.assertIn("limits", init["resources"])  # ResourceQuota của namespace từ chối container thiếu limits
+        # Như initContainer build-truststore của dak-mock.yaml (không leo quyền, bỏ capability, không chạy root, có runAsUser) nhưng rootfs
+        # KHÔNG chỉ đọc: cần runAsUser mới chạy được, và bỏ readOnlyRootFilesystem.
+        self.assertEqual(init["securityContext"], {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+                                                   "runAsNonRoot": True, "runAsUser": common.SPARK_UID})
+        # JAVA_TOOL_OPTIONS rỗng để keytool không bị cờ truststore (chưa có file) của môi trường kéo theo.
+        self.assertEqual(init["env"], [{"name": "JAVA_TOOL_OPTIONS", "value": ""}])
+        self.assertEqual({m["name"] for m in init["volumeMounts"]}, {"keycloak-ca", "truststore"})
+        # Webhook của Spark Operator chỉ đưa vào pod các volume được mount ở container chính.
+        self.assertEqual({m["name"] for m in driver["volumeMounts"]}, {"keycloak-ca", "truststore"})
+        self.assertEqual({v["name"] for v in spec["volumes"]}, {"keycloak-ca", "truststore"})
+        self.assertEqual(next(v for v in spec["volumes"] if v["name"] == "keycloak-ca")["configMap"]["name"], "keycloak-ca")
+        options = spec["sparkConf"]["spark.driver.extraJavaOptions"]
+        self.assertIn("-Djavax.net.ssl.trustStore=/opt/truststore/truststore.p12", options)
+        self.assertIn("-Dlog4j.configurationFile=file:/opt/app/log4j2.properties", options)
+        # Executor không gọi Keycloak/DAK: không cần truststore.
+        self.assertNotIn("trustStore", spec["sparkConf"]["spark.executor.extraJavaOptions"])
+        self.assertNotIn("hostAliases", spec["executor"])
+        self.assertNotIn("initContainers", spec["executor"])
+
+    def test_vtt_does_not_call_keycloak_so_it_has_no_hostalias_truststore_or_volumes(self):
+        spec = render(vtt, vtt_conf())["spec"]
+
+        self.assertNotIn("hostAliases", spec["driver"])
+        self.assertNotIn("initContainers", spec["driver"])
+        self.assertNotIn("volumeMounts", spec["driver"])
+        self.assertNotIn("volumes", spec)
+        self.assertNotIn("trustStore", spec["sparkConf"]["spark.driver.extraJavaOptions"])
+
     def test_the_application_name_is_valid_and_unique_per_run(self):
         a = render(vtnet, vtnet_conf(), run_id="slv-2026-000001")["metadata"]["name"]
         b = render(vtnet, vtnet_conf(), run_id="slv-2026-000002")["metadata"]["name"]

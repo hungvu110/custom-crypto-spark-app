@@ -26,6 +26,17 @@ WAREHOUSE_PATH = f"{HDFS}/prod8/warehouse"
 EVENT_LOG_DIR = f"{HDFS}/prod8/spark_history"
 KERBEROS_PRINCIPAL = "presto@VAILAKEHOUSE.VIETTEL.COM"
 KERBEROS_KEYTAB = "/etc/security/keytabs/presto.keytab"
+# Keycloak nội bộ (DAK_TOKEN_URL, https): driver cần phân giải tên (hostAliases) và tin CA nội bộ (truststore). Cùng cấu hình với
+# k8s/spark-application-cdr.yaml. ConfigMap `keycloak-ca` (key `ca.pem`) phải có trước, cùng namespace:
+#   kubectl create configmap keycloak-ca --from-file=ca.pem=<file CA nội bộ> -n <namespace>
+KEYCLOAK_HOST = "sso-lakehouse.cyberspace.vn"
+KEYCLOAK_IP = "10.221.148.42"
+KEYCLOAK_CA_CONFIGMAP = "keycloak-ca"
+TRUSTSTORE_DIR = "/opt/truststore"
+TRUSTSTORE_FILE = f"{TRUSTSTORE_DIR}/truststore.p12"
+TRUSTSTORE_PASSWORD = "changeit"  # truststore tạm trong emptyDir của pod, chứa CA công khai + CA nội bộ, không phải bí mật
+SPARK_UID = 185  # user của image apache/spark (USER 185 trong silver-ingest-app/Dockerfile)
+LOG4J = "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
 JARS = ("local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/cdr-crypto-udf-1.0-SNAPSHOT.jar,"
         "local:///opt/app/DataLakeSecurity_jv8.jar")
 
@@ -107,6 +118,45 @@ def conf_value(key, default=""):
     return "{{ (dag_run.conf or {}).get('" + key + "', '" + default + "') }}"
 
 
+def keycloak_trust():
+    """Phần riêng của driver khi nguồn gọi Keycloak (source["calls_keycloak"]): hostAliases, initContainer dựng truststore (cacerts của JDK
+    + CA nội bộ), mount, volume và option JVM. Webhook của Spark Operator chỉ đưa vào pod các volume được mount ở container CHÍNH
+    (driver.volumeMounts), nên keycloak-ca phải được mount ở cả hai chỗ."""
+    build = f"""cp "$JAVA_HOME/lib/security/cacerts" {TRUSTSTORE_FILE}
+awk '/BEGIN CERTIFICATE/ {{ n++ }} n > 0 {{ print > ("{TRUSTSTORE_DIR}/ca-" n ".pem") }}' /ca/ca.pem
+ls {TRUSTSTORE_DIR}/ca-*.pem > /dev/null
+for f in {TRUSTSTORE_DIR}/ca-*.pem; do
+  keytool -importcert -noprompt -alias "internal-$(basename "$f" .pem)" -file "$f" \\
+    -keystore {TRUSTSTORE_FILE} -storetype PKCS12 -storepass {TRUSTSTORE_PASSWORD}
+done
+rm -f {TRUSTSTORE_DIR}/ca-*.pem
+"""
+    return {
+        "hostAliases": [{"ip": KEYCLOAK_IP, "hostnames": [KEYCLOAK_HOST]}],
+        "initContainers": [{
+            "name": "build-truststore",
+            "image": IMAGE,
+            "command": ["bash", "-ec"],
+            "args": [build],
+            "env": [{"name": "JAVA_TOOL_OPTIONS", "value": ""}],
+            # ResourceQuota của namespace từ chối container thiếu limits.
+            "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
+            # Như initContainer build-truststore của dak-mock/k8s/dak-mock.yaml, trừ: có runAsUser (cần mới chạy được) và KHÔNG đặt
+            # readOnlyRootFilesystem.
+            "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}, "runAsNonRoot": True,
+                                "runAsUser": SPARK_UID},
+            "volumeMounts": [{"name": "keycloak-ca", "mountPath": "/ca", "readOnly": True},
+                             {"name": "truststore", "mountPath": TRUSTSTORE_DIR}],
+        }],
+        "volumeMounts": [{"name": "truststore", "mountPath": TRUSTSTORE_DIR, "readOnly": True},
+                         {"name": "keycloak-ca", "mountPath": "/opt/keycloak-ca", "readOnly": True}],
+        "javaOptions": f"-Djavax.net.ssl.trustStore={TRUSTSTORE_FILE} -Djavax.net.ssl.trustStoreType=PKCS12 "
+                       f"-Djavax.net.ssl.trustStorePassword={TRUSTSTORE_PASSWORD}",
+        "volumes": [{"name": "keycloak-ca", "configMap": {"name": KEYCLOAK_CA_CONFIGMAP}},
+                    {"name": "truststore", "emptyDir": {"sizeLimit": "16Mi"}}],
+    }
+
+
 def build_spec(source):
     """SparkApplication chuẩn hoá một lô file của `source`. Env của job: silver-ingest-app/README.md."""
     common_env = [
@@ -124,7 +174,9 @@ def build_spec(source):
         {"name": "WAREHOUSE_PATH", "value": WAREHOUSE_PATH},
         {"name": "ENABLE_HIVE_SUPPORT", "value": "true"},
     ] + [{"name": k, "value": v} for k, v in source["env"].items()]
-    return {
+    trust = keycloak_trust() if source.get("calls_keycloak") else None
+    driver_trust = {k: copy.deepcopy(trust[k]) for k in ("hostAliases", "initContainers", "volumeMounts")} if trust else {}
+    spec = {
         "apiVersion": "sparkoperator.k8s.io/v1beta2",
         "kind": "SparkApplication",
         "metadata": {"name": "{{ k8s_name('silver-" + source["name"] + "', dag_run.run_id) }}", "namespace": NAMESPACE},
@@ -148,6 +200,7 @@ def build_spec(source):
                 "labels": {"version": "3.5.1", "app": f"silver-ingest-{source['name']}"},
                 "serviceAccount": SERVICE_ACCOUNT,
                 "env": common_env + job_env + copy.deepcopy(source.get("driver_extra_env", [])),
+                **driver_trust,
             },
             "executor": {
                 "instances": 2,
@@ -176,8 +229,9 @@ def build_spec(source):
                 # BẮT BUỘC false (patch block token qua ServiceLoader).
                 "spark.driver.userClassPathFirst": "false",
                 "spark.executor.userClassPathFirst": "false",
-                "spark.driver.extraJavaOptions": "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties",
-                "spark.executor.extraJavaOptions": "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties",
+                # truststore chỉ cho driver (executor không gọi Keycloak/DAK).
+                "spark.driver.extraJavaOptions": f"{LOG4J} {trust['javaOptions']}" if trust else LOG4J,
+                "spark.executor.extraJavaOptions": LOG4J,
                 "spark.jars.ivy": "/tmp",
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.sql.adaptive.enabled": "true",
@@ -190,3 +244,6 @@ def build_spec(source):
             },
         },
     }
+    if trust:
+        spec["spec"]["volumes"] = copy.deepcopy(trust["volumes"])
+    return spec

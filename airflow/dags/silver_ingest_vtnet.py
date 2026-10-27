@@ -35,6 +35,8 @@ SOURCE = {
     "input_root": INPUT_ROOT,
     "conf_keys": ("path", "batchId", "table", "outputMode", "encryptColumns", "keyField"),
     "table_prefix": "vtnet_",
+    # Driver gọi Keycloak (https) để xin token DAK: cần hostAliases + truststore chứa CA nội bộ (ConfigMap keycloak-ca).
+    "calls_keycloak": True,
     "encrypts_columns": True,
     "env": {
         "INPUT_FORMAT": "csv",

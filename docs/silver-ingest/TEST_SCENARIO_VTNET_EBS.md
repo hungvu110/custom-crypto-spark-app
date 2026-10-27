@@ -48,6 +48,7 @@ Các mục 1–2 và 4–8 dùng chung; mục 3.1 chỉ làm với kịch bản 
 | 6 | **Client nội bộ** của DAK: khai trong ConfigMap dak-mock với `kind: internal`, và có client Keycloak tương ứng | README dak-mock mục 4 |
 | 7 | Secret `spark-dak-client` (key `clientSecret`) trong **namespace chạy job** | `kubectl get secret spark-dak-client -n <ns>` |
 | 8 | `DAK_CLIENT_ID` trong `silver_ingest_vtnet.py` đã thay `<client-id-noi-bo>` bằng client id nội bộ thật | đọc file |
+| 8b | ConfigMap `keycloak-ca` (key `ca.pem`, đã có sẵn trong cụm hiện tại) trong namespace chạy job; `KEYCLOAK_IP`/`KEYCLOAK_HOST` trong `silver_ingest_common.py` đúng với cụm | `kubectl get configmap keycloak-ca -n <ns>` |
 | 9 | Spark Operator và ServiceAccount `spark-application-sa` trong namespace; Kerberos/HDFS như các job khác | job khác chạy được |
 | 10 | Thư mục landing đọc được bằng principal `presto` (file `rw-r--r--`, đọc được) | `hdfs dfs -cat … \| head` |
 
@@ -237,7 +238,9 @@ curl -s -X POST localhost:8085/mock-admin/yc/<requestCode>/fulfill -H "X-Mock-Ad
 | Job exit 1, "must be strictly under KEY_PATH_ROOT" | `INPUT_ROOT` trong DAG không phải tiền tố của đường dẫn thật | Gốc VTNET phải là `<hdfs>/prod8/landing/vtnet/` |
 | `400 invalid_request`, `table` | Bảng không bắt đầu bằng `vtnet_` hoặc có chữ hoa/`-` | Dùng `vtnet_ebs_3g_4g` |
 | Phiếu `409 duplicate_request` | Còn phiếu cùng `path`/`batchId` chưa kết thúc | Đợi phiếu cũ kết thúc hoặc huỷ |
-| Driver không lấy được token DAK | Sai `DAK_TOKEN_URL`/`DAK_CLIENT_ID`, hoặc thiếu Secret `spark-dak-client` | Mục 1, dòng 6–8 |
+| Driver không lấy được token DAK | Sai `DAK_TOKEN_URL`/`DAK_CLIENT_ID`, thiếu Secret `spark-dak-client` | Mục 1, dòng 6–8 |
+| Driver lỗi `PKIX path building failed` / `UnknownHostException sso-lakehouse…` | Thiếu hoặc sai ConfigMap `keycloak-ca`, hoặc sai IP host alias | Mục 1, dòng 8b |
+| Pod bị từ chối: `initContainers[0].volumeMounts[0].name: Not found: keycloak-ca` | Mutating webhook của Spark Operator tắt, hoặc ConfigMap chưa tạo | Bật webhook, tạo `keycloak-ca` |
 
 ## 11. Dọn dẹp sau khi test
 
