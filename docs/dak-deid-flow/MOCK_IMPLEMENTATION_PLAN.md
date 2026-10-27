@@ -107,6 +107,8 @@ upload(user, file):
   2. kiểm file: đủ nhỏ (≤ max-upload-bytes), là JSON object, không trường lạ, không khoá JSON trùng
        hỏng cả file → 400 invalid_file
   3. kiểm nội dung, GOM MỌI LỖI: database/table, columns, mode, dagId, purpose   → 400 invalid_file + problems[]
+       env (tuỳ chọn): phải là object; mọi tên nằm trong dak.deid.job-env; mọi giá trị khớp quy tắc của tên đó; sai → invalid_env
+              bảng kết quả (OUTPUT_DB, OUTPUT_TABLE) không được trùng bảng nguồn → invalid_env (JOB_ENV_PLAN.md)
        dagId: bắt buộc khi submitter=airflow; phải khớp [A-Za-z0-9_][A-Za-z0-9_.-]{0,249} và nằm trong allowed-dag-ids;
               mọi lý do sai dùng CÙNG thông điệp (không lộ DAG nào tồn tại)
               khi submitter khác airflow: tuỳ chọn, được lưu nhưng không dùng
@@ -138,7 +140,8 @@ Chống trùng: khoá `(team, database, table, tập cột đã sắp xếp)` tr
 
 ```text
 approve(code):
-  1. CAS PENDING_APPROVAL → APPROVED   (chốt outputDatabase/outputTable, decidedAt)
+  1. CAS PENDING_APPROVAL → APPROVED   (điền env mặc định, chốt env cuối cùng và outputDatabase/outputTable, decidedAt;
+       bảng kết quả trùng bảng nguồn → 400 invalid_request, phiếu vẫn chờ duyệt)
        thua CAS (đã APPROVED/JOB_SUBMITTED/…): trả phiếu hiện tại, không làm gì thêm
        phiếu CANCELLED/REJECTED/…: 409 invalid_state
   2. secret = keyDelivery.deliver(phiếu)   (ngoài khoá registry — gọi mạng)
@@ -272,14 +275,19 @@ Mock đã tin CA Keycloak nội bộ qua truststore dựng sẵn và đã có `h
     "database": "demo_db",
     "table": "users_cdr",
     "pseudoColumns": "msisdn:HASH,imei:HASH",
-    "outputDb": "demo_db",
-    "outputTable": "users_cdr_deid_20261023_7",
-    "keySecretName": "deid-key-2026-000007"
+    "keySecretName": "deid-key-2026-000007",
+    "env": {
+      "ENABLE_HIVE_SUPPORT": "true",
+      "OUTPUT_DB": "demo_db",
+      "OUTPUT_FORMAT": "delta",
+      "OUTPUT_MODE": "overwrite",
+      "OUTPUT_TABLE": "users_cdr_deid_20261023_7"
+    }
   }
 }
 ```
 
-`outputDb`/`outputTable` là tham số khi trigger do DAK quyết (Q6). `keySecretName` là **tên** Secret, không phải key; `conf` không bao giờ chứa key (Airflow lưu `conf` trong DB và hiện trên giao diện).
+`env` là env **cuối cùng** của job (env người gửi nhập cộng mặc định, gồm cả `OUTPUT_DB`/`OUTPUT_TABLE`); mock kiểm lại với `dak.deid.job-env` và kiểm bảng kết quả khác bảng nguồn trước khi gọi mạng (JOB_ENV_PLAN.md). `keySecretName` là **tên** Secret, không phải key; `conf` không bao giờ chứa key (Airflow lưu `conf` trong DB và hiện trên giao diện).
 `dagId` không tồn tại trên Airflow (`404`) → `JobSubmitException("airflow dag not found")`. `409` (đã có `dag_run_id`) = đã gửi → `GET …/dagRuns/{dag_run_id}` để lấy `state`.
 Trạng thái: `queued`/`running` → `RUNNING`, `success` → `SUCCEEDED`, `failed` → `FAILED`.
 
@@ -329,9 +337,11 @@ Mỗi bước: viết test (RED) → code tối thiểu (GREEN) → dọn (IMPRO
 | D8  | `AirflowJobSubmitter` + `AirflowTokens`                      | **Đã làm xong (2026-10-26, 29 test).** Token `client_credentials` (Basic, `scope`), cache đến `expires_in−30s`, `401` → token mới thử lại một lần; `dagId` kiểm lại allowlist trước khi gọi mạng; `conf` chỉ có `keySecretName`; `404`/`403`/`409`/`5xx` ánh xạ đủ; `bearer` tĩnh; `JobSubmitter.status` nay nhận `(request, ref)` vì Airflow cần `dagId` |
 | D9  | `JobProgressRefresher` (làm mới trạng thái khi xem phiếu)    | **Đã làm xong (2026-10-26, 9 test).** `RUNNING`/`SUCCEEDED`/`FAILED`, `release` đúng một lần (kể cả khi hai lần xem đua nhau), `UNKNOWN` giữ trạng thái + `release`, lỗi hỏi trạng thái/`release` không làm hỏng việc xem. Với `noop`, lần xem đầu sau khi duyệt thấy `SUCCEEDED` |
 | D10 | Tài liệu + RBAC tối thiểu (mục 6)                            | **Đã làm xong (2026-10-26).** `dak-mock/k8s/dak-mock-deid-rbac.yaml` (ServiceAccount + Role `secrets create/delete` + RoleBinding), `dak-mock.yaml` (khối `dak.deid`, env `AIRFLOW_CLIENT_SECRET`, mount `/portal`, `serviceAccountName`), [dak-mock/README.md](../../dak-mock/README.md) mục 11. Chưa `kubectl apply --dry-run=server` (cần cluster) |
-| D11 | DAG khử định danh (của bạn)                                  | **Đã có mẫu:** [sample_dag_deid_pseudonymize_table.py](./sample_dag_deid_pseudonymize_table.py) (kiểm `conf`, env + volume Secret). Bạn thay `base_spec` bằng spec đang chạy và đặt `dag_id` vào `allowed-dag-ids`; chưa chạy thử trên Airflow thật |
+| D11 | DAG khử định danh (của bạn)                                  | **Đã có mẫu:** [sample_dag_deid_pseudonymize_table.py](../../dak-mock/k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py) (kiểm `conf`, env + volume Secret). Bạn thay `base_spec` bằng spec đang chạy và đặt `dag_id` vào `allowed-dag-ids`; chưa chạy thử trên Airflow thật |
 
 Ca test xuyên suốt: không response hay dòng log nào chứa giá trị key, `keyPrefix`, token portal/admin/SA/Airflow, client secret Keycloak; phiếu team A không bao giờ xuất hiện trong danh sách của team B.
+
+**Đề xuất mở rộng (chờ duyệt):** cho người gửi phiếu nhập env của job (gồm bảng kết quả) theo danh sách env được phép, xem [JOB_ENV_PLAN.md](./JOB_ENV_PLAN.md).
 
 Thứ tự đã làm: D1 → D2 → D3 → D4 → D5 → D6 → D6b → D8 → D9 → D10 → D11 (D7 bỏ). **Lưu ý namespace:** Secret key phải nằm cùng namespace với SparkApplication mà DAG tạo (`vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy`), nên `dak.deid.kubernetes.namespace` và `NAMESPACE` trong DAG phải trùng.
 

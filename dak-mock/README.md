@@ -422,7 +422,7 @@ Team có tài khoản DAK nội bộ upload phiếu (database, table, cột, `da
 | Endpoint | Ai dùng | Ghi chú |
 | --- | --- | --- |
 | `POST /mock-portal/deid-requests` (multipart `file`), `GET`, `POST .../{code}/cancel`, `GET /mock-portal/deid-dags` | user của team, header `X-Mock-Portal-Token` | Phiếu thuộc team; team khác nhận `404` |
-| `GET /mock-admin/deid-requests[/{code}]`, `POST .../{code}/approve`, `.../reject`, `.../retry-submit` | admin, header `X-Mock-Admin-Token` | `approve` lỗi giao key/gửi job vẫn `200`, lỗi nằm ở `state=SUBMIT_FAILED` + `submitError` |
+| `GET /mock-admin/deid-requests[/{code}]`, `POST .../{code}/approve`, `.../reject`, `.../retry-submit` | admin, header `X-Mock-Admin-Token` | `approve` lỗi giao key/gửi job vẫn `200`, lỗi nằm ở `state=SUBMIT_FAILED` + `submitError`. |
 
 Xem phiếu đang chạy sẽ làm mới trạng thái job từ Airflow; job xong thì Secret key bị xoá (không có tiến trình nền).
 
@@ -432,17 +432,18 @@ key và PHẢI là namespace nơi DAG tạo SparkApplication; `airflow.base-url`
 (`client-credentials`: `token-url`, `client-id`, `scope`, env `AIRFLOW_CLIENT_SECRET`; `bearer`: env `AIRFLOW_TOKEN`). Tài khoản portal giả (có token) khai ở Secret `dak-mock-portal-users`.
 
 **Triển khai thật:** làm theo các bước ở đầu `k8s/dak-mock.yaml` (RBAC `k8s/dak-mock-deid-rbac.yaml`, Secret portal/airflow), key bảng phải có sẵn
-trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.py](../docs/dak-deid-flow/sample_dag_deid_pseudonymize_table.py).
+trong Vault, DAG phải nhận `conf` như [sample_dag_deid_pseudonymize_table.py](k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py).
 Quét Secret key sót: `kubectl get secret -l dak.vai/kind=deid-key -n <namespace>`.
 
 **File mẫu** (trong `k8s/deid/`): `portal-users.example.yml` (mẫu Secret `dak-mock-portal-users`, token là chỗ trống để bạn điền, hướng dẫn tạo ở đầu file) và
-`samples/` gồm phiếu hợp lệ (`phieu-hop-le.json`, `phieu-mot-cot.json`) và phiếu lỗi để thử thông báo (`phieu-loi-nhieu-truong.json`, `phieu-loi-truong-la.json`,
-`phieu-loi-json-hong.json`). `DeidSampleFilesTest` kiểm các mẫu này với parser thật. Chạy thử bằng `curl` (đã `kubectl port-forward deploy/dak-mock 8085`):
+`samples/` gồm phiếu hợp lệ (`valid-request.json`, `valid-request-with-env.json` có nhập env và bảng kết quả, `valid-single-column.json`) và phiếu lỗi để thử thông báo
+(`invalid-many-errors.json`, `invalid-unknown-field.json`, `invalid-env.json`, `invalid-env-output-same-as-source.json`, `invalid-broken-json.json`). `DeidSampleFilesTest` kiểm các mẫu này với
+parser thật. Chạy thử bằng `curl` (đã `kubectl port-forward deploy/dak-mock 8085`):
 
 ```bash
 P=http://localhost:8085
 # Team upload phiếu (token portal của alice) -> 201, phiếu PENDING_APPROVAL, mã PYC-<năm>-<6 số>
-curl -s -H "X-Mock-Portal-Token: $TOKEN_ALICE" -F file=@dak-mock/k8s/deid/samples/phieu-hop-le.json $P/mock-portal/deid-requests
+curl -s -H "X-Mock-Portal-Token: $TOKEN_ALICE" -F file=@dak-mock/k8s/deid/samples/valid-request.json $P/mock-portal/deid-requests
 # Admin duyệt (token admin = Secret dak-mock-admin-token): giao key + trigger DAG; lỗi giao key/gửi job nằm ở state=SUBMIT_FAILED
 curl -s -X POST -H "X-Mock-Admin-Token: $ADMIN_TOKEN" $P/mock-admin/deid-requests/PYC-2026-000001/approve
 # Team xem phiếu (làm mới trạng thái job từ Airflow)
@@ -485,12 +486,12 @@ curl -s -o /dev/null -w "%{http_code}\n" -u "dak-trigger:<mật khẩu>" "$BASE/
 | **Key bảng trong Vault** | Mỗi bảng được khử định danh phải có sẵn: `vault kv put kv/hla-datalake/datalake/spark-application/<database>.<table> keyPrefix="$(openssl rand -base64 32)"`. Phải là base64 chuẩn của **đúng 32 byte**, nếu không phiếu báo `table key has unsupported format`. Tạo bằng pod `k8s/vault-cli-pod.yaml` |
 | RBAC | `kubectl apply -f dak-mock/k8s/dak-mock-deid-rbac.yaml` (ServiceAccount `dak-mock`, quyền `secrets create/delete`) rồi rollout lại Deployment |
 | Mạng | Pod mock tới được: Airflow webserver (cổng 8080), Keycloak (đã có `hostAliases` và truststore CA nội bộ), Vault, Kubernetes API. Namespace có NetworkPolicy thì mở egress các đích này |
-| DAG | Theo [sample_dag_deid_pseudonymize_table.py](../docs/dak-deid-flow/sample_dag_deid_pseudonymize_table.py): `DAG_ID` nằm trong `allowed-dag-ids`, `NAMESPACE` trùng `kubernetes.namespace`, đọc `conf` (`requestCode, database, table, pseudoColumns, outputDb, outputTable, keySecretName`) và mount Secret `keySecretName` vào `/etc/pseudonym-keys`. Image `pseudonymize-table-app`, `hadoopConfigMap`, `serviceAccount: spark-application-sa` phải có ở namespace đó |
+| DAG | Theo [sample_dag_deid_pseudonymize_table.py](k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py): `DAG_ID` nằm trong `allowed-dag-ids`, `NAMESPACE` trùng `kubernetes.namespace`, đọc `conf` (`requestCode, database, table, pseudoColumns, outputDb, outputTable, keySecretName`) và mount Secret `keySecretName` vào `/etc/pseudonym-keys`. Image `pseudonymize-table-app`, `hadoopConfigMap`, `serviceAccount: spark-application-sa` phải có ở namespace đó |
 
 **C. Chạy thử đầu-cuối** (theo thứ tự; dừng ở bước nào lỗi thì sửa bước đó):
 
 1. `kubectl rollout status deploy/dak-mock` rồi `kubectl logs deploy/dak-mock | grep "Started DakMockApplication"` (cấu hình sai thì app không khởi động và log nói rõ khoá nào sai).
-2. Upload `samples/phieu-hop-le.json` bằng token portal (lệnh ở mục 11) → `201`, `state=PENDING_APPROVAL`.
+2. Upload `samples/valid-request.json` bằng token portal (lệnh ở mục 11) → `201`, `state=PENDING_APPROVAL`.
 3. Admin `approve` → `state=JOB_SUBMITTED`, có `jobRef.kind=AirflowDagRun` và `keyVersion`. Kiểm: `kubectl get secret -n <ns> -l dak.vai/kind=deid-key` thấy Secret `deid-key-…`; trên Airflow thấy dag run `deid-<năm>-<6 số>` của DAG đã chọn.
 4. Xem phiếu nhiều lần → `RUNNING` → `SUCCEEDED` (hoặc `FAILED`); khi job xong Secret key bị xoá. Bảng đích là `outputDatabase`.`outputTable` của phiếu.
 
@@ -585,4 +586,57 @@ curl -s -o /dev/null -w "%{http_code}\n" -u "dak-trigger:<mật khẩu>" \
 
 Sau đó phiếu `SUBMIT_FAILED` với `airflow denied the request` nghĩa là Airflow trả `401/403` cho user này (bảng ở mục 11.2).
 Chuyển sang Bearer Keycloak sau này chỉ cần đổi `auth: client-credentials` và thêm `token-url`, `client-id`, `scope`, `AIRFLOW_CLIENT_SECRET`, khi Airflow đã bật backend nhận Bearer token.
+
+### 11.4. Env của job do người gửi phiếu nhập (kể cả bảng kết quả)
+
+Người gửi phiếu nhập mục **`env`** trong file phiếu để cấu hình job khử định danh; **bảng kết quả cũng nhập ở đây** (`OUTPUT_DB`, `OUTPUT_TABLE`), phiếu không có ô riêng cho nó.
+Admin **chỉ duyệt hoặc từ chối**, không sửa env. Env chỉ áp dụng cho **driver** của job. Thiết kế đầy đủ và lý do: [JOB_ENV_PLAN.md](../docs/dak-deid-flow/JOB_ENV_PLAN.md).
+
+```json
+{
+  "database": "demo_db",
+  "table": "users_cdr_2",
+  "columns": [{ "column": "name", "mode": "HASH" }],
+  "dagId": "deid_pseudonymize_table",
+  "env": { "OUTPUT_DB": "demo_db", "OUTPUT_TABLE": "users_cdr_2_pseudonymized", "OUTPUT_MODE": "overwrite" },
+  "purpose": "Share data with partner X for churn analysis"
+}
+```
+
+**Env được nhập (danh sách mặc định)** và giá trị khi không nhập:
+
+| Tên | Giá trị hợp lệ | Nếu không nhập |
+| --- | --- | --- |
+| `OUTPUT_DB` | chữ thường, số, `_`, 1 đến 128 ký tự | `dak.deid.output-database`, để trống thì là database nguồn |
+| `OUTPUT_TABLE` | như trên | mock đặt theo `output-table-template`, vd `users_cdr_2_deid_20261026_1` |
+| `OUTPUT_MODE` | `overwrite` hoặc `append` | `overwrite` |
+| `OUTPUT_FORMAT` | `delta`, `hive`, `iceberg` | `delta` |
+| `ENABLE_HIVE_SUPPORT` | `true` hoặc `false` | `true` |
+
+Giao diện lấy danh sách này bằng `GET /mock-portal/deid-job-env`. Danh sách cấu hình ở `dak.deid.job-env` (mẫu comment trong `application.yml` và `k8s/dak-mock.yaml`): mỗi mục có `name`, `pattern`
+(khớp toàn bộ giá trị), `default-value` tuỳ chọn; khai danh sách thì **thay hẳn** danh sách mặc định. Thêm env mới cần sửa **cả cấu hình mock và bảng `JOB_ENV` trong DAG**.
+
+**Quy tắc khi gửi phiếu** (sai thì `400 invalid_file`, `problems[]` có `field` dạng `env.<TÊN>` và `code=invalid_env`, thông điệp không lặp lại giá trị đã nhập):
+- `env` là object, tối đa 10 mục; giá trị là chuỗi, tối đa 256 ký tự, không có ký tự xuống dòng hay điều khiển, và đúng quy tắc của tên đó (viết hoa/thường phải đúng, mock không tự sửa).
+- Tên ngoài danh sách bị từ chối với thông điệp chung `env name is not allowed`. Các env quyết định job xử lý bảng nào và lấy key ở đâu (`DB_NAME`, `TABLE_NAME`, `PSEUDO_COLUMNS`, `INPUT_*`, `CRYPTO_*`, `VAULT_*`,
+  `DAK_*`, `JAVA_*`, `SPARK_*`, tên có `SECRET`/`TOKEN`/`PASSWORD`/`KEY`...) **không bao giờ** được đưa vào danh sách: cấu hình như vậy làm mock không khởi động.
+- Bảng kết quả không được trùng bảng nguồn (so `OUTPUT_DB` + `OUTPUT_TABLE`; thiếu `OUTPUT_DB` thì dùng `dak.deid.output-database` hoặc database nguồn). Kiểm lại lúc duyệt.
+
+**Lúc duyệt:** mock điền giá trị mặc định cho env còn thiếu và lưu **env cuối cùng** vào phiếu (`env`, kèm `outputDatabase`/`outputTable` chỉ để xem). Phiếu `PENDING_APPROVAL` chỉ có env người gửi nhập,
+phiếu đã duyệt có đủ env. `retry-submit` giữ nguyên. Chống trùng phiếu **không tính env**: hai phiếu đang xử lý của cùng team, cùng bảng nguồn, cùng tập cột vẫn bị `409 duplicate_request`.
+Log `AUDIT` ghi `envNames` và `envCount`, không ghi giá trị.
+
+**Gửi cho Airflow:** `conf` gồm `requestCode`, `database`, `table`, `pseudoColumns`, `keySecretName` và `env` (env cuối cùng). Hai khoá `outputDb`/`outputTable` cũ **không còn**, DAG đọc `env.OUTPUT_DB` và
+`env.OUTPUT_TABLE`. Mock kiểm lại env với danh sách hiện hành trước khi gọi mạng. **DAG mới và mock mới phải lên cùng lúc**; trong lúc chuyển nên tạm dừng nhận phiếu.
+
+**DAG** nằm ở [k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py](k8s/airflow/dags/sample_dag_deid_pseudonymize_table.py): bảng `JOB_ENV` (tên, mặc định, quy tắc) phải khớp `dak.deid.job-env`; test Java
+`JobEnvDagDriftTest` đọc thẳng file DAG nên lệch là đỏ (nhưng không kiểm được DAG đã triển khai trên Airflow). Test DAG không cần Airflow:
+
+```bash
+python3 -B -m unittest discover -s dak-mock/k8s/airflow/tests -v     # cần Python 3 và jinja2
+```
+
+**Hai rủi ro cần biết** (không giới hạn database đích, như đã chốt):
+1. `OUTPUT_TABLE` là bảng đã có cùng `OUTPUT_MODE=overwrite`: job thay toàn bộ nội dung bảng đó, và mock không biết bảng đã tồn tại hay chưa. Admin nên đọc `OUTPUT_DB`, `OUTPUT_TABLE`, `OUTPUT_MODE` trên phiếu trước khi duyệt.
+2. `OUTPUT_MODE=append`: chạy lại job sau khi lỗi giữa chừng có thể ghi trùng dữ liệu; `overwrite` thì chạy lại luôn ra cùng kết quả.
 
