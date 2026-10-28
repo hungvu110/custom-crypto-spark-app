@@ -1,112 +1,127 @@
-"""DAG chuẩn hoá một lô file VTNET vào silver (docs/silver-ingest/PLAN.md), trigger bởi DAK khi phiếu chuẩn hoá được duyệt.
+"""RECURRING DAGs that load the files of the VTNET datasets into the demo database (docs/silver-ingest/PLAN.md). There is ONE DAG PER DATASET
+(DATASETS below), built by silver_ingest_factory.py, and each runs once a day at the time of its approved request. A dataset picks an ingest
+mode (common.MODES).
 
-Luồng của job (docs/key-access/TRA-LOI-DAK-BY-PATH.md): hỏi DAK key theo đường dẫn (by-path) của `path`. DAK có key → file bị mã hoá cả
-file, job giải mã (FILE_CIPHER); DAK trả rỗng → file không mã hoá, job đọc nguyên trạng. Sau đó mã hoá các cột `encryptColumns` bằng
-cdr-crypto (key theo cột qua DAK by-column, onMissing=request) rồi ghi bảng. Cột chưa có key: DAK mở yêu cầu (PENDING), job CHỜ và gọi
-lại theo exponential backoff (PENDING_WAIT) cho tới khi admin DAK duyệt, rồi chạy tiếp. Hết timeout mà chưa duyệt, hoặc yêu cầu bị từ
-chối: job exit 5 (task failed), chưa ghi gì.
+  dataset    DAG                            mode             folder of a day
+  ebs_3g_4g  silver_ingest_vtnet_ebs_3g_4g  passthrough      ebs_3g_4g/dt=YYYYMMDD/(batch=...)
+  nims       silver_ingest_vtnet_nims       decrypt-encrypt  nims/dt=YYYYMMDD/(batch=...)
 
-DAK trigger: POST /api/v1/dags/silver_ingest_vtnet/dagRuns, conf = {"path": "<tương đối theo INPUT_ROOT, vd ebs_3g_4g/dt=20261012/batch=1520>",
-"batchId": "yyyyMMddHHmm", "table": "vtnet_ebs_3g_4g", "encryptColumns": ["msisdn", "imei"], "keyField": "start_time",
-"outputMode": "overwrite-partitions|append" (tuỳ chọn, mặc định overwrite-partitions: chỉ thay partition của lô)}.
+How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
+A run ingests the folder of the day BEFORE the run (all its batch subfolders) into the partition batch_id = <day>; a manual run can take
+another day: conf {"date": "yyyyMMdd"}.
+
+passthrough: read the files and write the table as they are (no DAK call).
+decrypt-encrypt (docs/key-access/TRA-LOI-DAK-BY-PATH.md): ask DAK for the key of the dataset (by-path, ONE key per dataset). If DAK has a key,
+the whole file is encrypted and the job decrypts it (FILE_CIPHER); if DAK answers empty, the file is not encrypted and the job reads it as it
+is. Then the `encryptColumns` of the request are encrypted with cdr-crypto (per-column key through DAK by-column, onMissing=request) and the
+table is written; with no `encryptColumns` the files are only decrypted. When a column has no key yet, DAK opens a request (PENDING); the job
+WAITS and polls again with exponential backoff (PENDING_WAIT) until the DAK admin approves. If the timeout expires before approval, or the
+request is rejected, the job exits with code 5 (task failed) and nothing is written.
 """
+
 import os
 import sys
 
-import pendulum
-from airflow import DAG
-from airflow.exceptions import AirflowFailException
-from airflow.operators.python import PythonOperator
-from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
-
-# Airflow chỉ thêm gốc thư mục DAG vào sys.path; khi file nằm trong thư mục con (vd. .../dags/dags/) thì phải thêm thư mục của file.
+# Airflow only puts the root of the dags folder on sys.path; when this file sits in a subfolder (e.g. .../dags/dags/), the folder of the
+# file itself has to be added.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import silver_ingest_common as common  # noqa: E402
+import silver_ingest_factory as factory  # noqa: E402
 
-DAG_ID = "silver_ingest_vtnet"
-
-# Gốc landing của nguồn (GIẢ ĐỊNH, sửa theo cụm). INPUT_PATH = INPUT_ROOT + conf.path; đường dẫn gửi by-path chính là conf.path.
+# Landing root shared by every VTNET dataset (ASSUMPTION, adjust to the cluster). INPUT_PATH = INPUT_ROOT + <dataset>/dt=<day>.
 INPUT_ROOT = f"{common.HDFS}/prod8/landing/vtnet/"
 
-# Chờ admin DAK duyệt yêu cầu key cột (by-column trả PENDING): lần đầu sau `initial` giây, mỗi lần sau nhân `multiplier`, tối đa
-# `max_interval` giây một lần, bỏ cuộc sau `timeout` giây (job exit 5). Trong lúc chờ, driver và executor vẫn giữ tài nguyên.
+# Wait for the DAK admin to approve the column key request (by-column answers PENDING): first poll after `initial` seconds, each next one
+# multiplied by `multiplier`, at most `max_interval` seconds apart, give up after `timeout` seconds (job exits with 5). While waiting, the
+# driver and the executors keep their resources.
 PENDING_WAIT = {"timeout": 7200, "initial": 30, "max_interval": 600, "multiplier": 2}
 
-# Cấu hình cố định theo nguồn. GIẢ ĐỊNH — sửa theo dữ liệu thật của VTNET (định dạng, schema, bảng đích). Cột cần mã hoá và keyField
-# do người gửi phiếu chọn (conf).
-SOURCE = {
-    "name": "vtnet",
-    "main_class": "vai.lakehouse.silveringest.app.VtnetSilverApp",
-    "input_root": INPUT_ROOT,
-    "conf_keys": ("path", "batchId", "table", "outputMode", "encryptColumns", "keyField"),
-    "table_prefix": "vtnet_",
-    # Driver gọi Keycloak (https) để xin token DAK: cần hostAliases + truststore chứa CA nội bộ (ConfigMap keycloak-ca).
-    "calls_keycloak": True,
-    "encrypts_columns": True,
-    "env": {
-        "INPUT_FORMAT": "csv",
-        "INPUT_OPTION_header": "true",
-        "OUTPUT_DB": "silver",
-        "OUTPUT_FORMAT": "delta",
-        # Thuật toán giải mã cả file, chỉ dùng khi by-path có key cho đường dẫn. GIẢ ĐỊNH cho tới khi xác nhận định dạng thật.
-        "FILE_CIPHER": "aes-256-gcm",
-        # Gốc mà đường dẫn by-path tương đối theo: job gửi đúng phần của INPUT_PATH sau gốc, tức conf.path.
-        "KEY_PATH_ROOT": INPUT_ROOT,
-        # onMissing của by-column: "request" — cột chưa có key thì DAK mở yêu cầu, job chờ (PENDING_WAIT) tới khi admin DAK duyệt
-        # (docs/key-access/API-LAY-KEY-DUONG-DAN-COT.md mục 3.2).
-        "CDR_ON_MISSING": "request",
-    },
-    "driver_extra_env": [
-        # Cột mã hoá bằng cdr-crypto (mỗi cột một key, dataset = OUTPUT_DB.OUTPUT_TABLE) và cột keyField giữ plaintext: từ phiếu.
-        {"name": "CDR_ENCRYPT_COLUMNS", "value": "{{ ((dag_run.conf or {}).get('encryptColumns') or []) | join(',') }}"},
-        {"name": "CDR_KEY_FIELD", "value": common.conf_value("keyField")},
-        # ---- Nguồn key: DAK (by-path và by-column), client NỘI BỘ, chỉ driver cần ----
+# The datasets of VTNET, one DAG each. `mode`: a key of common.MODES. `key_path` (decrypt-encrypt only): the path sent to DAK by-path, one key
+# for the whole dataset (defaults to the dataset name). ASSUMPTION: adjust to the real data.
+DATASETS = {
+    "ebs_3g_4g": {"mode": "passthrough"},
+    "nims": {"mode": "decrypt-encrypt"},
+}
+
+# Settings shared by every dataset. ASSUMPTION: adjust to the real VTNET data (format, schema, target database).
+BASE_ENV = {
+    "INPUT_FORMAT": "csv",
+    "INPUT_OPTION_header": "true",
+    # The folder of a day holds batch=... subfolders: read them all, and do not turn `batch=1520` into a partition column.
+    "INPUT_OPTION_recursiveFileLookup": "true",
+    "OUTPUT_DB": "demo_db",
+    "OUTPUT_FORMAT": "delta",
+}
+
+
+def dak_env(slug, config):
+    """Driver env of the key source: DAK (by-path and by-column), INTERNAL client, only the driver needs it."""
+    return [
+        # Columns encrypted with cdr-crypto (one key per column, dataset = OUTPUT_DB.OUTPUT_TABLE) and the plaintext keyField column: from the
+        # approved request. An empty list means that no column is encrypted.
+        {"name": "CDR_ENCRYPT_COLUMNS", "value": ",".join(config.get("encryptColumns") or [])},
+        {"name": "CDR_KEY_FIELD", "value": config.get("keyField") or ""},
         {"name": "CRYPTO_PREFIX_SOURCE", "value": "dak"},
-        # Đang trỏ tới dak-mock (HTTP, cùng namespace). Với DAK thật: https://<dak> và XOÁ DAK_ALLOW_INSECURE_HTTP.
+        # Currently points to dak-mock (HTTP, same namespace). With the real DAK: https://<dak> and REMOVE DAK_ALLOW_INSECURE_HTTP.
         {"name": "DAK_ADDR", "value": "http://dak-mock:8085"},
         {"name": "DAK_ALLOW_INSECURE_HTTP", "value": "true"},
-        {"name": "DAK_TOKEN_URL",
-         "value": "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"},
-        # GIẢ ĐỊNH — client-id nội bộ thật (dak-mock: "kind: internal").
+        {
+            "name": "DAK_TOKEN_URL",
+            "value": "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token",
+        },
+        # ASSUMPTION - the real internal client id (dak-mock: "kind: internal").
         {"name": "DAK_CLIENT_ID", "value": "<client-id-noi-bo>"},
         {"name": "DAK_CLIENT_SECRET", "valueFrom": {"secretKeyRef": {"name": "spark-dak-client", "key": "clientSecret"}}},
-        # Client nội bộ BẮT BUỘC gửi tag=internal.
+        # An internal client MUST send tag=internal.
         {"name": "DAK_TAG", "value": "internal"},
-        {"name": "DAK_CALLER", "value": "silver-ingest-vtnet"},
+        {"name": "DAK_CALLER", "value": f"silver-ingest-vtnet-{slug}"},
         {"name": "DAK_PENDING_WAIT_TIMEOUT_SECONDS", "value": str(PENDING_WAIT["timeout"])},
         {"name": "DAK_PENDING_WAIT_INITIAL_SECONDS", "value": str(PENDING_WAIT["initial"])},
         {"name": "DAK_PENDING_WAIT_MAX_INTERVAL_SECONDS", "value": str(PENDING_WAIT["max_interval"])},
         {"name": "DAK_PENDING_WAIT_MULTIPLIER", "value": str(PENDING_WAIT["multiplier"])},
-    ],
-}
+    ]
 
 
-def validate_conf(**context):
-    """Task đầu: dừng DAG trước khi tạo job nếu conf sai."""
-    try:
-        common.check_conf(SOURCE, context["dag_run"].conf)
-    except ValueError as error:
-        raise AirflowFailException(str(error)) from None
+def source_for(dataset, settings, config=None):
+    """The SOURCE constant (see common.check_conf and common.build_spec) of the DAG of one dataset.
+
+    `config` = the approved settings read from the Airflow Variable (already validated), or None when the dataset has none: then `fixed` is
+    empty and the DAG has no schedule.
+    """
+    mode = settings["mode"]
+    slug = dataset.replace("_", "-")  # SparkApplication names and label values do not accept "_"
+    config = config or {}
+    source = {
+        "name": f"vtnet-{slug}",
+        "dataset": dataset,
+        "day_dir": "dt",
+        "main_class": common.MODES[mode],
+        "input_root": INPUT_ROOT,
+        "conf_keys": ("date",),
+        "schedule_keys": ("ticket", "table", "cron", "outputMode"),
+        "table_prefix": "vtnet_",
+        "env": dict(BASE_ENV),
+        "fixed": config,
+    }
+    if mode == "decrypt-encrypt":
+        source["schedule_keys"] += ("encryptColumns", "keyField")
+        source["encrypts_columns"] = True
+        # The driver calls Keycloak (https) to get a DAK token: it needs hostAliases and a truststore with the internal CA (ConfigMap keycloak-ca).
+        source["calls_keycloak"] = True
+        source["env"].update(
+            {
+                # Whole-file decryption algorithm, only used when by-path has a key. ASSUMPTION until the real format is confirmed.
+                "FILE_CIPHER": "aes-256-gcm",
+                # One by-path key for the whole dataset, not one per day or batch folder.
+                "KEY_PATH": settings.get("key_path", dataset),
+                # onMissing of by-column: "request" - when a column has no key yet, DAK opens a request and the job waits (PENDING_WAIT) until the
+                # DAK admin approves (docs/key-access/API-LAY-KEY-DUONG-DAN-COT.md section 3.2).
+                "CDR_ON_MISSING": "request",
+            }
+        )
+        source["driver_extra_env"] = dak_env(slug, config)
+    return source
 
 
-with DAG(
-    DAG_ID,
-    description="Chuẩn hoá một lô file VTNET (mã hoá cả file) vào silver, mã hoá cột bằng cdr-crypto",
-    schedule=None,  # chỉ chạy khi DAK trigger
-    start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Ho_Chi_Minh"),
-    catchup=False,
-    # PHẢI là False: native render đổi "2" thành 2 và Kubernetes trả 422 (env value phải là chuỗi).
-    render_template_as_native_obj=False,
-    user_defined_macros={"k8s_name": common.k8s_name},
-    max_active_runs=4,
-    tags=["silver", "vtnet", "dak"],
-) as dag:
-    validate = PythonOperator(task_id="validate_conf", python_callable=validate_conf)
-    run_job = SparkKubernetesOperator(
-        task_id="ingest",
-        namespace=common.NAMESPACE,
-        template_spec=common.build_spec(SOURCE),
-        kubernetes_conn_id="kubernetes_default",
-        do_xcom_push=False,
-    )
-    validate >> run_job
+# Airflow finds the DAGs among the module globals: one per dataset.
+SOURCES, CONFIG_PROBLEMS = factory.register(globals(), "vtnet", DATASETS, source_for)

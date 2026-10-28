@@ -1,67 +1,63 @@
-"""DAG chuẩn hoá một lô file VTT vào silver (docs/silver-ingest/PLAN.md), trigger bởi DAK khi phiếu chuẩn hoá được duyệt. File VTT đã
-được mã hoá từng cột: job chỉ đọc rồi ghi bảng, không gọi DAK.
+"""RECURRING DAGs that load the files of the VTT datasets into the demo database (docs/silver-ingest/PLAN.md). There is ONE DAG PER DATASET
+(DATASETS below), built by silver_ingest_factory.py, and each runs once a day at the time of its approved request. VTT files are already
+encrypted column by column: the job only reads them and writes the table (passthrough mode), it never calls DAK.
 
-DAK trigger: POST /api/v1/dags/silver_ingest_vtt/dagRuns, conf = {"path": "<tương đối theo INPUT_ROOT, vd f001-mpre-call/date=20261024/hour=12>",
-"batchId": "yyyyMMddHH", "table": "vtt_f001_mpre_call", "outputMode": "overwrite-partitions|append" (tuỳ chọn, mặc định overwrite-partitions)}. Test không cần Airflow:
-    python3 -B -m unittest discover -s airflow/tests
+  dataset         DAG                               mode         folder of a day
+  f001-mpre-call  silver_ingest_vtt_f001_mpre_call  passthrough  f001-mpre-call/date=YYYYMMDD/(hour=...)
+
+How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
+A run ingests the folder of the day BEFORE the run (all its hour subfolders) into the partition batch_id = <day>; a manual run can take
+another day: conf {"date": "yyyyMMdd"}.
 """
+
 import os
 import sys
 
-import pendulum
-from airflow import DAG
-from airflow.exceptions import AirflowFailException
-from airflow.operators.python import PythonOperator
-from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
-
-# Airflow chỉ thêm gốc thư mục DAG vào sys.path; khi file nằm trong thư mục con (vd. .../dags/dags/) thì phải thêm thư mục của file.
+# Airflow only puts the root of the dags folder on sys.path; when this file sits in a subfolder (e.g. .../dags/dags/), the folder of the
+# file itself has to be added.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import silver_ingest_common as common  # noqa: E402
+import silver_ingest_factory as factory  # noqa: E402
 
-DAG_ID = "silver_ingest_vtt"
+# Landing root of VTT (ASSUMPTION, adjust to the cluster). INPUT_PATH = INPUT_ROOT + <dataset>/date=<day>.
+INPUT_ROOT = f"{common.HDFS}/landing/vtt/lakehouse/vtt-core/"
 
-# Cấu hình cố định theo nguồn. GIẢ ĐỊNH — sửa theo dữ liệu thật của VTT (định dạng, schema, bảng đích, gốc thư mục landing).
-SOURCE = {
-    "name": "vtt",
-    "main_class": "vai.lakehouse.silveringest.app.VttSilverApp",
-    "input_root": f"{common.HDFS}/landing/vtt/lakehouse/vtt-core/",
-    "conf_keys": ("path", "batchId", "table", "outputMode"),
-    "table_prefix": "vtt_",
-    "env": {
-        "INPUT_FORMAT": "csv",
-        "INPUT_OPTION_header": "true",
-        "OUTPUT_DB": "silver",
-        "OUTPUT_FORMAT": "delta",
-    },
+# The datasets (tables of the landing root) of VTT, one DAG each. `mode`: a key of common.MODES. ASSUMPTION: add the real tables.
+DATASETS = {
+    "f001-mpre-call": {"mode": "passthrough"},
+}
+
+# Settings shared by every dataset. ASSUMPTION: adjust to the real VTT data (format, schema, target database).
+BASE_ENV = {
+    "INPUT_FORMAT": "csv",
+    "INPUT_OPTION_header": "true",
+    # The folder of a day holds hour=... subfolders: read them all, and do not turn `hour=12` into a partition column.
+    "INPUT_OPTION_recursiveFileLookup": "true",
+    "OUTPUT_DB": "demo_db",
+    "OUTPUT_FORMAT": "delta",
 }
 
 
-def validate_conf(**context):
-    """Task đầu: dừng DAG trước khi tạo job nếu conf sai."""
-    try:
-        common.check_conf(SOURCE, context["dag_run"].conf)
-    except ValueError as error:
-        raise AirflowFailException(str(error)) from None
+def source_for(dataset, settings, config=None):
+    """The SOURCE constant (see common.check_conf and common.build_spec) of the DAG of one dataset.
+
+    `config` = the approved settings read from the Airflow Variable (already validated), or None when the dataset has none: then `fixed` is
+    empty and the DAG has no schedule.
+    """
+    slug = dataset.replace("_", "-")  # SparkApplication names and label values do not accept "_"
+    return {
+        "name": f"vtt-{slug}",
+        "dataset": dataset,
+        "day_dir": "date",
+        "main_class": common.MODES[settings["mode"]],
+        "input_root": INPUT_ROOT,
+        "conf_keys": ("date",),
+        "schedule_keys": ("ticket", "table", "cron", "outputMode"),
+        "table_prefix": "vtt_",
+        "env": dict(BASE_ENV),
+        "fixed": config or {},
+    }
 
 
-with DAG(
-    DAG_ID,
-    description="Chuẩn hoá một lô file VTT (đã mã hoá cột) vào silver",
-    schedule=None,  # chỉ chạy khi DAK trigger
-    start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Ho_Chi_Minh"),
-    catchup=False,
-    # PHẢI là False: native render đổi "2" thành 2 và Kubernetes trả 422 (env value phải là chuỗi).
-    render_template_as_native_obj=False,
-    user_defined_macros={"k8s_name": common.k8s_name},
-    max_active_runs=4,
-    tags=["silver", "vtt", "dak"],
-) as dag:
-    validate = PythonOperator(task_id="validate_conf", python_callable=validate_conf)
-    run_job = SparkKubernetesOperator(
-        task_id="ingest",
-        namespace=common.NAMESPACE,
-        template_spec=common.build_spec(SOURCE),
-        kubernetes_conn_id="kubernetes_default",
-        do_xcom_push=False,
-    )
-    validate >> run_job
+# Airflow finds the DAGs among the module globals: one per dataset.
+SOURCES, CONFIG_PROBLEMS = factory.register(globals(), "vtt", DATASETS, source_for)
