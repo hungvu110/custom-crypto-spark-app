@@ -37,3 +37,6 @@ docs/schema.xlsx
 # Python
 __pycache__/
 *.pyc
+
+docs/silver-ingest/tools/ebs_3g_4g-160000.csv
+docs/silver-ingest/tools/ebs_3g_4g-160000.csv.plain
