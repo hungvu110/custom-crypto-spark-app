@@ -124,7 +124,7 @@ UTC nên lệch một ngày với lần chạy trước 07:00) vào partition `b
 được đọc (`INPUT_OPTION_recursiveFileLookup=true`, nên `batch=1520` không thành cột partition). Ngày đó không có thư mục hoặc không có file là lỗi (job exit 1).
 `catchup=False` (duyệt phiếu không nạp bù các ngày cũ), `max_active_runs=1`. `conf` chỉ dùng khi chạy tay: `{"date": "yyyyMMdd"}` nạp một ngày khác (nạp bù).
 
-`conf` của dag run chỉ nhận `date` (khi chạy tay), khoá khác bị từ chối. Task đầu `validate_conf` kiểm `conf` và cấu hình đã duyệt trước khi tạo SparkApplication. Tên SparkApplication là
+`conf` của dag run chỉ nhận `date` (khi chạy bù một ngày: admin gọi `POST /mock-admin/silver-requests/<mã>/run` ở dak-mock, hoặc trigger thẳng ở Airflow), khoá khác bị từ chối. Task đầu `validate_conf` kiểm `conf` và cấu hình đã duyệt trước khi tạo SparkApplication. Tên SparkApplication là
 `silver-vtnet-<dataset, "_" thành "-">-<12 ký tự băm của dag_run_id>` (VTT: `silver-vtt-<dataset>-<băm>`; duy nhất theo dag run). Ví dụ chạy tay một ngày
 (bình thường lịch tự chạy):
 

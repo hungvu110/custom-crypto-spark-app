@@ -142,6 +142,7 @@ team**, vì một dataset chỉ có một lịch và một cấu hình ở Airfl
 | `GET /mock-admin/silver-requests`, `GET .../{code}` | Admin xem mọi phiếu |
 | `POST /mock-admin/silver-requests/{code}/approve` | Duyệt MỘT lần rồi ghi Variable và bật DAG (`SCHEDULED`). Lỗi thì `SUBMIT_FAILED` kèm thông điệp cố định |
 | `POST /mock-admin/silver-requests/{code}/stop` | Phiếu `SCHEDULED`: tắt DAG, xoá Variable → `STOPPED`. Lỗi gọi Airflow thì `503` và phiếu vẫn `SCHEDULED` |
+| `POST /mock-admin/silver-requests/{code}/run` | Chạy bù MỘT ngày cho phiếu `SCHEDULED`: body `{"date":"yyyyMMdd"}`; DAK trigger một dag run `conf.date` cho DAG của dataset, **lịch và phiếu không đổi**. Trả `{requestCode, dagId, dagRunId, date}`; mỗi lần gọi là một dag run mới (cùng ngày thì thay partition của ngày đó). `date` sai thì `400`, phiếu chưa `SCHEDULED` thì `409`, lỗi gọi Airflow thì `503`. User Airflow của mock cần quyền tạo dag run |
 | `POST /mock-admin/silver-requests/{code}/reject` | Body `{"reasonText":"..."}` |
 | `POST /mock-admin/silver-requests/{code}/retry-submit` | Gửi lại phiếu `SUBMIT_FAILED` |
 
