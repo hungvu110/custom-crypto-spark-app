@@ -16,14 +16,20 @@ What a run does is described in silver_ingest_common.py (RUN_DATE) and in the DA
 """
 
 import json
+import os
+import sys
 
 import pendulum
-import silver_ingest_common as common
 from airflow import DAG
 from airflow.exceptions import AirflowFailException
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
+
+# Airflow also parses this file on its own, and only puts the root of the dags folder on sys.path: when the file sits in a subfolder
+# (e.g. .../dags/dags/), the folder of the file itself has to be added or the import below fails.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import silver_ingest_common as common  # noqa: E402
 
 
 def dag_id_of(prefix, dataset):
