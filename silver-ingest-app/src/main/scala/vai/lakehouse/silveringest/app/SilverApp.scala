@@ -7,18 +7,18 @@ import org.apache.spark.sql.SparkSession
 import vai.lakehouse.columncrypto.cdr.CdrCrypto
 import vai.lakehouse.keyprefix.{ChainedConfigSource, ColumnKeySource, ColumnKeySourceFactory, ColumnKeysUnavailableException,
   EnvConfigSource, PathKeySource, PathKeySourceFactory, SparkConfSource}
-import vai.lakehouse.silveringest.config.{IngestConfig, Source}
-import vai.lakehouse.silveringest.job.{IngestResult, VtnetJob, VttJob}
+import vai.lakehouse.silveringest.config.{IngestConfig, Mode}
+import vai.lakehouse.silveringest.job.{IngestResult, DecryptEncryptJob, PassthroughJob}
 import vai.lakehouse.silveringest.logging.Log
 
-/** Nguồn key của VTNET: `by-path` và `by-column` của DAK. */
+/** Nguồn key của mode decrypt-encrypt: `by-path` và `by-column` của DAK. */
 final case class KeySources(pathKeys: PathKeySource, columnKeys: ColumnKeySource)
 
 /**
- * Phần chung của hai entry point [[VttSilverApp]] và [[VtnetSilverApp]]: cấu hình -> session -> job -> exit code.
+ * Phần chung của hai entry point [[PassthroughSilverApp]] và [[DecryptEncryptSilverApp]]: cấu hình -> session -> job -> exit code.
  *
- * Exit code: 0 = xong (VTNET: có hay không có key `by-path` đều là xong), 1 = lỗi khi chạy, 2 = sai cấu hình (chưa dựng Spark),
- * 5 = VTNET: DAK chưa có key cho một số cột cần mã hoá — chưa ghi gì, chạy lại sau khi DAK tạo key.
+ * Exit code: 0 = xong (decrypt-encrypt: có hay không có key `by-path` đều là xong), 1 = lỗi khi chạy, 2 = sai cấu hình (chưa dựng Spark),
+ * 5 = decrypt-encrypt: DAK chưa có key cho một số cột cần mã hoá — chưa ghi gì, chạy lại sau khi DAK tạo key.
  */
 object SilverApp {
 
@@ -34,12 +34,12 @@ object SilverApp {
    * @param keys            nguồn key dựng sẵn (test); `None` = dựng từ biến môi trường `CRYPTO_PREFIX_SOURCE`/`DAK_*` và
    *                        `spark.cdrcrypto.*` (chỉ VTNET)
    */
-  def execute(source: Source, env: Map[String, String], existingSession: Option[SparkSession] = None,
+  def execute(mode: Mode, env: Map[String, String], existingSession: Option[SparkSession] = None,
               keys: Option[KeySources] = None): Int = {
     val start = System.nanoTime()
-    Log.banner(s"SILVER INGEST — ${source.name.toUpperCase}")
+    Log.banner(s"SILVER INGEST — ${mode.name.toUpperCase}")
     Log.section("1. CONFIG")
-    val exitCode = IngestConfig.fromEnv(source, env) match {
+    val exitCode = IngestConfig.fromEnv(mode, env) match {
       case Left(errors) =>
         errors.foreach(e => Log.fail(s"CONFIG $e"))
         ExitConfigError
@@ -61,7 +61,7 @@ object SilverApp {
   // Dựng nguồn key TRƯỚC khi có Spark: thiếu cấu hình DAK là lỗi cấu hình (exit 2), không phải lỗi khi chạy.
   private def keySources(cfg: IngestConfig, env: Map[String, String],
                          given: Option[KeySources]): Either[String, Option[KeySources]] =
-    if (cfg.vtnet.isEmpty) Right(None)
+    if (cfg.decryptEncrypt.isEmpty) Right(None)
     else given.map(k => Right(Some(k))).getOrElse {
       try {
         val envSource = new EnvConfigSource(env)
@@ -80,9 +80,9 @@ object SilverApp {
       Log.kv("spark version", spark.version)
       Log.kv("application id", spark.sparkContext.applicationId)
       try {
-        val result = (cfg.vtnet, keys) match {
-          case (Some(_), Some(k)) => VtnetJob.run(spark, cfg, k.pathKeys, k.columnKeys)
-          case _ => VttJob.run(spark, cfg)
+        val result = (cfg.decryptEncrypt, keys) match {
+          case (Some(_), Some(k)) => DecryptEncryptJob.run(spark, cfg, k.pathKeys, k.columnKeys)
+          case _ => PassthroughJob.run(spark, cfg)
         }
         result match {
           case IngestResult.Written(files, decrypted) =>
@@ -102,12 +102,12 @@ object SilverApp {
     }
 }
 
-/** Entry point của nguồn VTT. */
-object VttSilverApp {
-  def main(args: Array[String]): Unit = sys.exit(SilverApp.execute(Source.Vtt, sys.env))
+/** Entry point của mode passthrough: đọc file và ghi bảng nguyên trạng, không gọi DAK. */
+object PassthroughSilverApp {
+  def main(args: Array[String]): Unit = sys.exit(SilverApp.execute(Mode.Passthrough, sys.env))
 }
 
-/** Entry point của nguồn VTNET. */
-object VtnetSilverApp {
-  def main(args: Array[String]): Unit = sys.exit(SilverApp.execute(Source.Vtnet, sys.env))
+/** Entry point của mode decrypt-encrypt: giải mã file (khi DAK có key), mã hoá cột (nếu có), ghi bảng. */
+object DecryptEncryptSilverApp {
+  def main(args: Array[String]): Unit = sys.exit(SilverApp.execute(Mode.DecryptEncrypt, sys.env))
 }

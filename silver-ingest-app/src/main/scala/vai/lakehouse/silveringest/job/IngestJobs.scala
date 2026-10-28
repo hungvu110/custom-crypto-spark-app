@@ -18,8 +18,8 @@ object IngestResult {
   final case class Written(files: Int, decrypted: Boolean = false) extends IngestResult
 }
 
-/** VTT: file đã được VTT mã hoá từng cột. Đọc rồi ghi bảng, không giải mã, không mã hoá thêm. */
-object VttJob {
+/** Passthrough: files are read and written as they are (e.g. VTT files already encrypted by column). No DAK call, no decryption. */
+object PassthroughJob {
 
   def run(spark: SparkSession, cfg: IngestConfig): IngestResult = {
     Log.section("3. READ SOURCE")
@@ -37,7 +37,7 @@ object VttJob {
 }
 
 /**
- * VTNET (luồng đã chốt, docs/key-access/TRA-LOI-DAK-BY-PATH.md):
+ * Decrypt-encrypt (luồng đã chốt, docs/key-access/TRA-LOI-DAK-BY-PATH.md). Không có cột nào cần mã hoá thì bước 2 và việc mã hoá ở bước 4 bị bỏ qua:
  *
  *  1. Hỏi DAK key của `KEY_PATH` (`by-path`). Có key: file của đường dẫn bị mã hoá cả file, giải mã ở bước 3. Chưa có key (DAK trả rỗng):
  *     file không mã hoá, đọc nguyên trạng. Cả hai trường hợp đều chạy tiếp.
@@ -46,10 +46,10 @@ object VttJob {
  *  1. Đọc file: nguyên trạng, hoặc giải mã (text trong bộ nhớ; nhị phân ra thư mục tạm riêng của lần chạy, luôn xoá ở `finally`).
  *  1. Mã hoá cột bằng cdr-crypto, ghi bảng.
  */
-object VtnetJob {
+object DecryptEncryptJob {
 
   def run(spark: SparkSession, cfg: IngestConfig, pathKeys: PathKeySource, columnKeys: ColumnKeySource): IngestResult = {
-    val v = cfg.vtnet.getOrElse(throw new IllegalArgumentException("VTNET settings are missing"))
+    val v = cfg.decryptEncrypt.getOrElse(throw new IllegalArgumentException("decrypt-encrypt settings are missing"))
 
     Log.section("3. PATH KEY (DAK by-path)")
     Log.kv("path", v.keyPath)
@@ -63,22 +63,32 @@ object VtnetJob {
         None
     }
 
-    Log.section(s"4. COLUMN KEYS (DAK by-column, onMissing=${v.onMissing}, cdr-crypto)")
-    val intent = if (v.onMissing == "request") KeyIntent.Encrypt else KeyIntent.Decrypt
-    val cdr = CdrCrypto.loadConfig(cfg.target, v.keyField, v.encryptColumns, intent, columnKeys)
-    Log.ok(s"keys received for ${v.encryptColumns.mkString(", ")} (keyField=${v.keyField})")
+    // No column listed: the files are only decrypted, DAK by-column is never called and every column is written as it is.
+    val cdr = if (v.encryptColumns.isEmpty) {
+      Log.section("4. COLUMN KEYS")
+      Log.info("no column to encrypt: DAK by-column is not called, columns are written as they are")
+      None
+    } else {
+      Log.section(s"4. COLUMN KEYS (DAK by-column, onMissing=${v.onMissing}, cdr-crypto)")
+      val keyField = v.keyField.getOrElse(throw new IllegalArgumentException("CDR_KEY_FIELD is missing"))
+      val intent = if (v.onMissing == "request") KeyIntent.Encrypt else KeyIntent.Decrypt
+      val loaded = CdrCrypto.loadConfig(cfg.target, keyField, v.encryptColumns, intent, columnKeys)
+      Log.ok(s"keys received for ${v.encryptColumns.mkString(", ")} (keyField=$keyField)")
+      Some(loaded)
+    }
+    def encrypt(df: DataFrame): DataFrame = cdr.fold(df)(config => CdrCrypto.encryptColumns(df, config))
 
     Log.section("5. READ, ENCRYPT COLUMNS, WRITE")
     val files = SourceFiles.list(spark, cfg.input.path)
     Log.kv("files", files.size)
     fileKey match {
       case None =>
-        write(spark, cfg, CdrCrypto.encryptColumns(SourceReader.read(spark, cfg.input, Seq(cfg.input.path)), cdr))
+        write(spark, cfg, encrypt(SourceReader.read(spark, cfg.input, Seq(cfg.input.path))))
         IngestResult.Written(files.size)
       case Some((cipher, key)) =>
         val staging = v.stagingPath.map(base => s"${base.stripSuffix("/")}/${spark.sparkContext.applicationId}-${UUID.randomUUID()}")
         try {
-          write(spark, cfg, CdrCrypto.encryptColumns(decrypted(spark, cfg, files, cipher, key, staging), cdr))
+          write(spark, cfg, encrypt(decrypted(spark, cfg, files, cipher, key, staging)))
           IngestResult.Written(files.size, decrypted = true)
         } finally staging.foreach { dir =>
           if (EncryptedSource.delete(spark, dir)) Log.info(s"staging directory removed: $dir")

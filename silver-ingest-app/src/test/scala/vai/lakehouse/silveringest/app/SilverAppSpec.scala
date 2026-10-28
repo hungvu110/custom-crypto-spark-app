@@ -12,7 +12,7 @@ import org.scalatest.matchers.should.Matchers
 import vai.lakehouse.columncrypto.cdr.CdrCrypto
 import vai.lakehouse.keyprefix.{ColumnKeyIssue, ColumnKeySource, ColumnKeysUnavailableException, KeyIntent, PathKey,
   PathKeyResult, PathKeySource, PendingWait, WaitingColumnKeySource}
-import vai.lakehouse.silveringest.config.Source
+import vai.lakehouse.silveringest.config.Mode
 import vai.lakehouse.silveringest.crypto.AesGcmFileCipher
 
 class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
@@ -82,7 +82,7 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
   private def available(path: String) = PathKeyResult.Available(PathKey(path, pathKeyPrefix, Some(1L)))
 
   private def vtt(input: Path, table: String, extra: (String, String)*): Int =
-    SilverApp.execute(Source.Vtt, Map("INPUT_PATH" -> input.toString, "INPUT_FORMAT" -> "csv",
+    SilverApp.execute(Mode.Passthrough, Map("INPUT_PATH" -> input.toString, "INPUT_FORMAT" -> "csv",
       "INPUT_OPTION_header" -> "true", "OUTPUT_DB" -> "silver", "OUTPUT_TABLE" -> table, "ENABLE_HIVE_SUPPORT" -> "false") ++ extra,
       Some(spark))
 
@@ -94,7 +94,7 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
   private def vtnet(env: Map[String, String], pathKeys: PathKeySource = new StubPathKeys(available),
                     keys: ColumnKeySource = new StubColumnKeys()): Int =
-    SilverApp.execute(Source.Vtnet, env, Some(spark), Some(KeySources(pathKeys, keys)))
+    SilverApp.execute(Mode.DecryptEncrypt, env, Some(spark), Some(KeySources(pathKeys, keys)))
 
   private def decryptedRows(table: String): Seq[(String, String, String, Int)] = {
     val cfg = CdrCrypto.loadConfig(s"silver.$table", "start_time", Seq("msisdn", "imei"), KeyIntent.Decrypt,
@@ -133,7 +133,7 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
   }
 
   it should "trả exit 2 khi sai cấu hình và exit 1 khi INPUT_PATH không tồn tại hoặc rỗng" in {
-    SilverApp.execute(Source.Vtt, Map("INPUT_PATH" -> "relative"), Some(spark)) shouldBe SilverApp.ExitConfigError
+    SilverApp.execute(Mode.Passthrough, Map("INPUT_PATH" -> "relative"), Some(spark)) shouldBe SilverApp.ExitConfigError
     vtt(workDir.resolve("vtt/missing"), "vtt_missing") shouldBe SilverApp.ExitRuntimeError
     vtt(dir("vtt/empty"), "vtt_empty") shouldBe SilverApp.ExitRuntimeError
     spark.catalog.tableExists("silver", "vtt_missing") shouldBe false
@@ -274,6 +274,35 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     decryptedRows("vtnet_plain") shouldBe expected
   }
 
+  private def storedRows(table: String): Seq[(String, String, String, Int)] =
+    spark.table(s"silver.$table").select("msisdn", "imei", "start_time", "amount").orderBy("msisdn").collect()
+      .map(r => (r.getString(0), r.getString(1), r.getString(2), r.getInt(3))).toSeq
+
+  it should "không có cột mã hoá: chỉ giải mã file, ghi nguyên giá trị và không gọi by-column" in {
+    val in = dir("vtnet/decrypt-only")
+    write(in.resolve("a.csv.enc"), encrypted(csv(csvRows)))
+    val pathKeys = new StubPathKeys(available)
+    val columns = new StubColumnKeys()
+
+    // The DAG renders an empty conf as empty env values.
+    vtnet(vtnetEnv(in, "vtnet_decrypt_only", "CDR_ENCRYPT_COLUMNS" -> "", "CDR_KEY_FIELD" -> ""), pathKeys, columns) shouldBe SilverApp.ExitOk
+
+    pathKeys.calls.get() shouldBe 1
+    columns.calls.get() shouldBe 0
+    storedRows("vtnet_decrypt_only") shouldBe expected
+  }
+
+  it should "không có cột mã hoá và DAK không có key: đọc file nguyên trạng, ghi nguyên giá trị" in {
+    val in = dir("vtnet/plain-no-columns")
+    write(in.resolve("a.csv"), csv(csvRows))
+    val columns = new StubColumnKeys()
+
+    vtnet(vtnetEnv(in, "vtnet_plain_no_columns") - "CDR_ENCRYPT_COLUMNS" - "CDR_KEY_FIELD", noKey, columns) shouldBe SilverApp.ExitOk
+
+    columns.calls.get() shouldBe 0
+    storedRows("vtnet_plain_no_columns") shouldBe expected
+  }
+
   it should "DAK không có key: đọc parquet nguyên trạng, không cần giải mã ra thư mục tạm" in {
     val session = spark
     import session.implicits._
@@ -348,7 +377,7 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
   }
 
   it should "trả exit 2 khi thiếu cấu hình DAK và không có nguồn key dựng sẵn" in {
-    SilverApp.execute(Source.Vtnet, vtnetEnv(dir("vtnet/no-dak"), "vtnet_no_dak"), Some(spark)) shouldBe
+    SilverApp.execute(Mode.DecryptEncrypt, vtnetEnv(dir("vtnet/no-dak"), "vtnet_no_dak"), Some(spark)) shouldBe
       SilverApp.ExitConfigError
   }
 }

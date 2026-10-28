@@ -7,15 +7,18 @@ import scala.util.Try
 
 import vai.lakehouse.keyprefix.PathKeySource
 
-/** Nguồn dữ liệu: mỗi nguồn một entry point, một DAG. */
-sealed abstract class Source(val name: String)
+/** Ingest mode: one entry point per mode, DAGs pick the mode that fits their dataset. */
+sealed abstract class Mode(val name: String)
 
-object Source {
-  /** File đã được VTT mã hoá từng cột: đọc rồi ghi bảng. */
-  case object Vtt extends Source("vtt")
+object Mode {
+  /** Files are read and written as they are (no DAK call): already column-encrypted by the provider, or nothing to encrypt. */
+  case object Passthrough extends Mode("passthrough")
 
-  /** File mã hoá cả file: key `by-path` -> giải mã -> mã hoá cột bằng cdr-crypto -> ghi bảng. */
-  case object Vtnet extends Source("vtnet")
+  /**
+   * DAK `by-path` key -> whole-file decryption (no key = file is not encrypted, read as it is) -> cdr-crypto column encryption
+   * (skipped when no column is listed) -> write the table.
+   */
+  case object DecryptEncrypt extends Mode("decrypt-encrypt")
 }
 
 /**
@@ -68,19 +71,19 @@ final case class InputSpec(path: String, format: InputFormat, schema: Option[Str
 final case class Batch(column: String, value: String)
 
 /**
- * Phần riêng của VTNET.
+ * Phần riêng của chế độ decrypt-encrypt.
  *
  * @param keyPath        đường dẫn gửi cho DAK `by-path` (một key cho cả file/thư mục): TƯƠNG ĐỐI theo gốc `KEY_PATH_ROOT` của nguồn, ở
- *                       dạng chuẩn `PathKeySource.canonical`
+ *                       dạng chuẩn `PathKeySource.canonical`; `KEY_PATH` đặt thẳng thì dùng nó (vd tên dataset: một key cho cả dataset)
  * @param cipher         tên thuật toán giải mã cả file ([[vai.lakehouse.silveringest.crypto.FileCipher]]), dùng khi `by-path` có key
- * @param encryptColumns cột mã hoá bằng cdr-crypto trước khi ghi
- * @param keyField       cột giữ plaintext, giá trị của từng dòng ghép sau key cột (`cdr_encrypt` tham số 4)
+ * @param encryptColumns cột mã hoá bằng cdr-crypto trước khi ghi; RỖNG = chỉ giải mã file, không mã hoá cột nào (không gọi `by-column`)
+ * @param keyField       cột giữ plaintext, giá trị của từng dòng ghép sau key cột (`cdr_encrypt` tham số 4); chỉ cần khi có cột mã hoá
  * @param stagingPath    thư mục tạm cho file giải mã định dạng nhị phân; xoá sau khi chạy
  * @param onMissing      `onMissing` gửi `by-column`: `request` (mặc định: lần đầu cột chưa có key thì DAK mở YC, admin duyệt và sinh key,
  *                       chạy lại là dùng được — như SA đã góp ý DAK) hoặc `none` (không mở YC)
  */
-final case class VtnetSettings(keyPath: String, cipher: String, encryptColumns: Seq[String], keyField: String,
-                               stagingPath: Option[String], onMissing: String = IngestConfig.DefaultOnMissing)
+final case class DecryptEncryptSettings(keyPath: String, cipher: String, encryptColumns: Seq[String], keyField: Option[String],
+                                        stagingPath: Option[String], onMissing: String = IngestConfig.DefaultOnMissing)
 
 /**
  * Cấu hình của job, đọc từ biến môi trường của driver (`spec.driver.env`). Chung cho hai nguồn: `INPUT_*`, `OUTPUT_*`,
@@ -88,7 +91,7 @@ final case class VtnetSettings(keyPath: String, cipher: String, encryptColumns: 
  * `DECRYPT_STAGING_PATH`. Nguồn key (`CRYPTO_PREFIX_SOURCE`, `DAK_*`) do key-prefix-lib đọc riêng.
  */
 final case class IngestConfig(
-    source: Source,
+    mode: Mode,
     appName: String,
     input: InputSpec,
     outputDb: String,
@@ -98,13 +101,13 @@ final case class IngestConfig(
     partitionBy: Seq[String],
     warehousePath: Option[String],
     enableHiveSupport: Boolean,
-    vtnet: Option[VtnetSettings],
+    decryptEncrypt: Option[DecryptEncryptSettings],
     batch: Option[Batch] = None) {
 
   def target: String = s"$outputDb.$outputTable"
 
   def describe: Seq[(String, String)] = Seq(
-    "SOURCE"              -> source.name,
+    "MODE"                -> mode.name,
     "APP_NAME"            -> appName,
     "INPUT_PATH"          -> input.path,
     "INPUT_FORMAT"        -> input.format.name,
@@ -114,11 +117,11 @@ final case class IngestConfig(
     "BATCH"               -> batch.fold("(none)")(b => s"${b.column} = ${b.value}"),
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
-    "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ vtnet.toSeq.flatMap { v => Seq(
+    "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
     "KEY_PATH"             -> v.keyPath,
     "FILE_CIPHER"          -> v.cipher,
-    "CDR_ENCRYPT_COLUMNS"  -> v.encryptColumns.mkString(", "),
-    "CDR_KEY_FIELD"        -> v.keyField,
+    "CDR_ENCRYPT_COLUMNS"  -> (if (v.encryptColumns.isEmpty) "(none)" else v.encryptColumns.mkString(", ")),
+    "CDR_KEY_FIELD"        -> v.keyField.getOrElse("(none)"),
     "CDR_ON_MISSING"       -> v.onMissing,
     "DECRYPT_STAGING_PATH" -> v.stagingPath.getOrElse("(in memory)"))
   }
@@ -147,12 +150,12 @@ object IngestConfig {
 
   private val Identifier = "^[A-Za-z0-9_]{1,128}$"
   private val ColumnName = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
-  private val VtnetOnly = Seq("KEY_PATH_ROOT", "KEY_PATH", "FILE_CIPHER", "CDR_ENCRYPT_COLUMNS", "CDR_KEY_FIELD", "CDR_ON_MISSING",
+  private val DecryptEncryptOnly = Seq("KEY_PATH_ROOT", "KEY_PATH", "FILE_CIPHER", "CDR_ENCRYPT_COLUMNS", "CDR_KEY_FIELD", "CDR_ON_MISSING",
     "DECRYPT_STAGING_PATH")
   private val OptionPrefix = "INPUT_OPTION_"
 
   /** Gom MỌI lỗi cấu hình rồi trả về một lượt, để sửa manifest/DAG một lần là đủ. */
-  def fromEnv(source: Source, env: Map[String, String]): Either[Seq[String], IngestConfig] = {
+  def fromEnv(mode: Mode, env: Map[String, String]): Either[Seq[String], IngestConfig] = {
     val errors = ArrayBuffer.empty[String]
 
     def raw(key: String): Option[String] = env.get(key).map(_.trim).filter(_.nonEmpty)
@@ -228,24 +231,24 @@ object IngestConfig {
       errors += "WAREHOUSE_PATH: must be an absolute URI with a scheme, e.g. hdfs://<namenode>:8020/<path>"
     }
 
-    val vtnet = source match {
-      case Source.Vtt =>
-        val set = VtnetOnly.filter(k => raw(k).isDefined)
-        if (set.nonEmpty) errors += s"${set.mkString("/")}: only valid for VTNET"
+    val decryptEncrypt = mode match {
+      case Mode.Passthrough =>
+        val set = DecryptEncryptOnly.filter(k => raw(k).isDefined)
+        if (set.nonEmpty) errors += s"${set.mkString("/")}: only valid for the decrypt-encrypt mode"
         None
-      case Source.Vtnet => Some(vtnetSettings(raw, input, partitionBy, columns, errors))
+      case Mode.DecryptEncrypt => Some(decryptEncryptSettings(raw, input, partitionBy, columns, errors))
     }
-    for (b <- batch; v <- vtnet if b.column.equalsIgnoreCase(v.keyField)) {
+    for (b <- batch; v <- decryptEncrypt; k <- v.keyField if b.column.equalsIgnoreCase(k)) {
       errors += s"BATCH_COLUMN: '${b.column}' must not be CDR_KEY_FIELD"
     }
 
     if (errors.nonEmpty) Left(errors.toList)
-    else Right(IngestConfig(source, raw("APP_NAME").getOrElse(s"SilverIngest-${source.name}"), input, outDb, outTable,
-      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), vtnet, batch))
+    else Right(IngestConfig(mode, raw("APP_NAME").getOrElse(s"SilverIngest-${mode.name}"), input, outDb, outTable,
+      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch))
   }
 
-  private def vtnetSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],
-                            columns: (String, String) => Seq[String], errors: ArrayBuffer[String]): VtnetSettings = {
+  private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],
+                                     columns: (String, String) => Seq[String], errors: ArrayBuffer[String]): DecryptEncryptSettings = {
     val cipher = raw("FILE_CIPHER").map(_.toLowerCase(Locale.ROOT)).getOrElse(DefaultCipher)
     if (!FileCiphers.contains(cipher)) errors += s"FILE_CIPHER='$cipher': must be one of ${FileCiphers.mkString(" / ")}"
     // Luôn hỏi by-path: chỉ biết file có mã hoá hay không khi chạy (DAK có key hay trả rỗng).
@@ -255,19 +258,21 @@ object IngestConfig {
       errors += s"CDR_ON_MISSING='$onMissing': must be one of ${OnMissingValues.mkString(" / ")}"
     }
 
-    val encrypt = raw("CDR_ENCRYPT_COLUMNS") match {
-      case Some(v) => columns("CDR_ENCRYPT_COLUMNS", v)
-      case None    => errors += "CDR_ENCRYPT_COLUMNS: is required (columns to encrypt with cdr-crypto, comma-separated)"; Nil
-    }
+    // No column listed is valid: the files are only decrypted and no column is encrypted (DAK by-column is not called).
+    val encrypt = raw("CDR_ENCRYPT_COLUMNS").fold(Seq.empty[String])(columns("CDR_ENCRYPT_COLUMNS", _))
     val lowerEncrypt = encrypt.map(_.toLowerCase(Locale.ROOT)).toSet
     val keyField = raw("CDR_KEY_FIELD") match {
-      case Some(k) if !k.matches(ColumnName) => errors += s"CDR_KEY_FIELD: invalid column name '$k'"; k
+      case Some(k) if !k.matches(ColumnName) => errors += s"CDR_KEY_FIELD: invalid column name '$k'"; Some(k)
       case Some(k) =>
         if (lowerEncrypt.contains(k.toLowerCase(Locale.ROOT))) {
           errors += s"CDR_KEY_FIELD: '$k' must not be listed in CDR_ENCRYPT_COLUMNS — it stays plaintext as key material"
         }
-        k
-      case None => errors += "CDR_KEY_FIELD: is required (plaintext column whose value completes the key of each row)"; ""
+        Some(k)
+      case None =>
+        if (encrypt.nonEmpty) {
+          errors += "CDR_KEY_FIELD: is required with CDR_ENCRYPT_COLUMNS (plaintext column whose value completes the key of each row)"
+        }
+        None
     }
     // Giá trị cột partition nằm trong tên thư mục, không mã hoá được.
     partitionBy.filter(c => lowerEncrypt.contains(c.toLowerCase(Locale.ROOT))).foreach { c =>
@@ -280,7 +285,7 @@ object IngestConfig {
       staging.foreach(_ => errors += "DECRYPT_STAGING_PATH: only used with INPUT_FORMAT=parquet/orc/avro; text formats are decrypted in memory")
       // Mỗi phần tử trong bộ nhớ là một dòng nên không đọc được bản ghi nhiều dòng.
       if (input.options.exists { case (k, v) => k.equalsIgnoreCase("multiLine") && v.trim.equalsIgnoreCase("true") }) {
-        errors += "INPUT_OPTION_multiLine: not supported for VTNET (decrypted text is read line by line)"
+        errors += "INPUT_OPTION_multiLine: not supported in decrypt-encrypt mode (decrypted text is read line by line)"
       }
     } else staging match {
       case None => errors += s"DECRYPT_STAGING_PATH: is required with INPUT_FORMAT=${input.format.name} (files decrypted with a by-path key are written there, then deleted)"
@@ -288,7 +293,7 @@ object IngestConfig {
       case Some(s) if inside(s, input.path) => errors += "DECRYPT_STAGING_PATH: must not be inside INPUT_PATH"
       case Some(_) =>
     }
-    VtnetSettings(keyPath, cipher, encrypt, keyField, staging, onMissing)
+    DecryptEncryptSettings(keyPath, cipher, encrypt, keyField, staging, onMissing)
   }
 
   /**
