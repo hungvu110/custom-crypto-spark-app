@@ -33,6 +33,10 @@ class SilverDatasetDagDriftTest {
     return Files.readString(DAGS.resolve(file), StandardCharsets.UTF_8);
   }
 
+  private static String withoutWhitespace(String text) {
+    return text.replaceAll("\\s+", "");
+  }
+
   private static String dagFile(SilverSource source) {
     return "silver_ingest_" + source.name().toLowerCase(Locale.ROOT) + ".py";
   }
@@ -81,7 +85,9 @@ class SilverDatasetDagDriftTest {
     assertThat(factory).contains("return f\"silver_ingest_{prefix}_{dataset.replace('-', '_')}\"");
     assertThat(factory).contains("Variable.get(dag_id"); // the Variable has the name of the DAG
     for (SilverSource source : SilverSource.values()) {
-      assertThat(read(dagFile(source))).contains("factory.register(globals(), \"" + source.name().toLowerCase(Locale.ROOT) + "\", DATASETS");
+      // A formatter (black) may wrap the call over several lines: compare without whitespace.
+      assertThat(withoutWhitespace(read(dagFile(source))))
+          .contains("factory.register(globals(),\"" + source.name().toLowerCase(Locale.ROOT) + "\",DATASETS");
     }
     for (SilverDataset dataset : SilverDataset.values()) {
       assertThat(dataset.dagId()).isEqualTo(
