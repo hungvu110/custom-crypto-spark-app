@@ -1,13 +1,11 @@
 package vai.lakehouse.dakmock.silver;
 
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -16,37 +14,40 @@ import vai.lakehouse.dakmock.web.DakApiException;
 import vai.lakehouse.dakmock.web.DakApiException.Problem;
 
 /**
- * Kiểm thân JSON của phiếu chuẩn hoá silver, gom MỌI lỗi một lượt ({@code 400 invalid_request} kèm {@code problems[]}, thông điệp cố
- * định, không lặp lại giá trị người dùng nhập). Trường lạ bị từ chối. Quy tắc khớp DAG (airflow/dags/silver_ingest_common.py):
+ * Validates the JSON body of a silver ingest request and collects EVERY problem in one pass ({@code 400 invalid_request} with
+ * {@code problems[]}, fixed messages that never repeat the value typed by the user). Unknown fields are rejected. Every request is RECURRING
+ * for one dataset (approved once, the DAG of the dataset runs every day); the rules match the DAGs (airflow/dags/silver_ingest_common.py):
  * <ul>
- *   <li>{@code source}: {@code VTT} hoặc {@code VTNET}.</li>
- *   <li>{@code path}: tương đối theo gốc landing của nguồn, dạng chuẩn — không {@code /} đầu/cuối, không {@code //}, không {@code ..},
- *       chỉ {@code [A-Za-z0-9_.=+-]} và {@code /}, tối đa 1024 ký tự. Giữ nguyên hoa thường.</li>
- *   <li>{@code batchId}: {@code yyyyMMddHH} (theo giờ) hoặc {@code yyyyMMddHHmm} (theo batch 20 phút), ngày giờ có thật. Hai lô khác nhau
- *       của cùng một bảng phải có {@code batchId} khác nhau, không thì lô sau ghi đè lô trước.</li>
- *   <li>{@code table}: bảng đích do người gửi chọn, {@code [a-z0-9_]{1,128}}, bắt đầu bằng tiền tố của nguồn ({@code vtt_}, {@code vtnet_}).</li>
- *   <li> {@code outputMode} (tuỳ chọn): {@code overwrite-partitions} hoặc
- *       {@code append}.</li>
- *   <li>VTNET: {@code encryptColumns} (1 đến 100 tên cột, không trùng, không phân biệt hoa thường) và {@code keyField} (không nằm
- *       trong {@code encryptColumns}) bắt buộc. VTT: không được có hai trường này.</li>
- *   <li>{@code purpose}: bắt buộc, tối đa 500 ký tự.</li>
+ *   <li>{@code source}: {@code VTT} or {@code VTNET}.</li>
+ *   <li>{@code path}: exactly the name of a {@link SilverDataset} of the source, never a day or a batch. Canonical form: no leading or
+ *       trailing {@code /}, no {@code //}, no {@code ..}, only {@code [A-Za-z0-9_.=+-]} and {@code /}, at most 1024 characters.</li>
+ *   <li>{@code batchId}: not allowed, each daily run writes the batch of its own day (yyyyMMdd).</li>
+ *   <li>{@code scheduleTime}: required, the daily run time {@code HH:mm} in Asia/Ho_Chi_Minh, from 00:00 to 23:59. Each run ingests the day
+ *       before.</li>
+ *   <li>{@code table}: target table chosen by the requester, {@code [a-z0-9_]{1,128}}, starting with the prefix of the source
+ *       ({@code vtt_}, {@code vtnet_}).</li>
+ *   <li>{@code outputMode} (optional): {@code overwrite-partitions} or {@code append}.</li>
+ *   <li>{@code encryptColumns} (0 to 100 distinct column names, case-insensitive; empty or missing means the files are only decrypted) and
+ *       {@code keyField} (required when there are columns to encrypt, not one of them): only for a dataset in decrypt-encrypt mode.
+ *       Other requests must not carry them.</li>
+ *   <li>{@code purpose}: required, at most 500 characters.</li>
  * </ul>
  */
 public final class SilverRequestParser {
 
-  /** Phiếu đã kiểm. */
-  public record Parsed(SilverSource source, String path, String batchId, String table, String outputMode, List<String> encryptColumns,
-                       String keyField, String purpose) {}
+  /** A validated request; {@code dagId} is the DAG of its dataset. */
+  public record Parsed(SilverSource source, String path, String scheduleTime, String table, String outputMode, List<String> encryptColumns,
+                       String keyField, String purpose, String dagId) {}
 
   public static final String CODE = "invalid_field";
   static final Set<String> OUTPUT_MODES = Set.of("overwrite-partitions", "append");
 
-  private static final Set<String> FIELDS = Set.of("source", "path", "batchId", "table", "outputMode", "encryptColumns", "keyField",
-      "purpose");
+  private static final Set<String> FIELDS = Set.of("source", "path", "batchId", "scheduleTime", "table", "outputMode", "encryptColumns",
+      "keyField", "purpose");
+  private static final Pattern TIME = Pattern.compile("([01]\\d|2[0-3]):[0-5]\\d");
   private static final Pattern PATH = Pattern.compile("[A-Za-z0-9_.=+-]+(/[A-Za-z0-9_.=+-]+)*");
   private static final Pattern COLUMN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
   private static final Pattern TABLE = Pattern.compile("[a-z0-9_]{1,128}");
-    private static final DateTimeFormatter MINUTE = DateTimeFormatter.ofPattern("uuuuMMddHHmm").withResolverStyle(ResolverStyle.STRICT);
   private static final int MAX_PATH = 1024;
   private static final int MAX_COLUMNS = 100;
   private static final int MAX_PURPOSE = 500;
@@ -69,13 +70,25 @@ public final class SilverRequestParser {
       problems.add(new Problem("source", CODE, "source must be VTT or VTNET"));
     }
     String path = text(body, "path").orElse(null);
-    if (path == null || path.length() > MAX_PATH || !PATH.matcher(path).matches() || path.contains("..")) {
+    boolean pathOk = path != null && path.length() <= MAX_PATH && PATH.matcher(path).matches() && !path.contains("..");
+    if (!pathOk) {
       problems.add(new Problem("path", CODE, "path must be relative to the landing root of the source: no leading or trailing "
           + "'/', no '//', no '..', only [A-Za-z0-9_.=+-] and '/', at most " + MAX_PATH + " characters"));
     }
-    String batchId = text(body, "batchId").orElse(null);
-    if (batchId == null || !isDate(batchId)) {
-      problems.add(new Problem("batchId", CODE, "batchId must be a real date and hour yyyyMMddHH, or with minutes yyyyMMddHHmm"));
+    SilverDataset dataset = null;
+    if (pathOk && source != null) {
+      dataset = SilverDataset.of(source, path).orElse(null);
+      if (dataset == null) {
+        problems.add(new Problem("path", CODE,
+            "path must be exactly the name of a known " + source.name() + " dataset (" + SilverDataset.ids(source) + ")"));
+      }
+    }
+    if (body.has("batchId")) {
+      problems.add(new Problem("batchId", CODE, "batchId is not allowed: every scheduled run writes the batch of its own day"));
+    }
+    String scheduleTime = text(body, "scheduleTime").orElse(null);
+    if (source != null && (scheduleTime == null || !TIME.matcher(scheduleTime).matches())) {
+      problems.add(new Problem("scheduleTime", CODE, "scheduleTime must be the daily run time HH:mm, from 00:00 to 23:59"));
     }
     String table = text(body, "table").orElse(null);
     if (table == null || !TABLE.matcher(table).matches() || (source != null && !table.startsWith(source.tablePrefix()))) {
@@ -87,18 +100,13 @@ public final class SilverRequestParser {
     }
     List<String> columns = List.of();
     String keyField = null;
-    if (source != null && source.encryptsColumns()) {
+    if (dataset != null && dataset.encryptsColumns()) {
       columns = columns(body, problems);
-      keyField = text(body, "keyField").orElse(null);
-      if (keyField == null || !COLUMN.matcher(keyField).matches()) {
-        problems.add(new Problem("keyField", CODE, "keyField must be a column name [A-Za-z_][A-Za-z0-9_]*"));
-      } else if (columns.stream().anyMatch(c -> c.equalsIgnoreCase(body.path("keyField").asText()))) {
-        problems.add(new Problem("keyField", CODE, "keyField must not be listed in encryptColumns"));
-      }
-    } else if (source != null) {
+      keyField = keyField(body, columns, problems);
+    } else if (dataset != null) {
       for (String field : List.of("encryptColumns", "keyField")) {
         if (body.has(field)) {
-          problems.add(new Problem(field, CODE, field + " is only allowed for VTNET"));
+          problems.add(new Problem(field, CODE, field + " is only allowed for a dataset in decrypt-encrypt mode"));
         }
       }
     }
@@ -109,13 +117,18 @@ public final class SilverRequestParser {
     if (!problems.isEmpty()) {
       throw DakApiException.invalidRequest("the request has " + problems.size() + " problem(s)", problems);
     }
-    return new Parsed(source, path, batchId, table, outputMode, columns, keyField, purpose);
+    String dagId = dataset.dagId();
+    return new Parsed(source, path, scheduleTime, table, outputMode, columns, keyField, purpose, dagId);
   }
 
+  /** Optional list: missing, null or empty means that no column is encrypted. */
   private static List<String> columns(JsonNode body, List<Problem> problems) {
     JsonNode node = body.path("encryptColumns");
+    if (node.isMissingNode() || node.isNull()) {
+      return List.of();
+    }
     List<String> columns = new ArrayList<>();
-    boolean ok = node.isArray() && node.size() >= 1 && node.size() <= MAX_COLUMNS;
+    boolean ok = node.isArray() && node.size() <= MAX_COLUMNS;
     if (ok) {
       Set<String> seen = new HashSet<>();
       for (JsonNode c : node) {
@@ -130,26 +143,34 @@ public final class SilverRequestParser {
     }
     if (!ok) {
       problems.add(new Problem("encryptColumns", CODE,
-          "encryptColumns must be a list of 1 to " + MAX_COLUMNS + " column names [A-Za-z_][A-Za-z0-9_]*"));
+          "encryptColumns must be a list of up to " + MAX_COLUMNS + " column names [A-Za-z_][A-Za-z0-9_]*"));
     }
     return columns;
   }
 
-  private static java.util.Optional<String> text(JsonNode body, String field) {
-    JsonNode node = body.path(field);
-    return node.isTextual() ? java.util.Optional.of(node.asText()) : java.util.Optional.empty();
+  /** Required when there are columns to encrypt; an empty or missing keyField is the same as none. */
+  private static String keyField(JsonNode body, List<String> columns, List<Problem> problems) {
+    JsonNode node = body.path("keyField");
+    boolean absent = node.isMissingNode() || node.isNull() || (node.isTextual() && node.asText().isEmpty());
+    if (absent) {
+      if (!columns.isEmpty()) {
+        problems.add(new Problem("keyField", CODE, "keyField is required when encryptColumns is not empty"));
+      }
+      return null;
+    }
+    if (!node.isTextual() || !COLUMN.matcher(node.asText()).matches()) {
+      problems.add(new Problem("keyField", CODE, "keyField must be a column name [A-Za-z_][A-Za-z0-9_]*"));
+      return null;
+    }
+    if (columns.stream().anyMatch(c -> c.equalsIgnoreCase(node.asText()))) {
+      problems.add(new Problem("keyField", CODE, "keyField must not be listed in encryptColumns"));
+    }
+    return node.asText();
   }
 
-  private static boolean isDate(String value) {
-    if (value.length() != 10 && value.length() != 12) {
-      return false;
-    }
-    try {
-      java.time.LocalDateTime.parse(value.length() == 10 ? value + "00" : value, MINUTE);
-      return true;
-    } catch (DateTimeParseException e) {
-      return false;
-    }
+  private static Optional<String> text(JsonNode body, String field) {
+    JsonNode node = body.path(field);
+    return node.isTextual() ? Optional.of(node.asText()) : Optional.empty();
   }
 
   /** Tên trường do người dùng đặt: chỉ giữ [A-Za-z0-9_], tối đa 64 ký tự. */

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import java.util.List;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,24 +17,38 @@ class SilverRequestParserTest {
 
   private static final ObjectMapper JSON = new ObjectMapper();
 
+  /** VTT: recurring request for the whole dataset (a table of the VTT landing root), passthrough mode. */
   private static ObjectNode vtt() {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTT");
-    n.put("path", "f001-mpre-call/date=20261024/hour=12");
-    n.put("batchId", "2026102412");
+    n.put("path", "f001-mpre-call");
+    n.put("scheduleTime", "01:30");
     n.put("table", "vtt_f001_mpre_call");
-    n.put("purpose", "nạp lô ngày 27");
+    n.put("purpose", "nạp hằng ngày");
     return n;
   }
 
-  private static ObjectNode vtnet() {
-    ObjectNode n = vtt();
+  /** NIMS: recurring request for the whole dataset, decrypt-encrypt mode, the requester chooses the columns to encrypt. */
+  private static ObjectNode nims() {
+    ObjectNode n = JSON.createObjectNode();
     n.put("source", "vtnet");
-    n.put("path", "ebs_3g_4g/dt=20261012/batch=1520");
-    n.put("batchId", "202610121520");
-    n.put("table", "vtnet_ebs_3g_4g");
+    n.put("path", "nims");
+    n.put("scheduleTime", "03:00");
+    n.put("table", "vtnet_nims_infra_cell_4g");
     n.putArray("encryptColumns").add("msisdn").add("imei");
     n.put("keyField", "start_time");
+    n.put("purpose", "nạp hằng ngày");
+    return n;
+  }
+
+  /** EBS 3G/4G: recurring request, passthrough mode, no columns to encrypt. */
+  private static ObjectNode ebs() {
+    ObjectNode n = JSON.createObjectNode();
+    n.put("source", "VTNET");
+    n.put("path", "ebs_3g_4g");
+    n.put("scheduleTime", "02:30");
+    n.put("table", "vtnet_ebs_3g_4g");
+    n.put("purpose", "nạp hằng ngày");
     return n;
   }
 
@@ -45,26 +60,65 @@ class SilverRequestParserTest {
   }
 
   @Test
-  @DisplayName("phiếu VTT hợp lệ: không có cột mã hoá; outputMode tuỳ chọn")
+  @DisplayName("phiếu VTT hợp lệ: path là dataset, có giờ chạy, không có batchId và cột mã hoá; outputMode tuỳ chọn; chạy DAG của dataset")
   void validVtt() {
     SilverRequestParser.Parsed p = SilverRequestParser.parse(vtt().put("outputMode", "append"));
 
     assertThat(p.source()).isEqualTo(SilverSource.VTT);
-    assertThat(p.path()).isEqualTo("f001-mpre-call/date=20261024/hour=12");
+    assertThat(p.path()).isEqualTo("f001-mpre-call");
+    assertThat(p.scheduleTime()).isEqualTo("01:30");
     assertThat(p.outputMode()).isEqualTo("append");
     assertThat(p.encryptColumns()).isEmpty();
     assertThat(p.keyField()).isNull();
+    assertThat(p.dagId()).isEqualTo("silver_ingest_vtt_f001_mpre_call");
     assertThat(SilverRequestParser.parse(vtt()).outputMode()).isNull();
   }
 
   @Test
-  @DisplayName("phiếu VTNET hợp lệ: có cột mã hoá và keyField do người gửi chọn, source không phân biệt hoa thường")
-  void validVtnet() {
-    SilverRequestParser.Parsed p = SilverRequestParser.parse(vtnet());
+  @DisplayName("phiếu NIMS hợp lệ: path là dataset, có giờ chạy, cột mã hoá và keyField do người gửi chọn, source không phân biệt hoa thường")
+  void validNims() {
+    SilverRequestParser.Parsed p = SilverRequestParser.parse(nims());
 
     assertThat(p.source()).isEqualTo(SilverSource.VTNET);
+    assertThat(p.path()).isEqualTo("nims");
+    assertThat(p.scheduleTime()).isEqualTo("03:00");
     assertThat(p.encryptColumns()).containsExactly("msisdn", "imei");
     assertThat(p.keyField()).isEqualTo("start_time");
+    assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_nims");
+  }
+
+  @Test
+  @DisplayName("NIMS không chọn cột nào để mã hoá: encryptColumns thiếu, null hoặc rỗng đều hợp lệ, keyField không bắt buộc")
+  void nimsWithoutColumns() {
+    ObjectNode missing = nims();
+    missing.remove(List.of("encryptColumns", "keyField"));
+    ObjectNode empty = nims();
+    empty.putArray("encryptColumns");
+    empty.put("keyField", "");
+    ObjectNode nulls = nims();
+    nulls.putNull("encryptColumns");
+    nulls.putNull("keyField");
+
+    for (ObjectNode body : List.of(missing, empty, nulls)) {
+      SilverRequestParser.Parsed p = SilverRequestParser.parse(body);
+      assertThat(p.encryptColumns()).isEmpty();
+      assertThat(p.keyField()).isNull();
+      assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_nims");
+    }
+    ObjectNode keyFieldOnly = nims();
+    keyFieldOnly.putArray("encryptColumns");
+    assertThat(SilverRequestParser.parse(keyFieldOnly).keyField()).isEqualTo("start_time"); // unused, but valid
+  }
+
+  @Test
+  @DisplayName("dataset passthrough hợp lệ: không có cột mã hoá, chạy DAG của dataset")
+  void validEbs() {
+    SilverRequestParser.Parsed p = SilverRequestParser.parse(ebs());
+
+    assertThat(p.encryptColumns()).isEmpty();
+    assertThat(p.keyField()).isNull();
+    assertThat(p.scheduleTime()).isEqualTo("02:30");
+    assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_ebs_3g_4g");
   }
 
   @Test
@@ -73,17 +127,42 @@ class SilverRequestParserTest {
     for (String bad : List.of("", "/vtt/x", "vtt/x/", "vtt//x", "hdfs://nn/vtt/x", "a/../b", "a b", "x".repeat(1025))) {
       assertThat(fields(vtt().put("path", bad))).as(bad).containsExactly("path");
     }
-    assertThat(SilverRequestParser.parse(vtt().put("path", "VTT_cdr/File-1.csv")).path()).isEqualTo("VTT_cdr/File-1.csv");
   }
 
   @Test
-  @DisplayName("batchId: yyyyMMddHH hoặc yyyyMMddHHmm, ngày giờ phút có thật; ngày không có giờ bị từ chối")
-  void batchIdRules() {
-    for (String bad : List.of("", "20261027", "2026-10-27", "2026102425", "202610271260", "202610271", "2026102412345", "20261340AB")) {
-      assertThat(fields(vtt().put("batchId", bad))).as(bad).containsExactly("batchId");
+  @DisplayName("path phải đúng là tên một dataset của nguồn, không phải một ngày hay một lô, và không lẫn dataset của nguồn khác")
+  void pathIsTheDatasetOfTheSource() {
+    for (String bad : List.of("other", "f001_mpre_call", "F001-MPRE-CALL", "f001-mpre-call/date=20261024", "f001-mpre-call/date=20261024/hour=12",
+        "nims", "ebs_3g_4g")) {
+      assertThat(fields(vtt().put("path", bad))).as(bad).containsExactly("path");
     }
-    assertThat(SilverRequestParser.parse(vtt().put("batchId", "2026102400")).batchId()).isEqualTo("2026102400");
-    assertThat(SilverRequestParser.parse(vtnet().put("batchId", "202610121540")).batchId()).isEqualTo("202610121540");
+    for (String bad : List.of("other", "nims_x", "NIMS", "nims/dt=20261013", "nims/dt=20261013/batch=1", "ebs_3g_4g/dt=20261012/batch=1520",
+        "nims/", "f001-mpre-call")) {
+      assertThat(fields(nims().put("path", bad))).as(bad).containsExactly("path");
+    }
+  }
+
+  @Test
+  @DisplayName("không có batchId: mỗi lần chạy tự lấy mã ngày")
+  void batchIdIsNotAllowed() {
+    assertThat(fields(vtt().put("batchId", "2026102412"))).containsExactly("batchId");
+    assertThat(fields(nims().put("batchId", "20261013"))).containsExactly("batchId");
+    assertThat(fields(ebs().put("batchId", "202610121520"))).containsExactly("batchId");
+  }
+
+  @Test
+  @DisplayName("scheduleTime: bắt buộc với mọi phiếu, HH:mm từ 00:00 đến 23:59")
+  void scheduleTimeRules() {
+    for (ObjectNode request : List.of(vtt(), nims(), ebs())) {
+      for (String bad : List.of("", "3:00", "03:0", "24:00", "23:60", "0300", "03:00:00", "03.00", "ab:cd", "03:00 ", " 03:00")) {
+        assertThat(fields(request.deepCopy().put("scheduleTime", bad))).as(bad).containsExactly("scheduleTime");
+      }
+      assertThat(fields((ObjectNode) request.deepCopy().without("scheduleTime"))).containsExactly("scheduleTime");
+      assertThat(fields(request.deepCopy().put("scheduleTime", 300))).containsExactly("scheduleTime");
+      for (String good : List.of("00:00", "03:05", "12:30", "23:59")) {
+        assertThat(SilverRequestParser.parse(request.deepCopy().put("scheduleTime", good)).scheduleTime()).isEqualTo(good);
+      }
+    }
   }
 
   @Test
@@ -92,7 +171,7 @@ class SilverRequestParserTest {
     for (String bad : List.of("", "VTT_x", "vtt-x", "vtnet_x", "other", "vtt_" + "x".repeat(130), "vtt_x y")) {
       assertThat(fields(vtt().put("table", bad))).as(bad).containsExactly("table");
     }
-    assertThat(fields(vtnet().put("table", "vtt_x"))).containsExactly("table");
+    assertThat(fields(nims().put("table", "vtt_x"))).containsExactly("table");
     assertThat(fields((ObjectNode) vtt().without("table"))).containsExactly("table");
   }
 
@@ -114,25 +193,35 @@ class SilverRequestParserTest {
   }
 
   @Test
-  @DisplayName("VTNET bắt buộc encryptColumns và keyField hợp lệ; VTT không được có hai trường này")
+  @DisplayName("dataset decrypt-encrypt: keyField bắt buộc khi có cột mã hoá, các cột hợp lệ và không trùng, keyField không nằm trong cột")
   void columnRules() {
-    assertThat(fields((ObjectNode) vtnet().without("encryptColumns"))).containsExactly("encryptColumns");
-    assertThat(fields((ObjectNode) vtnet().without("keyField"))).containsExactly("keyField");
-    ObjectNode empty = vtnet();
-    empty.putArray("encryptColumns");
-    assertThat(fields(empty)).containsExactly("encryptColumns");
-    ObjectNode dup = vtnet();
+    assertThat(fields((ObjectNode) nims().without("keyField"))).containsExactly("keyField");
+    assertThat(fields(nims().put("keyField", ""))).containsExactly("keyField");
+    ObjectNode dup = nims();
     dup.putArray("encryptColumns").add("msisdn").add("MSISDN");
     assertThat(fields(dup)).containsExactly("encryptColumns");
-    ObjectNode bad = vtnet();
+    ObjectNode bad = nims();
     bad.putArray("encryptColumns").add("bad-col");
     assertThat(fields(bad)).containsExactly("encryptColumns");
-    assertThat(fields(vtnet().put("keyField", "IMEI"))).containsExactly("keyField");
-    assertThat(fields(vtnet().put("encryptColumns", "msisdn,imei"))).containsExactly("encryptColumns");
-    ObjectNode vttWithColumns = vtt();
-    vttWithColumns.putArray("encryptColumns").add("msisdn");
-    vttWithColumns.put("keyField", "start_time");
-    assertThat(fields(vttWithColumns)).containsExactlyInAnyOrder("encryptColumns", "keyField");
+    ObjectNode tooMany = nims();
+    ArrayNode many = tooMany.putArray("encryptColumns");
+    for (int i = 0; i < 101; i++) {
+      many.add("c" + i);
+    }
+    assertThat(fields(tooMany)).containsExactly("encryptColumns");
+    assertThat(fields(nims().put("keyField", "IMEI"))).containsExactly("keyField");
+    assertThat(fields(nims().put("keyField", "bad col"))).containsExactly("keyField");
+    assertThat(fields(nims().put("encryptColumns", "msisdn,imei"))).containsExactly("encryptColumns");
+  }
+
+  @Test
+  @DisplayName("dataset passthrough (VTT, ebs_3g_4g) không được có encryptColumns, keyField")
+  void columnsAreNotAllowedOutsideDecryptEncrypt() {
+    for (ObjectNode request : List.of(vtt(), ebs())) {
+      request.putArray("encryptColumns");
+      request.put("keyField", "start_time");
+      assertThat(fields(request)).containsExactlyInAnyOrder("encryptColumns", "keyField");
+    }
   }
 
   @Test

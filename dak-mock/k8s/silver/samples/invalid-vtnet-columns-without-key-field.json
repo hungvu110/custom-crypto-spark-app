@@ -1,7 +1,10 @@
 {
   "source": "VTNET",
-  "path": "ebs_3g_4g/dt=20261012/batch=1520",
-  "batchId": "202610121520",
-  "table": "vtnet_ebs_3g_4g",
-  "purpose": "Rejected: a VTNET request must say which columns to encrypt (encryptColumns) and the keyField"
+  "path": "nims",
+  "scheduleTime": "03:00",
+  "table": "vtnet_nims_infra_cell_4g",
+  "encryptColumns": [
+    "lng"
+  ],
+  "purpose": "Rejected: keyField is required when there are columns to encrypt"
 }

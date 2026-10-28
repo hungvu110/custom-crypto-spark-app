@@ -1,7 +1,7 @@
 {
   "source": "VTT",
-  "path": "f001-mpre-call/date=20261024/hour=12",
-  "batchId": "2026102412",
+  "path": "f001-mpre-call",
+  "scheduleTime": "01:30",
   "table": "vtt_f001_mpre_call",
-  "purpose": "Load the VTT hour 2026-10-24 12h of f001-mpre-call (columns already encrypted by VTT) into silver"
+  "purpose": "Approve once the daily load of the VTT table f001-mpre-call at 01:30 (columns already encrypted by VTT) into silver"
 }

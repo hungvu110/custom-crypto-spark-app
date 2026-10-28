@@ -1,12 +1,12 @@
 {
   "source": "VTNET",
-  "path": "ebs_3g_4g/dt=20261012/batch=1520",
-  "batchId": "202610121520",
-  "table": "vtnet_ebs_3g_4g",
+  "path": "nims",
+  "scheduleTime": "03:00",
+  "table": "vtnet_nims_infra_cell_4g_enc",
   "encryptColumns": [
-    "msisdn",
-    "imei"
+    "lng",
+    "lat"
   ],
-  "keyField": "start_time",
-  "purpose": "Load the VTNET batch 15:20 of 2026-10-12 into silver, encrypting msisdn and imei with cdr-crypto"
+  "keyField": "eci",
+  "purpose": "Approve once the daily load of the NIMS dataset at 03:00: decrypt the files with the key of the dataset, encrypt lng and lat with cdr-crypto"
 }

@@ -1,0 +1,6 @@
+{
+  "source": "VTNET",
+  "path": "nims",
+  "table": "vtnet_nims_infra_cell_4g",
+  "purpose": "Rejected: a VTNET request must say at what time of day it runs (scheduleTime, HH:mm)"
+}

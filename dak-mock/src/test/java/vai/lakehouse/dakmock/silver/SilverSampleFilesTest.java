@@ -42,36 +42,60 @@ class SilverSampleFilesTest {
   }
 
   @Test
-  @DisplayName("the VTT sample is valid and has no columns to encrypt")
+  @DisplayName("the VTT sample is valid: a recurring request for the dataset, no columns to encrypt")
   void vtt() throws IOException {
     SilverRequestParser.Parsed p = parse("valid-vtt-request.json");
 
     assertThat(p.source()).isEqualTo(SilverSource.VTT);
     assertThat(p.encryptColumns()).isEmpty();
-    assertThat(p.path()).isEqualTo("f001-mpre-call/date=20261024/hour=12");
-    assertThat(p.batchId()).isEqualTo("2026102412");
+    assertThat(p.path()).isEqualTo("f001-mpre-call");
+    assertThat(p.scheduleTime()).isEqualTo("01:30");
     assertThat(p.table()).isEqualTo("vtt_f001_mpre_call");
+    assertThat(p.dagId()).isEqualTo("silver_ingest_vtt_f001_mpre_call");
   }
 
   @Test
-  @DisplayName("the VTNET samples are valid and carry the columns chosen by the requester")
+  @DisplayName("the NIMS samples are valid: a recurring request for the dataset with the daily run time and the chosen columns")
   void vtnet() throws IOException {
     SilverRequestParser.Parsed p = parse("valid-vtnet-request.json");
     assertThat(p.source()).isEqualTo(SilverSource.VTNET);
-    assertThat(p.encryptColumns()).containsExactly("msisdn", "imei");
-    assertThat(p.keyField()).isEqualTo("start_time");
+    assertThat(p.path()).isEqualTo("nims");
+    assertThat(p.scheduleTime()).isEqualTo("03:00");
+    assertThat(p.encryptColumns()).containsExactly("lng", "lat");
+    assertThat(p.keyField()).isEqualTo("eci");
     assertThat(p.outputMode()).isNull();
-    assertThat(p.batchId()).isEqualTo("202610121520");
-    assertThat(p.table()).isEqualTo("vtnet_ebs_3g_4g");
+    assertThat(p.table()).isEqualTo("vtnet_nims_infra_cell_4g_enc");
+    assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_nims");
 
     assertThat(parse("valid-vtnet-append-request.json").outputMode()).isEqualTo("append");
+    assertThat(parse("valid-vtnet-append-request.json").scheduleTime()).isEqualTo("04:30");
+  }
+
+  @Test
+  @DisplayName("the NIMS sample without columns only decrypts the file; the passthrough sample goes to its own DAG")
+  void noColumnsAndPassthrough() throws IOException {
+    SilverRequestParser.Parsed decryptOnly = parse("valid-vtnet-no-columns-request.json");
+    assertThat(decryptOnly.encryptColumns()).isEmpty();
+    assertThat(decryptOnly.keyField()).isNull();
+    assertThat(decryptOnly.dagId()).isEqualTo("silver_ingest_vtnet_nims");
+
+    SilverRequestParser.Parsed passthrough = parse("valid-vtnet-passthrough-request.json");
+    assertThat(passthrough.encryptColumns()).isEmpty();
+    assertThat(passthrough.dagId()).isEqualTo("silver_ingest_vtnet_ebs_3g_4g");
+    assertThat(passthrough.scheduleTime()).isEqualTo("02:30");
   }
 
   @Test
   @DisplayName("the invalid samples report the expected fields")
   void invalid() {
     assertThat(rejectedFields("invalid-vtt-with-columns.json")).containsExactlyInAnyOrder("encryptColumns", "keyField");
-    assertThat(rejectedFields("invalid-vtnet-missing-columns.json")).containsExactlyInAnyOrder("encryptColumns", "keyField");
+    assertThat(rejectedFields("invalid-vtt-day-in-path.json")).containsExactly("path");
+    assertThat(rejectedFields("invalid-vtnet-columns-without-key-field.json")).containsExactly("keyField");
+    assertThat(rejectedFields("invalid-vtnet-passthrough-with-columns.json")).containsExactlyInAnyOrder("encryptColumns", "keyField");
+    assertThat(rejectedFields("invalid-vtnet-day-in-path.json")).containsExactly("path");
+    assertThat(rejectedFields("invalid-vtnet-with-batch-id.json")).containsExactly("batchId");
+    assertThat(rejectedFields("invalid-vtnet-missing-schedule-time.json")).containsExactly("scheduleTime");
+    assertThat(rejectedFields("invalid-vtnet-unknown-dataset.json")).containsExactly("path");
     assertThat(rejectedFields("invalid-many-errors.json"))
         .containsExactlyInAnyOrder("source", "path", "batchId", "table", "outputMode", "outputDatabase", "purpose");
     assertThat(rejectedFields("invalid-table-of-another-source.json")).containsExactly("table");

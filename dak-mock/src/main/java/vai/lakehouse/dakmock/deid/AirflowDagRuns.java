@@ -6,6 +6,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import vai.lakehouse.dakmock.config.DeidProperties.Airflow;
@@ -25,14 +27,92 @@ public class AirflowDagRuns {
 
   private static final Pattern DAG_ID = Pattern.compile("[A-Za-z0-9_][A-Za-z0-9_.-]{0,249}");
   private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9_][A-Za-z0-9_.-]{0,249}");
+  private static final Pattern VARIABLE_KEY = Pattern.compile("[A-Za-z0-9_][A-Za-z0-9_.-]{0,249}");
+  private static final ObjectMapper JSON = new ObjectMapper();
 
   private final AirflowTokens tokens;
   private final AirflowHttp http = new AirflowHttp();
   private final String runsBase;
+  private final String apiBase;
 
   public AirflowDagRuns(Airflow config, Clock clock) {
     this.tokens = new AirflowTokens(config, clock);
-    this.runsBase = config.baseUrl().replaceAll("/+$", "") + "/api/v1/dags/";
+    this.apiBase = config.baseUrl().replaceAll("/+$", "") + "/api/v1/";
+    this.runsBase = apiBase + "dags/";
+  }
+
+  /**
+   * Ghi (tạo hoặc cập nhật) Airflow Variable {@code key} với {@code value} dạng JSON; DAG factory đọc Variable này để dựng lịch. Cập nhật
+   * trước, chưa có ({@code 404}) thì tạo. Lỗi là {@link JobSubmitException} thông điệp cố định.
+   */
+  public void putVariable(String key, Map<String, Object> value) {
+    requireVariableKey(key);
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("key", key);
+    body.put("value", toJson(value));
+    int status = call(HttpMethod.PATCH, URI.create(apiBase + "variables/" + key), body).status();
+    if (status == 404) {
+      status = call(HttpMethod.POST, URI.create(apiBase + "variables"), body).status();
+    }
+    if (status < 200 || status >= 300) {
+      throw new JobSubmitException(failure(status));
+    }
+  }
+
+  /** Xoá Airflow Variable {@code key}; chưa có thì coi như đã xoá. */
+  public void deleteVariable(String key) {
+    requireVariableKey(key);
+    int status = call(HttpMethod.DELETE, URI.create(apiBase + "variables/" + key), null).status();
+    if (status != 404 && (status < 200 || status >= 300)) {
+      throw new JobSubmitException(failure(status));
+    }
+  }
+
+  /** Bật ({@code paused=false}) hoặc tắt DAG {@code dagId}; DAG chưa có trong Airflow là {@link #NOT_FOUND}. */
+  public void setPaused(String dagId, boolean paused) {
+    requireIds(dagId, "r");
+    int status = call(HttpMethod.PATCH, URI.create(runsBase + dagId), Map.of("is_paused", paused)).status();
+    if (status == 404) {
+      throw new JobSubmitException(NOT_FOUND);
+    }
+    if (status < 200 || status >= 300) {
+      throw new JobSubmitException(failure(status));
+    }
+  }
+
+  /** Trạng thái dag run gần nhất của {@code dagId} (xem {@link #state}); chưa có dag run nào hoặc chưa có DAG là UNKNOWN. */
+  public JobState latestRunState(String dagId) {
+    requireIds(dagId, "r");
+    AirflowHttp.Result result = call(HttpMethod.GET, URI.create(runsBase + dagId + "/dagRuns?order_by=-start_date&limit=1"), null);
+    int status = result.status();
+    if (status == 404) {
+      return JobState.UNKNOWN;
+    }
+    if (status < 200 || status >= 300 || result.body() == null || !result.body().path("dag_runs").isArray()) {
+      throw new JobSubmitException(failure(status));
+    }
+    if (result.body().path("dag_runs").isEmpty()) {
+      return JobState.UNKNOWN;
+    }
+    return switch (result.body().path("dag_runs").get(0).path("state").asText()) {
+      case "success" -> JobState.SUCCEEDED;
+      case "failed" -> JobState.FAILED;
+      default -> JobState.RUNNING;
+    };
+  }
+
+  private static String toJson(Map<String, Object> value) {
+    try {
+      return JSON.writeValueAsString(value);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("variable value is not serializable");
+    }
+  }
+
+  private static void requireVariableKey(String key) {
+    if (key == null || !VARIABLE_KEY.matcher(key).matches()) {
+      throw new IllegalArgumentException("invalid variable key");
+    }
   }
 
   /** Trigger dag run {@code runId} của {@code dagId} với {@code conf}; lỗi là {@link JobSubmitException} thông điệp cố định. */

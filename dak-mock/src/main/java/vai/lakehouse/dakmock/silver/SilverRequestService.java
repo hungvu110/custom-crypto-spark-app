@@ -1,6 +1,8 @@
 package vai.lakehouse.dakmock.silver;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.function.UnaryOperator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,16 +13,17 @@ import vai.lakehouse.dakmock.deid.JobSubmitException;
 import vai.lakehouse.dakmock.web.DakApiException;
 
 /**
- * Luồng phiếu chuẩn hoá silver: team gửi phiếu → admin duyệt (hoặc từ chối) → DAK trigger DAG của nguồn → trạng thái dag run được cập
- * nhật khi có người xem phiếu. Phiếu của team khác trả {@code 404} như phiếu không tồn tại. Trigger lỗi thì phiếu vào
- * {@code SUBMIT_FAILED} kèm thông điệp cố định, admin sửa nguyên nhân rồi {@code retry-submit}.
+ * Luồng phiếu chuẩn hoá silver: team gửi phiếu cho một dataset → admin duyệt MỘT lần (hoặc từ chối) → DAK đăng ký lịch hằng ngày với Airflow
+ * ({@code SCHEDULED}) cho tới khi admin {@code stop}; xem phiếu thì thấy dag run gần nhất ({@code lastRun}). Phiếu của team khác trả
+ * {@code 404} như phiếu không tồn tại. Đăng ký lịch lỗi thì phiếu vào {@code SUBMIT_FAILED} kèm thông điệp cố định, admin sửa nguyên nhân
+ * rồi {@code retry-submit}.
  */
 @Service
 public class SilverRequestService {
 
   private static final Logger AUDIT = LoggerFactory.getLogger("AUDIT");
   private static final String ADMIN = "admin";
-  private static final String INTERNAL_ERROR = "internal error while triggering the dag";
+  private static final String INTERNAL_ERROR = "internal error while scheduling the dag";
 
   private final SilverRequestRegistry registry;
   private final SilverDagTrigger trigger;
@@ -60,10 +63,10 @@ public class SilverRequestService {
     return refresh(registry.find(code).orElseThrow(() -> DakApiException.notFound("Unknown request " + code)));
   }
 
-  /** Duyệt rồi trigger DAG ngay. */
+  /** Duyệt MỘT lần rồi đăng ký lịch hằng ngày với Airflow ngay. */
   public SilverRequest approve(String code) {
     transition(code, SilverState.PENDING_APPROVAL, r -> r.decided(SilverState.APPROVED, ADMIN, null, registry.now()), ADMIN);
-    return submit(code);
+    return schedule(code);
   }
 
   public SilverRequest reject(String code, String reason) {
@@ -76,53 +79,59 @@ public class SilverRequestService {
   /** Gửi lại phiếu {@code SUBMIT_FAILED} sau khi đã sửa nguyên nhân. */
   public SilverRequest retrySubmit(String code) {
     transition(code, SilverState.SUBMIT_FAILED, r -> r.withState(SilverState.APPROVED, registry.now()), ADMIN);
-    return submit(code);
+    return schedule(code);
   }
 
-  private SilverRequest submit(String code) {
+  /** Admin gỡ lịch của phiếu đang {@code SCHEDULED}: DAG ngừng chạy. Gỡ lịch lỗi thì phiếu vẫn {@code SCHEDULED}. */
+  public SilverRequest stop(String code) {
+    SilverRequest current = adminGet(code);
+    if (current.state() != SilverState.SCHEDULED) {
+      throw DakApiException.invalidState(current.state().name());
+    }
+    try {
+      trigger.unschedule(current);
+    } catch (JobSubmitException e) {
+      throw DakApiException.upstream(e.getMessage());
+    }
+    return transition(code, SilverState.SCHEDULED, r -> r.stopped(ADMIN, registry.now()), ADMIN);
+  }
+
+  private SilverRequest schedule(String code) {
     SilverRequest approved = adminGet(code);
     SilverRequest next;
     try {
-      trigger.trigger(approved);
-      next = registry.update(code, r -> r.submitted(registry.now()));
+      trigger.schedule(approved);
+      next = registry.update(code, r -> r.scheduled(registry.now()));
     } catch (JobSubmitException e) {
       String error = e.getMessage();
       next = registry.update(code, r -> r.submitFailed(error, registry.now()));
     } catch (RuntimeException e) {
-      LoggerFactory.getLogger(getClass()).error("Unexpected failure while triggering {}: {}", code, e.getClass().getName());
+      LoggerFactory.getLogger(getClass()).error("Unexpected failure while scheduling {}: {}", code, e.getClass().getName());
       next = registry.update(code, r -> r.submitFailed(INTERNAL_ERROR, registry.now()));
     }
     audit(next, SilverState.APPROVED, ADMIN);
     return next;
   }
 
-  /** Cập nhật trạng thái dag run khi phiếu đang chạy; lỗi đọc trạng thái thì giữ nguyên phiếu. */
+  /** Phiếu đang {@code SCHEDULED}: cập nhật dag run gần nhất ({@code lastRun}); lỗi đọc thì giữ nguyên phiếu. */
   private SilverRequest refresh(SilverRequest r) {
-    if (r.state() != SilverState.JOB_SUBMITTED && r.state() != SilverState.RUNNING) {
+    if (r.state() != SilverState.SCHEDULED) {
       return r;
     }
-    JobState state;
+    JobState run;
     try {
-      state = trigger.state(r);
+      run = trigger.lastRun(r);
     } catch (JobSubmitException e) {
       return r;
     }
-    SilverState next = switch (state) {
-      case SUCCEEDED -> SilverState.SUCCEEDED;
-      case FAILED -> SilverState.FAILED;
-      case RUNNING -> SilverState.RUNNING;
-      case UNKNOWN -> r.state();
-    };
-    if (next == r.state()) {
+    String name = run == JobState.UNKNOWN ? null : run.name();
+    if (Objects.equals(name, r.lastRun())) {
       return r;
     }
-    SilverRequest updated = registry.update(r.code(), current -> current.withState(next, registry.now()));
-    audit(updated, r.state(), "system");
-    return updated;
+    return registry.update(r.code(), current -> current.withLastRun(name));
   }
 
-  private SilverRequest transition(String code, SilverState from, java.util.function.UnaryOperator<SilverRequest> change,
-                                   String actor) {
+  private SilverRequest transition(String code, SilverState from, UnaryOperator<SilverRequest> change, String actor) {
     SilverRequest next = registry.update(code, r -> {
       if (r.state() != from) {
         throw DakApiException.invalidState(r.state().name());
@@ -135,9 +144,9 @@ public class SilverRequestService {
 
   // Không ghi purpose (người dùng nhập) hay bất kỳ key nào.
   private static void audit(SilverRequest r, SilverState from, String actor) {
-    AUDIT.info("SILVER_TRANSITION requestCode={} from={} to={} actor={} team={} source={} path={} batchId={} table={} dagId={} "
+    AUDIT.info("SILVER_TRANSITION requestCode={} from={} to={} actor={} team={} source={} path={} scheduleTime={} table={} dagId={} "
             + "encryptColumns={} submitError={}",
-        r.code(), from == null ? "-" : from, r.state(), actor, r.team(), r.source(), r.path(), r.batchId(), r.table(), r.dagId(),
+        r.code(), from == null ? "-" : from, r.state(), actor, r.team(), r.source(), r.path(), r.scheduleTime(), r.table(), r.dagId(),
         r.encryptColumns().isEmpty() ? "-" : String.join(",", r.encryptColumns()),
         r.submitError() == null ? "-" : r.submitError());
   }

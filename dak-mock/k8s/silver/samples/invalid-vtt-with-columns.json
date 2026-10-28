@@ -1,11 +1,11 @@
 {
   "source": "VTT",
-  "path": "f001-mpre-call/date=20261024/hour=12",
-  "batchId": "2026102412",
+  "path": "f001-mpre-call",
+  "scheduleTime": "01:30",
   "table": "vtt_f001_mpre_call",
   "encryptColumns": [
     "msisdn"
   ],
   "keyField": "start_time",
-  "purpose": "Rejected: encryptColumns and keyField are only allowed for VTNET"
+  "purpose": "Rejected: encryptColumns and keyField are only allowed for a dataset in decrypt-encrypt mode"
 }

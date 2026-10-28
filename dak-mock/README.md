@@ -35,7 +35,7 @@ Tất cả chạy trong cluster: build image → push registry nội bộ → `k
 | `GET /api/v1/keys/by-column` (mục 2.1): key theo cột, YC, grant theo cột cho client team              | Đọc đúng `vault_version` đã lưu (mock đọc version mới nhất), rate limit, kiểm `aud` |
 | Endpoint quản trị `/mock-admin/**` đóng vai người có quyền bên DAK (mục 2.2)                          | Rate limit (`429`) của `by-path` và `by-column`                                      |
 | `GET /api/v1/keys/by-path` (mục 2.3): key giải mã toàn bộ file/thư mục theo đường dẫn, `204` khi chưa có key |                                                                                     |
-| Phiếu chuẩn hoá silver (mục 2.4): gửi → duyệt → trigger DAG VTT/VTNET → theo dõi dag run                |                                                                                     |
+| Phiếu chuẩn hoá silver (mục 2.4): gửi → duyệt → duyệt một lần, đặt lịch hằng ngày ở Airflow → theo dõi dag run gần nhất                |                                                                                     |
 | Mã lỗi, body lỗi, `X-Request-Id`, `Cache-Control: no-store` đúng spec                                 |                                                                                     |
 
 Đường `/{database}/{table}` vẫn không phân quyền: **mọi team có token hợp lệ đều lấy được mọi key bảng có trong Vault**. Chỉ
@@ -87,7 +87,7 @@ YC và danh sách khoá nằm trong bộ nhớ: **pod restart là mất** (YC m�
 
 Theo [API-LAY-KEY-DUONG-DAN-COT.md](../docs/key-access/API-LAY-KEY-DUONG-DAN-COT.md) mục 2, với hai điểm đã thống nhất với DAK
 ([TRA-LOI-DAK-BY-PATH.md](../docs/key-access/TRA-LOI-DAK-BY-PATH.md)): `path` tương đối theo gốc của nguồn, và **chưa có key thì trả rỗng `204`,
-không mở YC** (đường dẫn không có key nghĩa là file không mã hoá). DAK thật **chưa code** đường này. Dùng bởi job VTNET của
+không mở YC** (đường dẫn không có key nghĩa là file không mã hoá). DAK thật **chưa code** đường này. Dùng bởi job mode `decrypt-encrypt` của
 [silver-ingest-app](../silver-ingest-app/README.md).
 
 ```http
@@ -105,37 +105,43 @@ Authorization: Bearer <token của client nội bộ>
 | Key đang bị khoá | `403 key_disabled` (không im lặng `204`, tránh đọc dữ liệu mã hoá như nguyên trạng) |
 
 Key theo đường dẫn do **luồng mã hoá file** tạo; ở mock là `POST /mock-admin/path-keys` (mục 2.2). DAK so khớp **nguyên chuỗi**, mock cũng
-vậy (không chuẩn hoá, kể cả hoa thường), nên `path` khi tạo key phải đúng chuỗi job gửi, vd `ebs_3g_4g/dt=20261012/batch=1520`. Một đường dẫn một key, kể
-cả khi đó là thư mục. Key lưu ở `kv/data/hla-datalake/datalake/path-keys/{pathHash}` (`pathHash` = SHA-256 hex của đường dẫn, đổi bằng
+vậy (không chuẩn hoá, kể cả hoa thường), nên `path` khi tạo key phải đúng chuỗi job gửi. DAG silver của dataset gửi **tên dataset** (vd `nims`): một key cho cả
+dataset, mọi lô dùng chung. Một đường dẫn một key, kể cả khi đó là thư mục. Key lưu ở `kv/data/hla-datalake/datalake/path-keys/{pathHash}` (`pathHash` = SHA-256 hex của đường dẫn, đổi bằng
 `dak.vault.path-key-template`), chỉ được tạo bằng `cas=0`. Token Vault của mock cần quyền `read` và `create` trên path này.
 
 ### 2.4. Phiếu chuẩn hoá silver `/mock-portal/silver-requests`
 
-Team gửi phiếu chuẩn hoá một lô file → admin duyệt → mock trigger DAG của nguồn (`silver_ingest_vtt` hoặc `silver_ingest_vtnet`, thư mục
-[airflow/dags/](../airflow/dags/)) → trạng thái dag run được cập nhật khi xem phiếu. Dùng chung tài khoản portal giả, token quản trị và cấu
-hình Airflow (`dak.deid.submitter`, `dak.deid.airflow`) với phiếu khử định danh; `submitter=noop` thì chỉ log và coi dag run đã xong.
+Mọi phiếu (VTT lẫn VTNET) là **phiếu định kỳ cho cả một dataset**: `path` là **tên dataset** (`f001-mpre-call` của VTT; `ebs_3g_4g`, `nims` của VTNET), phiếu có
+`scheduleTime` (giờ chạy hằng ngày) và **không có `batchId`**. Admin duyệt **một lần**: mock ghi cấu hình đã duyệt vào **Airflow Variable** `silver_ingest_<nguồn>_<dataset>`
+và bật DAG (`is_paused=false`); DAG của dataset ([airflow/dags/](../airflow/dags/), do DAG factory `silver_ingest_factory.py` dựng) lấy lịch từ Variable đó và chạy mỗi ngày
+cho ngày hôm trước. Phiếu ở `SCHEDULED` cho tới khi admin `stop` (tắt DAG, xoá Variable). Xem phiếu thấy dag run gần nhất (`lastRun`).
+
+Dùng chung tài khoản portal giả, token quản trị và cấu hình Airflow (`dak.deid.submitter`, `dak.deid.airflow`) với phiếu khử định danh; `submitter=noop` thì chỉ log
+(và phiếu vẫn thành `SCHEDULED`). User Airflow của mock cần quyền Variables (đọc/tạo/sửa/xoá), sửa DAGs và đọc DAG runs.
 
 Thân JSON (`POST /mock-portal/silver-requests`, header `X-Mock-Portal-Token`):
 
-| Trường | VTT | VTNET | Quy tắc |
-| --- | --- | --- | --- |
-| `source` | `VTT` | `VTNET` | Quyết định DAG |
-| `path` | bắt buộc | bắt buộc | Tương đối theo gốc landing của nguồn, dạng chuẩn: không `/` đầu/cuối, không `//`, không `..`, chỉ `[A-Za-z0-9_.=+-]` và `/`. Với VTNET cũng là đường dẫn job gửi `by-path` |
-| `batchId` | bắt buộc | bắt buộc | Mã lô: `yyyyMMddHH` (theo giờ, vd `2026102412`) hoặc `yyyyMMddHHmm` (theo batch 20 phút của VTNET, vd `dt=20261012/batch=1520` → `202610121520`), ngày giờ có thật → giá trị cột partition `batch_id`. **Hai lô khác nhau của cùng một bảng phải có `batchId` khác nhau**, không thì lô sau ghi đè lô trước |
-| `table` | bắt buộc | bắt buộc | Bảng đích trong database silver, **người gửi chọn**: `[a-z0-9_]{1,128}`, bắt đầu bằng tiền tố của nguồn (`vtt_`, `vtnet_`) để không ghi vào bảng của nguồn khác |
-| `outputMode` | tuỳ chọn | tuỳ chọn | `overwrite-partitions` (mặc định của DAG) hoặc `append` |
-| `encryptColumns` | **không được có** | bắt buộc | Danh sách 1–100 tên cột, không trùng; job mã hoá bằng cdr-crypto |
-| `keyField` | **không được có** | bắt buộc | Cột giữ plaintext làm nguyên liệu key, không nằm trong `encryptColumns` |
-| `purpose` | bắt buộc | bắt buộc | Tối đa 500 ký tự |
+| Trường | Bắt buộc | Quy tắc |
+| --- | --- | --- |
+| `source` | có | `VTT` hoặc `VTNET` |
+| `path` | có | **Đúng tên một dataset của nguồn** (VTT: `f001-mpre-call`; VTNET: `ebs_3g_4g`, `nims`), không phải một ngày hay một lô. Dạng chuẩn: không `/` đầu/cuối, không `//`, không `..`, chỉ `[A-Za-z0-9_.=+-]` và `/` |
+| `batchId` | **không được có** | Mỗi lần chạy tự lấy mã ngày nạp (`yyyyMMdd`) làm partition `batch_id` |
+| `scheduleTime` | có | Giờ chạy hằng ngày `HH:mm` (`00:00`–`23:59`, giờ `Asia/Ho_Chi_Minh`); DAK đổi thành cron `<phút> <giờ> * * *`. Mỗi lần chạy nạp **ngày hôm trước** |
+| `table` | có | Bảng đích trong database silver, **người gửi chọn**: `[a-z0-9_]{1,128}`, bắt đầu bằng tiền tố của nguồn (`vtt_`, `vtnet_`) để không ghi vào bảng của nguồn khác |
+| `outputMode` | không | `overwrite-partitions` (mặc định của DAG) hoặc `append` |
+| `encryptColumns` | không | Chỉ dataset `decrypt-encrypt` (`nims`): danh sách 0–100 tên cột, không trùng; job mã hoá bằng cdr-crypto. **Rỗng hoặc không gửi = chỉ giải mã file**. Dataset `passthrough` (`f001-mpre-call`, `ebs_3g_4g`) không được có |
+| `keyField` | khi có cột mã hoá | Cột giữ plaintext làm nguyên liệu key, không nằm trong `encryptColumns`; không có cột thì bỏ trống |
+| `purpose` | có | Tối đa 500 ký tự |
 
-Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, trường lạ bị từ chối). Phiếu trùng `(team, source, path, batchId)` còn hoạt
-động thì `409 duplicate_request`. Mã phiếu `SLV-<năm>-<6 số>`, cũng là `dag_run_id` (chữ thường).
+Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, trường lạ bị từ chối). Chống trùng: **cả dataset chỉ có một phiếu chưa kết thúc (kể cả `SCHEDULED`), của mọi
+team**, vì một dataset chỉ có một lịch và một cấu hình ở Airflow: phiếu thứ hai thì `409 duplicate_request`. Mã phiếu `SLV-<năm>-<6 số>`.
 
 | Endpoint | Việc |
 | --- | --- |
 | `GET /mock-portal/silver-requests`, `GET .../{code}`, `POST .../{code}/cancel` | Người gửi xem phiếu của team, huỷ phiếu chưa duyệt |
 | `GET /mock-admin/silver-requests`, `GET .../{code}` | Admin xem mọi phiếu |
-| `POST /mock-admin/silver-requests/{code}/approve` | Duyệt rồi trigger DAG ngay: `JOB_SUBMITTED`, lỗi thì `SUBMIT_FAILED` kèm thông điệp cố định |
+| `POST /mock-admin/silver-requests/{code}/approve` | Duyệt MỘT lần rồi ghi Variable và bật DAG (`SCHEDULED`). Lỗi thì `SUBMIT_FAILED` kèm thông điệp cố định |
+| `POST /mock-admin/silver-requests/{code}/stop` | Phiếu `SCHEDULED`: tắt DAG, xoá Variable → `STOPPED`. Lỗi gọi Airflow thì `503` và phiếu vẫn `SCHEDULED` |
 | `POST /mock-admin/silver-requests/{code}/reject` | Body `{"reasonText":"..."}` |
 | `POST /mock-admin/silver-requests/{code}/retry-submit` | Gửi lại phiếu `SUBMIT_FAILED` |
 
@@ -143,31 +149,39 @@ Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, tr�
 
 | File | Nội dung |
 | --- | --- |
-| `valid-vtt-request.json` | Phiếu VTT: chỉ `source`, `path`, `batchId`, `table`, `purpose` |
-| `valid-vtnet-request.json` | Phiếu VTNET: thêm `encryptColumns`, `keyField` |
-| `valid-vtnet-append-request.json` | VTNET, một file lẻ của lô, `outputMode=append` |
-| `invalid-vtt-with-columns.json` | VTT có `encryptColumns`/`keyField` → `400` |
-| `invalid-vtnet-missing-columns.json` | VTNET thiếu `encryptColumns`/`keyField` → `400` |
+| `valid-vtt-request.json` | Dataset `f001-mpre-call` của VTT (passthrough), chạy 01:30 hằng ngày |
+| `valid-vtnet-request.json` | Dataset `nims` (decrypt-encrypt), chạy 03:00 hằng ngày: có `encryptColumns`, `keyField` |
+| `valid-vtnet-no-columns-request.json` | `nims` không mã hoá cột nào (`encryptColumns` rỗng): job chỉ giải mã file |
+| `valid-vtnet-passthrough-request.json` | Dataset `ebs_3g_4g` (passthrough), chạy 02:30: không có cột mã hoá |
+| `valid-vtnet-append-request.json` | `nims`, 04:30, `outputMode=append` |
+| `invalid-vtt-with-columns.json` | Dataset passthrough của VTT có `encryptColumns`/`keyField` → `400` |
+| `invalid-vtt-day-in-path.json` | VTT: `path` là một ngày/giờ thay vì dataset → `400` |
+| `invalid-vtnet-columns-without-key-field.json` | Có `encryptColumns` mà thiếu `keyField` → `400` |
+| `invalid-vtnet-passthrough-with-columns.json` | Dataset passthrough có `encryptColumns`/`keyField` → `400` |
+| `invalid-vtnet-day-in-path.json` | `path` là một ngày/lô thay vì dataset → `400` |
+| `invalid-vtnet-with-batch-id.json` | Có `batchId` → `400` |
+| `invalid-vtnet-missing-schedule-time.json` | Thiếu `scheduleTime` → `400` |
+| `invalid-vtnet-unknown-dataset.json` | `path` không phải dataset đã biết → `400` |
 | `invalid-table-of-another-source.json` | Phiếu VTT đặt bảng `vtnet_…` → `400` |
-| `invalid-many-errors.json` | Nhiều lỗi cùng lúc (nguồn lạ, `path` tuyệt đối, `batchId` thiếu giờ, bảng sai, `overwrite`, trường lạ, thiếu `purpose`) → `400` liệt kê đủ |
+| `invalid-many-errors.json` | Nhiều lỗi cùng lúc (nguồn lạ, `path` tuyệt đối, `batchId`, bảng sai, `overwrite`, trường lạ, thiếu `purpose`) → `400` liệt kê đủ |
 
 Gửi thử (đã `kubectl port-forward deploy/dak-mock 8085`; token portal và token admin đọc từ bàn phím):
 
 ```bash
 read -rs -p "Portal token: " PT; echo
 curl -s -X POST localhost:8085/mock-portal/silver-requests -H "X-Mock-Portal-Token: $PT" \
-  -H 'Content-Type: application/json' --data @dak-mock/k8s/silver/samples/valid-vtnet-request.json
+  -H 'Content-Type: application/json' --data @dak-mock/k8s/silver/samples/valid-vtnet-no-columns-request.json
 read -rs -p "Admin token: " AT; echo
-curl -s -X POST localhost:8085/mock-admin/silver-requests/SLV-2026-000001/approve -H "X-Mock-Admin-Token: $AT"
-curl -s localhost:8085/mock-portal/silver-requests/SLV-2026-000001 -H "X-Mock-Portal-Token: $PT"
+curl -s -X POST localhost:8085/mock-admin/silver-requests/SLV-2026-000001/approve -H "X-Mock-Admin-Token: $AT"   # SCHEDULED
+curl -s localhost:8085/mock-portal/silver-requests/SLV-2026-000001 -H "X-Mock-Portal-Token: $PT"               # state, lastRun
+curl -s -X POST localhost:8085/mock-admin/silver-requests/SLV-2026-000001/stop -H "X-Mock-Admin-Token: $AT"      # STOPPED
 unset PT AT
 ```
 
-Trạng thái: `PENDING_APPROVAL` → `JOB_SUBMITTED` → `RUNNING` → `SUCCEEDED`/`FAILED` (theo dag run); hoặc `REJECTED`, `CANCELLED`,
-`SUBMIT_FAILED`. Lần đầu ghi bảng VTNET mới, `by-column` (`onMissing=request`) mở YC cho cột chưa có key và trả `PENDING`; job **chờ** và
-gọi lại theo exponential backoff, phiếu vẫn `RUNNING` (dag run đang chạy). Admin duyệt YC cột (`GET /mock-admin/yc`, `POST
-/mock-admin/yc/<mã>/fulfill`) → lần gọi sau cột `READY` → job ghi bảng → phiếu `SUCCEEDED`. Hết thời gian chờ của job (hoặc YC bị từ
-chối) → job exit 5 → phiếu `FAILED`.
+Trạng thái phiếu: `PENDING_APPROVAL` → `SCHEDULED` → `STOPPED`, hoặc `REJECTED`, `CANCELLED`, `SUBMIT_FAILED`. Mỗi ngày DAG chạy một dag run và `lastRun` (`SUCCEEDED`, `FAILED`,
+`RUNNING`) cho biết lần gần nhất; một ngày lỗi **không** làm phiếu thành lỗi. Với dataset có cột mã hoá, lần chạy đầu của bảng mới: `by-column` (`onMissing=request`) mở YC cho
+cột chưa có key và trả `PENDING`; job **chờ** và gọi lại theo exponential backoff, dag run vẫn đang chạy. Admin duyệt YC cột (`GET /mock-admin/yc`, `POST
+/mock-admin/yc/<mã>/fulfill`) → lần gọi sau cột `READY` → job ghi bảng. Hết thời gian chờ của job (hoặc YC bị từ chối) → job exit 5 → dag run của ngày đó `failed`.
 
 ## 3. Cấu trúc code
 

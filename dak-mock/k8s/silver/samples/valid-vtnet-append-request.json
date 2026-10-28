@@ -1,12 +1,12 @@
 {
   "source": "VTNET",
-  "path": "ebs_3g_4g/dt=20261012/batch=1540",
-  "batchId": "202610121540",
-  "table": "vtnet_ebs_3g_4g",
+  "path": "nims",
+  "scheduleTime": "04:30",
+  "table": "vtnet_nims_infra_cell_4g_enc",
   "outputMode": "append",
   "encryptColumns": [
-    "msisdn"
+    "lng"
   ],
-  "keyField": "start_time",
-  "purpose": "Append batch 15:40; append writes duplicates if run twice"
+  "keyField": "eci",
+  "purpose": "Daily load at 04:30 with outputMode=append; append writes duplicates if a day is run twice"
 }

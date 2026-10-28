@@ -15,8 +15,9 @@ import org.springframework.stereotype.Component;
 import vai.lakehouse.dakmock.web.DakApiException;
 
 /**
- * Sổ phiếu chuẩn hoá silver trong bộ nhớ (mất khi pod restart, như phiếu khử định danh). Mã phiếu {@code SLV-<năm>-<6 số>}. Chống trùng:
- * một team không có hai phiếu CHƯA KẾT THÚC cho cùng {@code (source, path, batchId)}.
+ * Sổ phiếu chuẩn hoá silver trong bộ nhớ (mất khi pod restart, như phiếu khử định danh). Mã phiếu {@code SLV-<năm>-<6 số>}. Chống trùng: cả
+ * dataset chỉ có MỘT phiếu chưa kết thúc (kể cả {@code SCHEDULED}), của bất kỳ team nào, vì một dataset chỉ có một lịch và một cấu hình ở
+ * Airflow.
  */
 @Component
 public class SilverRequestRegistry {
@@ -41,8 +42,7 @@ public class SilverRequestRegistry {
   /** Thêm phiếu mới; trùng phiếu đang hoạt động thì {@code 409 duplicate_request}. */
   public synchronized SilverRequest create(String team, String user, SilverRequestParser.Parsed parsed) {
     byCode.values().stream()
-        .filter(r -> !r.state().terminal() && r.team().equals(team) && r.source() == parsed.source()
-            && r.path().equals(parsed.path()) && r.batchId().equals(parsed.batchId()))
+        .filter(r -> !r.state().terminal() && r.source() == parsed.source() && r.path().equals(parsed.path()))
         .findFirst()
         .ifPresent(r -> {
           throw DakApiException.duplicateBatch(r.code());

@@ -40,7 +40,7 @@ public class MockSilverAdminController {
     return service.adminGet(code);
   }
 
-  /** Duyệt rồi trigger DAG của nguồn ngay; trigger lỗi thì phiếu {@code SUBMIT_FAILED}. */
+  /** Duyệt MỘT lần rồi đăng ký lịch hằng ngày với Airflow ngay; lỗi thì phiếu {@code SUBMIT_FAILED}. */
   @PostMapping("/{code}/approve")
   public SilverRequest approve(@RequestHeader(value = MockAdminController.TOKEN_HEADER, required = false) String token,
                                @PathVariable("code") String code) {
@@ -53,6 +53,14 @@ public class MockSilverAdminController {
                               @PathVariable("code") String code, @RequestBody(required = false) RejectRequest body) {
     auth.authorize(token);
     return service.reject(code, body == null ? null : body.reasonText());
+  }
+
+  /** Gỡ lịch của phiếu đang {@code SCHEDULED}: DAG của dataset ngừng chạy, phiếu thành {@code STOPPED}. */
+  @PostMapping("/{code}/stop")
+  public SilverRequest stop(@RequestHeader(value = MockAdminController.TOKEN_HEADER, required = false) String token,
+                            @PathVariable("code") String code) {
+    auth.authorize(token);
+    return service.stop(code);
   }
 
   @PostMapping("/{code}/retry-submit")

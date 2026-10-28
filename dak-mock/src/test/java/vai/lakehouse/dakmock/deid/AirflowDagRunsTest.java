@@ -92,4 +92,90 @@ class AirflowDagRunsTest {
     assertThatThrownBy(() -> runs().trigger("../x", "r", Map.of())).isInstanceOf(IllegalArgumentException.class);
     assertThat(server.getRequestCount()).isZero();
   }
+
+  @Test
+  void writesAnAirflowVariableByUpdatingFirstAndCreatingWhenItDoesNotExist() throws Exception {
+    server.enqueue(json(200, "{}"));
+    runs().putVariable("silver_ingest_vtnet_nims", Map.of("ticket", "SLV-2026-000001", "cron", "0 3 * * *"));
+
+    RecordedRequest update = server.takeRequest();
+    assertThat(update.getMethod()).isEqualTo("PATCH");
+    assertThat(update.getPath()).isEqualTo("/airflow/api/v1/variables/silver_ingest_vtnet_nims");
+    JsonNode body = JSON.readTree(update.getBody().readUtf8());
+    assertThat(body.path("key").asText()).isEqualTo("silver_ingest_vtnet_nims");
+    assertThat(JSON.readTree(body.path("value").asText()).path("cron").asText()).isEqualTo("0 3 * * *"); // value is a JSON string
+
+    server.enqueue(json(404, "{}"));
+    server.enqueue(json(200, "{}"));
+    runs().putVariable("silver_ingest_vtnet_nims", Map.of("cron", "0 3 * * *"));
+
+    assertThat(server.takeRequest().getMethod()).isEqualTo("PATCH");
+    RecordedRequest create = server.takeRequest();
+    assertThat(create.getMethod()).isEqualTo("POST");
+    assertThat(create.getPath()).isEqualTo("/airflow/api/v1/variables");
+  }
+
+  @Test
+  void variableFailuresUseFixedMessagesAndBadKeysAreRefused() {
+    server.enqueue(json(403, "{\"detail\":\"secret\"}"));
+    assertThatThrownBy(() -> runs().putVariable("k", Map.of())).hasMessage(AirflowDagRuns.DENIED);
+    server.enqueue(json(500, "{}"));
+    assertThatThrownBy(() -> runs().putVariable("k", Map.of())).hasMessage(AirflowDagRuns.UNAVAILABLE);
+    assertThatThrownBy(() -> runs().putVariable("a/b", Map.of())).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> runs().deleteVariable("../x")).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void deletesAVariableAndAnAbsentOneIsFine() throws Exception {
+    server.enqueue(json(204, ""));
+    runs().deleteVariable("silver_ingest_vtnet_nims");
+    RecordedRequest req = server.takeRequest();
+    assertThat(req.getMethod()).isEqualTo("DELETE");
+    assertThat(req.getPath()).isEqualTo("/airflow/api/v1/variables/silver_ingest_vtnet_nims");
+
+    server.enqueue(json(404, "{}"));
+    runs().deleteVariable("silver_ingest_vtnet_nims");
+
+    server.enqueue(json(403, "{}"));
+    assertThatThrownBy(() -> runs().deleteVariable("silver_ingest_vtnet_nims")).hasMessage(AirflowDagRuns.DENIED);
+  }
+
+  @Test
+  void switchesADagOnAndOff() throws Exception {
+    server.enqueue(json(200, "{}"));
+    runs().setPaused("silver_ingest_vtnet_nims", false);
+    RecordedRequest on = server.takeRequest();
+    assertThat(on.getMethod()).isEqualTo("PATCH");
+    assertThat(on.getPath()).isEqualTo("/airflow/api/v1/dags/silver_ingest_vtnet_nims");
+    assertThat(JSON.readTree(on.getBody().readUtf8()).path("is_paused").asBoolean(true)).isFalse();
+
+    server.enqueue(json(200, "{}"));
+    runs().setPaused("silver_ingest_vtnet_nims", true);
+    assertThat(JSON.readTree(server.takeRequest().getBody().readUtf8()).path("is_paused").asBoolean(false)).isTrue();
+
+    server.enqueue(json(404, "{\"detail\":\"secret\"}"));
+    assertThatThrownBy(() -> runs().setPaused("d", false)).hasMessage(AirflowDagRuns.NOT_FOUND);
+    server.enqueue(json(403, "{}"));
+    assertThatThrownBy(() -> runs().setPaused("d", false)).hasMessage(AirflowDagRuns.DENIED);
+  }
+
+  @Test
+  void readsTheLatestDagRunOfARecurringDag() throws Exception {
+    server.enqueue(json(200, "{\"dag_runs\":[{\"state\":\"failed\"}]}"));
+    assertThat(runs().latestRunState("silver_ingest_vtnet_nims")).isEqualTo(JobState.FAILED);
+    RecordedRequest req = server.takeRequest();
+    assertThat(req.getMethod()).isEqualTo("GET");
+    assertThat(req.getPath()).startsWith("/airflow/api/v1/dags/silver_ingest_vtnet_nims/dagRuns?").contains("limit=1");
+
+    server.enqueue(json(200, "{\"dag_runs\":[{\"state\":\"success\"}]}"));
+    assertThat(runs().latestRunState("d")).isEqualTo(JobState.SUCCEEDED);
+    server.enqueue(json(200, "{\"dag_runs\":[{\"state\":\"running\"}]}"));
+    assertThat(runs().latestRunState("d")).isEqualTo(JobState.RUNNING);
+    server.enqueue(json(200, "{\"dag_runs\":[]}"));
+    assertThat(runs().latestRunState("d")).isEqualTo(JobState.UNKNOWN);
+    server.enqueue(json(404, "{}"));
+    assertThat(runs().latestRunState("d")).isEqualTo(JobState.UNKNOWN);
+    server.enqueue(json(500, "{}"));
+    assertThatThrownBy(() -> runs().latestRunState("d")).hasMessage(AirflowDagRuns.UNAVAILABLE);
+  }
 }

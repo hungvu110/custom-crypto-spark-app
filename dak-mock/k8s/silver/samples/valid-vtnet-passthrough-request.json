@@ -1,0 +1,7 @@
+{
+  "source": "VTNET",
+  "path": "ebs_3g_4g",
+  "scheduleTime": "02:30",
+  "table": "vtnet_ebs_3g_4g",
+  "purpose": "Daily load of the EBS 3G/4G dataset at 02:30 as it is (passthrough dataset: no key, no column to encrypt)"
+}

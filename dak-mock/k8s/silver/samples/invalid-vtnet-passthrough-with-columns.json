@@ -1,0 +1,11 @@
+{
+  "source": "VTNET",
+  "path": "ebs_3g_4g",
+  "scheduleTime": "02:30",
+  "table": "vtnet_ebs_3g_4g",
+  "encryptColumns": [
+    "imsi"
+  ],
+  "keyField": "event_time",
+  "purpose": "Rejected: the EBS 3G/4G dataset is passthrough, it takes no encryptColumns and no keyField"
+}

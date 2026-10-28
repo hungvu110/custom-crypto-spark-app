@@ -2,6 +2,8 @@ package vai.lakehouse.dakmock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.List;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -57,9 +59,9 @@ class MockSilverApiTest {
   }
 
   @Test
-  void vtnetRequestIsApprovedTriggeredAndFinished() throws Exception {
-    String body = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g/dt=20261012/batch=1520\",\"batchId\":\"202610121520\",\"table\":\"vtnet_ebs_3g_4g\","
-        + "\"encryptColumns\":[\"msisdn\",\"imei\"],\"keyField\":\"start_time\",\"purpose\":\"nạp lô 27\"}";
+  void recurringNimsRequestIsApprovedOnceScheduledAndStopped() throws Exception {
+    String body = "{\"source\":\"VTNET\",\"path\":\"nims\",\"scheduleTime\":\"03:00\",\"table\":\"vtnet_nims_infra_cell_4g\","
+        + "\"encryptColumns\":[\"lng\",\"lat\"],\"keyField\":\"eci\",\"purpose\":\"nạp hằng ngày\"}";
 
     ResponseEntity<String> created = portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, body);
 
@@ -67,28 +69,69 @@ class MockSilverApiTest {
     JsonNode req = JSON.readTree(created.getBody());
     String code = req.path("code").asText();
     assertThat(req.path("state").asText()).isEqualTo("PENDING_APPROVAL");
-    assertThat(req.path("dagId").asText()).isEqualTo("silver_ingest_vtnet");
+    assertThat(req.path("dagId").asText()).isEqualTo("silver_ingest_vtnet_nims");
+    assertThat(req.path("scheduleTime").asText()).isEqualTo("03:00");
+    assertThat(req.has("batchId")).isFalse();
 
     JsonNode approved = JSON.readTree(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/approve", ADMIN).getBody());
-    assertThat(approved.path("state").asText()).isEqualTo("JOB_SUBMITTED");
-    assertThat(approved.path("dagRunId").asText()).isEqualTo(code.toLowerCase());
+    assertThat(approved.path("state").asText()).isEqualTo("SCHEDULED"); // duyệt một lần: DAG tự chạy mỗi ngày
 
     JsonNode seen = JSON.readTree(portal(HttpMethod.GET, "/mock-portal/silver-requests/" + code, ALICE, null).getBody());
-    assertThat(seen.path("state").asText()).isEqualTo("SUCCEEDED"); // noop: dag run xong ngay
+    assertThat(seen.path("state").asText()).isEqualTo("SCHEDULED");
     assertThat(portal(HttpMethod.GET, "/mock-portal/silver-requests/" + code, CAROL, null).getStatusCode().value())
         .isEqualTo(404);
+
+    ResponseEntity<String> secondOfTheDataset = portal(HttpMethod.POST, "/mock-portal/silver-requests", CAROL, body);
+    assertThat(secondOfTheDataset.getStatusCode().value()).isEqualTo(409);
+
+    assertThat(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/stop", null).getStatusCode().value()).isEqualTo(404);
+    JsonNode stopped = JSON.readTree(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/stop", ADMIN).getBody());
+    assertThat(stopped.path("state").asText()).isEqualTo("STOPPED");
+    assertThat(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/stop", ADMIN).getStatusCode().value()).isEqualTo(409);
+  }
+
+  @Test
+  void vttRequestIsScheduledToo() throws Exception {
+    String body = "{\"source\":\"VTT\",\"path\":\"f001-mpre-call\",\"scheduleTime\":\"01:30\","
+        + "\"table\":\"vtt_f001_mpre_call\",\"purpose\":\"nạp hằng ngày\"}";
+    JsonNode created = JSON.readTree(portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, body).getBody());
+    String code = created.path("code").asText();
+    assertThat(created.path("dagId").asText()).isEqualTo("silver_ingest_vtt_f001_mpre_call");
+
+    JsonNode approved = JSON.readTree(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/approve", ADMIN).getBody());
+
+    assertThat(approved.path("state").asText()).isEqualTo("SCHEDULED");
+    admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/stop", ADMIN); // the registry is shared by the tests of this class
+  }
+
+  @Test
+  void nimsRequestWithoutColumnsAndPassthroughRequestAreAccepted() throws Exception {
+    String nims = "{\"source\":\"VTNET\",\"path\":\"nims\",\"scheduleTime\":\"03:00\",\"table\":\"vtnet_nims_infra_cell_4g\","
+        + "\"encryptColumns\":[],\"purpose\":\"decrypt only\"}";
+    String ebs = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g\",\"scheduleTime\":\"02:30\",\"table\":\"vtnet_ebs_3g_4g\","
+        + "\"purpose\":\"write as it is\"}";
+
+    JsonNode decryptOnly = JSON.readTree(portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, nims).getBody());
+    JsonNode passthrough = JSON.readTree(portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, ebs).getBody());
+
+    assertThat(decryptOnly.path("dagId").asText()).isEqualTo("silver_ingest_vtnet_nims");
+    assertThat(passthrough.path("dagId").asText()).isEqualTo("silver_ingest_vtnet_ebs_3g_4g");
+    // One open request per dataset and the registry is shared by the tests of this class: give the datasets back.
+    for (JsonNode created : List.of(decryptOnly, passthrough)) {
+      admin(HttpMethod.POST, "/mock-admin/silver-requests/" + created.path("code").asText() + "/reject", ADMIN);
+    }
   }
 
   @Test
   void invalidRequestsListEveryProblem() throws Exception {
     ResponseEntity<String> res = portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE,
-        "{\"source\":\"VTT\",\"path\":\"/abs\",\"batchId\":\"x\",\"table\":\"vtt_t\",\"encryptColumns\":[\"a\"],\"purpose\":\"p\"}");
+        "{\"source\":\"VTT\",\"path\":\"/abs\",\"batchId\":\"x\",\"table\":\"vtt_t\",\"purpose\":\"p\"}");
 
     assertThat(res.getStatusCode().value()).isEqualTo(400);
     JsonNode body = JSON.readTree(res.getBody());
     assertThat(body.path("error").asText()).isEqualTo("invalid_request");
     assertThat(body.path("problems")).extracting(p -> p.path("field").asText())
-        .containsExactlyInAnyOrder("path", "batchId", "encryptColumns");
+        .containsExactlyInAnyOrder("path", "batchId", "scheduleTime");
   }
 
   @Test
