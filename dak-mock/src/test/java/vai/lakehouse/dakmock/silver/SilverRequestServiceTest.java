@@ -26,6 +26,7 @@ class SilverRequestServiceTest {
   private static final class FakeTrigger implements SilverDagTrigger {
     final List<SilverRequest> scheduled = new ArrayList<>();
     final List<SilverRequest> unscheduled = new ArrayList<>();
+    final List<String> runs = new ArrayList<>();
     String failWith;
     JobState lastRun = JobState.UNKNOWN;
 
@@ -45,6 +46,12 @@ class SilverRequestServiceTest {
     public void unschedule(SilverRequest request) {
       failIfAsked();
       unscheduled.add(request);
+    }
+
+    @Override
+    public void runDay(SilverRequest request, String date, String dagRunId) {
+      failIfAsked();
+      runs.add(request.dagId() + "|" + date + "|" + dagRunId);
     }
 
     @Override
@@ -259,6 +266,43 @@ class SilverRequestServiceTest {
     assertThat(catchThrowableOfType(() -> service.approve(code), DakApiException.class).error()).isEqualTo("invalid_state");
     assertThat(catchThrowableOfType(() -> service.retrySubmit(code), DakApiException.class).error()).isEqualTo("invalid_state");
     assertThat(trigger.scheduled).isEmpty();
+  }
+
+  @Test
+  @DisplayName("admin chạy bù một ngày: một dag run của DAG của dataset, phiếu và lịch không đổi, mỗi lần gọi là một dag run mới")
+  void runDayTriggersOneDagRunOutsideTheSchedule() {
+    String code = service.submit(ALICE, nims()).code();
+    service.approve(code);
+
+    SilverRequestService.Run first = service.runDay(code, "20261013");
+    SilverRequestService.Run again = service.runDay(code, "20261013");
+
+    assertThat(first.dagId()).isEqualTo("silver_ingest_vtnet_nims");
+    assertThat(first.date()).isEqualTo("20261013");
+    assertThat(first.dagRunId()).startsWith(code.toLowerCase() + "-20261013-");
+    assertThat(trigger.runs).hasSize(2);
+    assertThat(trigger.runs.get(0)).startsWith("silver_ingest_vtnet_nims|20261013|" + code.toLowerCase());
+    assertThat(trigger.scheduled).hasSize(1); // the schedule was not touched
+    assertThat(service.adminGet(code).state()).isEqualTo(SilverState.SCHEDULED);
+    assertThat(again.requestCode()).isEqualTo(code);
+  }
+
+  @Test
+  @DisplayName("chạy bù chỉ với phiếu SCHEDULED, ngày phải là yyyyMMdd có thật, trigger lỗi thì báo lỗi")
+  void runDayRules() {
+    String code = service.submit(ALICE, nims()).code();
+    assertThat(catchThrowableOfType(() -> service.runDay(code, "20261013"), DakApiException.class).error()).isEqualTo("invalid_state");
+    service.approve(code);
+    for (String bad : new String[] {null, "", "2026-10-13", "2026101", "202610133", "20261340", "20260230", "abcdefgh"}) {
+      assertThat(catchThrowableOfType(() -> service.runDay(code, bad), DakApiException.class).error()).as(String.valueOf(bad))
+          .isEqualTo("invalid_request");
+    }
+    trigger.failWith = "airflow unavailable";
+    assertThat(catchThrowableOfType(() -> service.runDay(code, "20261013"), DakApiException.class)).isNotNull();
+    assertThat(trigger.runs).isEmpty();
+    trigger.failWith = null;
+    service.stop(code);
+    assertThat(catchThrowableOfType(() -> service.runDay(code, "20261013"), DakApiException.class).error()).isEqualTo("invalid_state");
   }
 
   @Test

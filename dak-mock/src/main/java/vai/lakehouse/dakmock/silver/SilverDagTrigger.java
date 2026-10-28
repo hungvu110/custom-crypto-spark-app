@@ -8,8 +8,8 @@ import vai.lakehouse.dakmock.deid.JobState;
 
 /**
  * Cách DAK đặt lịch cho phiếu chuẩn hoá silver ở Airflow, và đọc lại kết quả. Mọi phiếu là phiếu định kỳ: duyệt một lần, {@link #schedule}
- * ghi {@link #scheduleConfig} vào Airflow Variable của dataset và bật DAG; {@link #unschedule} gỡ lịch; {@link #lastRun} đọc dag run gần
- * nhất.
+ * ghi {@link #scheduleConfig} vào Airflow Variable của dataset và bật DAG; {@link #unschedule} gỡ lịch; {@link #runDay} chạy bù một ngày
+ * ngoài lịch; {@link #lastRun} đọc dag run gần nhất.
  */
 public interface SilverDagTrigger {
 
@@ -18,6 +18,12 @@ public interface SilverDagTrigger {
 
   /** Gỡ lịch của phiếu (tắt DAG và xoá cấu hình); ném {@code JobSubmitException} nếu không được. */
   void unschedule(SilverRequest request);
+
+  /**
+   * Chạy bù MỘT ngày ({@code date} = {@code yyyyMMdd}) ngoài lịch: trigger một dag run của DAG của dataset với {@code conf = {"date": date}}.
+   * Lịch và cấu hình đã duyệt không đổi. Ném {@code JobSubmitException} (thông điệp cố định) nếu không trigger được.
+   */
+  void runDay(SilverRequest request, String date, String dagRunId);
 
   /** Trạng thái dag run gần nhất của phiếu; {@link JobState#UNKNOWN} nếu chưa có dag run nào. */
   JobState lastRun(SilverRequest request);

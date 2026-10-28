@@ -58,6 +58,15 @@ class MockSilverApiTest {
     return rest.exchange(path, method, new HttpEntity<>(h), String.class);
   }
 
+  private ResponseEntity<String> adminJson(HttpMethod method, String path, String token, String body) {
+    HttpHeaders h = new HttpHeaders();
+    if (token != null) {
+      h.set("X-Mock-Admin-Token", token);
+    }
+    h.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+    return rest.exchange(path, method, new HttpEntity<>(body, h), String.class);
+  }
+
   @Test
   void recurringNimsRequestIsApprovedOnceScheduledAndStopped() throws Exception {
     String body = "{\"source\":\"VTNET\",\"path\":\"nims\",\"scheduleTime\":\"03:00\",\"table\":\"vtnet_nims_infra_cell_4g\","
@@ -88,6 +97,32 @@ class MockSilverApiTest {
     JsonNode stopped = JSON.readTree(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/stop", ADMIN).getBody());
     assertThat(stopped.path("state").asText()).isEqualTo("STOPPED");
     assertThat(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/stop", ADMIN).getStatusCode().value()).isEqualTo(409);
+  }
+
+  @Test
+  void anAdminCanRunOneDayOutsideTheSchedule() throws Exception {
+    String body = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g\",\"scheduleTime\":\"02:30\",\"table\":\"vtnet_ebs_3g_4g\","
+        + "\"purpose\":\"write as it is\"}";
+    String code = JSON.readTree(portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, body).getBody()).path("code").asText();
+    String run = "/mock-admin/silver-requests/" + code + "/run";
+
+    assertThat(adminJson(HttpMethod.POST, run, ADMIN, "{\"date\":\"20261012\"}").getStatusCode().value()).isEqualTo(409); // not approved yet
+    admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/approve", ADMIN);
+
+    assertThat(adminJson(HttpMethod.POST, run, null, "{\"date\":\"20261012\"}").getStatusCode().value()).isEqualTo(404);
+    ResponseEntity<String> ok = adminJson(HttpMethod.POST, run, ADMIN, "{\"date\":\"20261012\"}");
+    assertThat(ok.getStatusCode().value()).isEqualTo(200);
+    JsonNode started = JSON.readTree(ok.getBody());
+    assertThat(started.path("requestCode").asText()).isEqualTo(code);
+    assertThat(started.path("dagId").asText()).isEqualTo("silver_ingest_vtnet_ebs_3g_4g");
+    assertThat(started.path("date").asText()).isEqualTo("20261012");
+    assertThat(started.path("dagRunId").asText()).startsWith(code.toLowerCase() + "-20261012-");
+    assertThat(adminJson(HttpMethod.POST, run, ADMIN, "{\"date\":\"2026-10-12\"}").getStatusCode().value()).isEqualTo(400);
+    assertThat(adminJson(HttpMethod.POST, run, ADMIN, null).getStatusCode().value()).isEqualTo(400);
+
+    JsonNode seen = JSON.readTree(portal(HttpMethod.GET, "/mock-portal/silver-requests/" + code, ALICE, null).getBody());
+    assertThat(seen.path("state").asText()).isEqualTo("SCHEDULED"); // the schedule is untouched
+    admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/stop", ADMIN); // the registry is shared by the tests of this class
   }
 
   @Test

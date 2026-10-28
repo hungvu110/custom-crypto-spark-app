@@ -1,5 +1,10 @@
 package vai.lakehouse.dakmock.silver;
 
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.UnaryOperator;
@@ -11,6 +16,7 @@ import vai.lakehouse.dakmock.config.DeidProperties.PortalUser;
 import vai.lakehouse.dakmock.deid.JobState;
 import vai.lakehouse.dakmock.deid.JobSubmitException;
 import vai.lakehouse.dakmock.web.DakApiException;
+import vai.lakehouse.dakmock.web.DakApiException.Problem;
 
 /**
  * Luồng phiếu chuẩn hoá silver: team gửi phiếu cho một dataset → admin duyệt MỘT lần (hoặc từ chối) → DAK đăng ký lịch hằng ngày với Airflow
@@ -24,6 +30,11 @@ public class SilverRequestService {
   private static final Logger AUDIT = LoggerFactory.getLogger("AUDIT");
   private static final String ADMIN = "admin";
   private static final String INTERNAL_ERROR = "internal error while scheduling the dag";
+  private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
+  private static final DateTimeFormatter RUN_STAMP = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").withZone(ZoneOffset.UTC);
+
+  /** The dag run that an admin started for one day of a scheduled request. */
+  public record Run(String requestCode, String dagId, String dagRunId, String date) {}
 
   private final SilverRequestRegistry registry;
   private final SilverDagTrigger trigger;
@@ -94,6 +105,39 @@ public class SilverRequestService {
       throw DakApiException.upstream(e.getMessage());
     }
     return transition(code, SilverState.SCHEDULED, r -> r.stopped(ADMIN, registry.now()), ADMIN);
+  }
+
+  /**
+   * Admin chạy bù MỘT ngày cho phiếu đang {@code SCHEDULED}: trigger một dag run của DAG của dataset với {@code conf.date}, ngoài lịch. Phiếu
+   * và lịch không đổi. {@code dag_run_id} luôn mới (mã phiếu, ngày, thời điểm gọi) nên chạy lại cùng một ngày là một lần chạy mới. Trigger
+   * lỗi thì báo lỗi và không thay đổi gì.
+   */
+  public Run runDay(String code, String date) {
+    if (date == null || !isRealDay(date)) {
+      throw DakApiException.invalidRequest("the request has 1 problem(s)",
+          List.of(new Problem("date", "invalid_field", "date must be a real date yyyyMMdd")));
+    }
+    SilverRequest request = adminGet(code);
+    if (request.state() != SilverState.SCHEDULED) {
+      throw DakApiException.invalidState(request.state().name());
+    }
+    String dagRunId = request.code().toLowerCase(java.util.Locale.ROOT) + "-" + date + "-" + RUN_STAMP.format(registry.now());
+    try {
+      trigger.runDay(request, date, dagRunId);
+    } catch (JobSubmitException e) {
+      throw DakApiException.upstream(e.getMessage());
+    }
+    AUDIT.info("SILVER_RUN requestCode={} actor={} dagId={} date={} dagRunId={}", code, ADMIN, request.dagId(), date, dagRunId);
+    return new Run(code, request.dagId(), dagRunId, date);
+  }
+
+  private static boolean isRealDay(String value) {
+    try {
+      LocalDate.parse(value, DAY);
+      return true;
+    } catch (DateTimeParseException e) {
+      return false;
+    }
   }
 
   private SilverRequest schedule(String code) {

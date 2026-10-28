@@ -19,6 +19,8 @@ public class MockSilverAdminController {
 
   public record RejectRequest(String reasonText) {}
 
+  public record RunRequest(String date) {}
+
   private final MockAdminAuth auth;
   private final SilverRequestService service;
 
@@ -61,6 +63,14 @@ public class MockSilverAdminController {
                             @PathVariable("code") String code) {
     auth.authorize(token);
     return service.stop(code);
+  }
+
+  /** Chạy bù một ngày ({@code {"date": "yyyyMMdd"}}) cho phiếu đang {@code SCHEDULED}: một dag run ngoài lịch, phiếu và lịch không đổi. */
+  @PostMapping("/{code}/run")
+  public SilverRequestService.Run run(@RequestHeader(value = MockAdminController.TOKEN_HEADER, required = false) String token,
+                                      @PathVariable("code") String code, @RequestBody(required = false) RunRequest body) {
+    auth.authorize(token);
+    return service.runDay(code, body == null ? null : body.date());
   }
 
   @PostMapping("/{code}/retry-submit")

@@ -1,6 +1,7 @@
 package vai.lakehouse.dakmock.silver;
 
 import java.time.Clock;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.LoggerFactory;
@@ -39,6 +40,11 @@ public class SilverConfig {
         }
 
         @Override
+        public void runDay(SilverRequest request, String date, String dagRunId) {
+          runs.trigger(request.dagId(), dagRunId, Map.of("date", date));
+        }
+
+        @Override
         public JobState lastRun(SilverRequest request) {
           return runs.latestRunState(request.dagId());
         }
@@ -62,6 +68,11 @@ public class SilverConfig {
     @Override
     public void unschedule(SilverRequest request) {
       LoggerFactory.getLogger(SilverConfig.class).info("NOOP silver dag unschedule dagId={}", request.dagId());
+    }
+
+    @Override
+    public void runDay(SilverRequest request, String date, String dagRunId) {
+      LoggerFactory.getLogger(SilverConfig.class).info("NOOP silver dag run dagId={} date={} dagRunId={}", request.dagId(), date, dagRunId);
     }
 
     @Override
