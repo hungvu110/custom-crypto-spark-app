@@ -1,7 +1,7 @@
 {
   "source": "VTT",
   "path": "f001-mpre-call",
-  "scheduleTime": "01:30",
+  "cron": "30 1 * * *",
   "table": "vtnet_ebs_3g_4g",
   "purpose": "Rejected: the table must start with the prefix of the source (vtt_ for VTT, vtnet_ for VTNET)"
 }

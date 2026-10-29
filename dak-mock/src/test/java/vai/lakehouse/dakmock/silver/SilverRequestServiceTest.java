@@ -68,7 +68,7 @@ class SilverRequestServiceTest {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTNET");
     n.put("path", "nims");
-    n.put("scheduleTime", "03:05");
+    n.put("cron", "5 3 * * *");
     n.put("table", "vtnet_nims_infra_cell_4g");
     n.putArray("encryptColumns").add("lng");
     n.put("keyField", "eci");
@@ -80,7 +80,7 @@ class SilverRequestServiceTest {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTNET");
     n.put("path", "ebs_3g_4g");
-    n.put("scheduleTime", "02:30");
+    n.put("cron", "30 2 * * *");
     n.put("table", "vtnet_ebs_3g_4g");
     n.put("purpose", "p");
     return SilverRequestParser.parse(n);
@@ -90,7 +90,7 @@ class SilverRequestServiceTest {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTT");
     n.put("path", "f001-mpre-call");
-    n.put("scheduleTime", "01:30");
+    n.put("cron", "30 1 * * *");
     n.put("table", "vtt_f001_mpre_call");
     n.put("purpose", "p");
     return SilverRequestParser.parse(n);
@@ -103,7 +103,7 @@ class SilverRequestServiceTest {
     assertThat(created.code()).matches("SLV-\\d{4}-\\d{6}");
     assertThat(created.state()).isEqualTo(SilverState.PENDING_APPROVAL);
     assertThat(created.dagId()).isEqualTo("silver_ingest_vtnet_nims");
-    assertThat(created.scheduleTime()).isEqualTo("03:05");
+    assertThat(created.cron()).isEqualTo("5 3 * * *");
 
     SilverRequest scheduled = service.approve(created.code());
 
@@ -199,7 +199,7 @@ class SilverRequestServiceTest {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTNET");
     n.put("path", "nims");
-    n.put("scheduleTime", "00:00");
+    n.put("cron", "0 0 * * *");
     n.put("table", "vtnet_nims_infra_cell_4g");
     n.putArray("encryptColumns");
     n.put("purpose", "p");
@@ -306,11 +306,19 @@ class SilverRequestServiceTest {
   }
 
   @Test
-  @DisplayName("cron: HH:mm thành '<phút> <giờ> * * *'")
-  void cronOfTheScheduleTime() {
-    assertThat(SilverDagTrigger.cron("03:00")).isEqualTo("0 3 * * *");
-    assertThat(SilverDagTrigger.cron("03:05")).isEqualTo("5 3 * * *");
-    assertThat(SilverDagTrigger.cron("23:59")).isEqualTo("59 23 * * *");
-    assertThat(SilverDagTrigger.cron("00:00")).isEqualTo("0 0 * * *");
+  @DisplayName("cấu hình ghi vào Airflow mang đúng cron của phiếu, hằng ngày hay hằng giờ")
+  void theCronOfTheRequestGoesToAirflowAsItIs() {
+    for (String cron : List.of("5 3 * * *", "0 0 * * *", "5 * * * *")) {
+      ObjectNode body = JSON.createObjectNode();
+      body.put("source", "VTNET");
+      body.put("path", "ebs_3g_4g");
+      body.put("cron", cron);
+      body.put("table", "vtnet_ebs_3g_4g");
+      body.put("purpose", "p");
+      SilverRequest created = service.submit(ALICE, SilverRequestParser.parse(body));
+
+      assertThat(SilverDagTrigger.scheduleConfig(created)).containsEntry("cron", cron);
+      service.cancel(ALICE, created.code());
+    }
   }
 }

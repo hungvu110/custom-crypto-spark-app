@@ -1,0 +1,7 @@
+{
+  "source": "VTNET",
+  "path": "ebs_3g_4g",
+  "cron": "5 * * * *",
+  "table": "vtnet_ebs_3g_4g_hourly",
+  "purpose": "Hourly load of the ebs_3g_4g dataset: every hour at minute 05, ingest the hour before"
+}

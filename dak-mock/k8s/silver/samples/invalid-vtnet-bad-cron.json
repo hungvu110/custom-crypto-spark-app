@@ -1,0 +1,7 @@
+{
+  "source": "VTNET",
+  "path": "nims",
+  "cron": "*/5 * * * *",
+  "table": "vtnet_nims_infra_cell_4g",
+  "purpose": "Rejected: only '<minute> <hour> * * *' (daily) or '<minute> * * * *' (hourly) are accepted"
+}

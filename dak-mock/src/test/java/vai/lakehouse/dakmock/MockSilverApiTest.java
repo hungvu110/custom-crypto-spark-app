@@ -69,7 +69,7 @@ class MockSilverApiTest {
 
   @Test
   void recurringNimsRequestIsApprovedOnceScheduledAndStopped() throws Exception {
-    String body = "{\"source\":\"VTNET\",\"path\":\"nims\",\"scheduleTime\":\"03:00\",\"table\":\"vtnet_nims_infra_cell_4g\","
+    String body = "{\"source\":\"VTNET\",\"path\":\"nims\",\"cron\":\"0 3 * * *\",\"table\":\"vtnet_nims_infra_cell_4g\","
         + "\"encryptColumns\":[\"lng\",\"lat\"],\"keyField\":\"eci\",\"purpose\":\"nạp hằng ngày\"}";
 
     ResponseEntity<String> created = portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, body);
@@ -79,7 +79,7 @@ class MockSilverApiTest {
     String code = req.path("code").asText();
     assertThat(req.path("state").asText()).isEqualTo("PENDING_APPROVAL");
     assertThat(req.path("dagId").asText()).isEqualTo("silver_ingest_vtnet_nims");
-    assertThat(req.path("scheduleTime").asText()).isEqualTo("03:00");
+    assertThat(req.path("cron").asText()).isEqualTo("0 3 * * *");
     assertThat(req.has("batchId")).isFalse();
 
     JsonNode approved = JSON.readTree(admin(HttpMethod.POST, "/mock-admin/silver-requests/" + code + "/approve", ADMIN).getBody());
@@ -101,7 +101,7 @@ class MockSilverApiTest {
 
   @Test
   void anAdminCanRunOneDayOutsideTheSchedule() throws Exception {
-    String body = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g\",\"scheduleTime\":\"02:30\",\"table\":\"vtnet_ebs_3g_4g\","
+    String body = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g\",\"cron\":\"30 2 * * *\",\"table\":\"vtnet_ebs_3g_4g\","
         + "\"purpose\":\"write as it is\"}";
     String code = JSON.readTree(portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, body).getBody()).path("code").asText();
     String run = "/mock-admin/silver-requests/" + code + "/run";
@@ -127,7 +127,7 @@ class MockSilverApiTest {
 
   @Test
   void vttRequestIsScheduledToo() throws Exception {
-    String body = "{\"source\":\"VTT\",\"path\":\"f001-mpre-call\",\"scheduleTime\":\"01:30\","
+    String body = "{\"source\":\"VTT\",\"path\":\"f001-mpre-call\",\"cron\":\"30 1 * * *\","
         + "\"table\":\"vtt_f001_mpre_call\",\"purpose\":\"nạp hằng ngày\"}";
     JsonNode created = JSON.readTree(portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, body).getBody());
     String code = created.path("code").asText();
@@ -141,9 +141,9 @@ class MockSilverApiTest {
 
   @Test
   void nimsRequestWithoutColumnsAndPassthroughRequestAreAccepted() throws Exception {
-    String nims = "{\"source\":\"VTNET\",\"path\":\"nims\",\"scheduleTime\":\"03:00\",\"table\":\"vtnet_nims_infra_cell_4g\","
+    String nims = "{\"source\":\"VTNET\",\"path\":\"nims\",\"cron\":\"0 3 * * *\",\"table\":\"vtnet_nims_infra_cell_4g\","
         + "\"encryptColumns\":[],\"purpose\":\"decrypt only\"}";
-    String ebs = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g\",\"scheduleTime\":\"02:30\",\"table\":\"vtnet_ebs_3g_4g\","
+    String ebs = "{\"source\":\"VTNET\",\"path\":\"ebs_3g_4g\",\"cron\":\"30 2 * * *\",\"table\":\"vtnet_ebs_3g_4g\","
         + "\"purpose\":\"write as it is\"}";
 
     JsonNode decryptOnly = JSON.readTree(portal(HttpMethod.POST, "/mock-portal/silver-requests", ALICE, nims).getBody());
@@ -166,7 +166,7 @@ class MockSilverApiTest {
     JsonNode body = JSON.readTree(res.getBody());
     assertThat(body.path("error").asText()).isEqualTo("invalid_request");
     assertThat(body.path("problems")).extracting(p -> p.path("field").asText())
-        .containsExactlyInAnyOrder("path", "batchId", "scheduleTime");
+        .containsExactlyInAnyOrder("path", "batchId", "cron");
   }
 
   @Test

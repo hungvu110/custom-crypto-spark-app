@@ -1,7 +1,7 @@
 {
   "source": "VTNET",
   "path": "ebs_3g_4g",
-  "scheduleTime": "02:30",
+  "cron": "30 2 * * *",
   "table": "vtnet_ebs_3g_4g",
   "encryptColumns": [
     "imsi"

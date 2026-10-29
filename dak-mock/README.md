@@ -112,7 +112,7 @@ dataset, mọi lô dùng chung. Một đường dẫn một key, kể cả khi �
 ### 2.4. Phiếu chuẩn hoá silver `/mock-portal/silver-requests`
 
 Mọi phiếu (VTT lẫn VTNET) là **phiếu định kỳ cho cả một dataset**: `path` là **tên dataset** (`f001-mpre-call` của VTT; `ebs_3g_4g`, `nims` của VTNET), phiếu có
-`scheduleTime` (giờ chạy hằng ngày) và **không có `batchId`**. Admin duyệt **một lần**: mock ghi cấu hình đã duyệt vào **Airflow Variable** `silver_ingest_<nguồn>_<dataset>`
+`cron` (lịch chạy) và **không có `batchId`**. Admin duyệt **một lần**: mock ghi cấu hình đã duyệt vào **Airflow Variable** `silver_ingest_<nguồn>_<dataset>`
 và bật DAG (`is_paused=false`); DAG của dataset ([airflow/dags/](../airflow/dags/), do DAG factory `silver_ingest_factory.py` dựng) lấy lịch từ Variable đó và chạy mỗi ngày
 cho ngày hôm trước. Phiếu ở `SCHEDULED` cho tới khi admin `stop` (tắt DAG, xoá Variable). Xem phiếu thấy dag run gần nhất (`lastRun`).
 
@@ -125,8 +125,8 @@ Thân JSON (`POST /mock-portal/silver-requests`, header `X-Mock-Portal-Token`):
 | --- | --- | --- |
 | `source` | có | `VTT` hoặc `VTNET` |
 | `path` | có | **Đúng tên một dataset của nguồn** (VTT: `f001-mpre-call`; VTNET: `ebs_3g_4g`, `nims`), không phải một ngày hay một lô. Dạng chuẩn: không `/` đầu/cuối, không `//`, không `..`, chỉ `[A-Za-z0-9_.=+-]` và `/` |
-| `batchId` | **không được có** | Mỗi lần chạy tự lấy mã ngày nạp (`yyyyMMdd`) làm partition `batch_id` |
-| `scheduleTime` | có | Giờ chạy hằng ngày `HH:mm` (`00:00`–`23:59`, giờ `Asia/Ho_Chi_Minh`); DAK đổi thành cron `<phút> <giờ> * * *`. Mỗi lần chạy nạp **ngày hôm trước** |
+| `batchId` | **không được có** | Mỗi lần chạy tự lấy mã ngày nạp (`yyyyMMdd`) làm cột `dt` |
+| `cron` | có | Lịch chạy của DAG, giờ `Asia/Ho_Chi_Minh`, **ghi nguyên văn vào Airflow**. Chỉ hai dạng: hằng ngày `<phút> <giờ> * * *` (vd `30 2 * * *`; mỗi lần nạp **ngày hôm trước**) và hằng giờ `<phút> * * * *` (vd `5 * * * *`; mỗi lần nạp **giờ liền trước lúc chạy**, vd chạy 11:05 nạp giờ 10, chỉ cho dataset có thư mục giờ). Dạng khác (`*/5 * * * *`, `0 */2 * * *`, `0 3 * * 1`…) bị `400` |
 | `table` | có | Bảng đích trong database silver, **người gửi chọn**: `[a-z0-9_]{1,128}`, bắt đầu bằng tiền tố của nguồn (`vtt_`, `vtnet_`) để không ghi vào bảng của nguồn khác |
 | `outputMode` | không | `overwrite-partitions` (mặc định của DAG) hoặc `append` |
 | `encryptColumns` | không | Chỉ dataset `decrypt-encrypt` (`nims`): danh sách 0–100 tên cột, không trùng; job mã hoá bằng cdr-crypto. **Rỗng hoặc không gửi = chỉ giải mã file**. Dataset `passthrough` (`f001-mpre-call`, `ebs_3g_4g`) không được có |
@@ -161,7 +161,9 @@ team**, vì một dataset chỉ có một lịch và một cấu hình ở Airfl
 | `invalid-vtnet-passthrough-with-columns.json` | Dataset passthrough có `encryptColumns`/`keyField` → `400` |
 | `invalid-vtnet-day-in-path.json` | `path` là một ngày/lô thay vì dataset → `400` |
 | `invalid-vtnet-with-batch-id.json` | Có `batchId` → `400` |
-| `invalid-vtnet-missing-schedule-time.json` | Thiếu `scheduleTime` → `400` |
+| `invalid-vtnet-missing-cron.json` | Thiếu `cron` → `400` |
+| `invalid-vtnet-bad-cron.json` | `cron` không phải dạng hằng ngày/hằng giờ (`*/5 * * * *`) → `400` |
+| `valid-vtnet-hourly-request.json` | Phiếu hằng giờ cho `ebs_3g_4g` (`5 * * * *`) |
 | `invalid-vtnet-unknown-dataset.json` | `path` không phải dataset đã biết → `400` |
 | `invalid-table-of-another-source.json` | Phiếu VTT đặt bảng `vtnet_…` → `400` |
 | `invalid-many-errors.json` | Nhiều lỗi cùng lúc (nguồn lạ, `path` tuyệt đối, `batchId`, bảng sai, `overwrite`, trường lạ, thiếu `purpose`) → `400` liệt kê đủ |

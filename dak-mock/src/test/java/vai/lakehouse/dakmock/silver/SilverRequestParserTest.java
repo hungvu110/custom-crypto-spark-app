@@ -22,7 +22,7 @@ class SilverRequestParserTest {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTT");
     n.put("path", "f001-mpre-call");
-    n.put("scheduleTime", "01:30");
+    n.put("cron", "30 1 * * *");
     n.put("table", "vtt_f001_mpre_call");
     n.put("purpose", "nạp hằng ngày");
     return n;
@@ -33,7 +33,7 @@ class SilverRequestParserTest {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "vtnet");
     n.put("path", "nims");
-    n.put("scheduleTime", "03:00");
+    n.put("cron", "0 3 * * *");
     n.put("table", "vtnet_nims_infra_cell_4g");
     n.putArray("encryptColumns").add("msisdn").add("imei");
     n.put("keyField", "start_time");
@@ -46,7 +46,7 @@ class SilverRequestParserTest {
     ObjectNode n = JSON.createObjectNode();
     n.put("source", "VTNET");
     n.put("path", "ebs_3g_4g");
-    n.put("scheduleTime", "02:30");
+    n.put("cron", "30 2 * * *");
     n.put("table", "vtnet_ebs_3g_4g");
     n.put("purpose", "nạp hằng ngày");
     return n;
@@ -66,7 +66,7 @@ class SilverRequestParserTest {
 
     assertThat(p.source()).isEqualTo(SilverSource.VTT);
     assertThat(p.path()).isEqualTo("f001-mpre-call");
-    assertThat(p.scheduleTime()).isEqualTo("01:30");
+    assertThat(p.cron()).isEqualTo("30 1 * * *");
     assertThat(p.outputMode()).isEqualTo("append");
     assertThat(p.encryptColumns()).isEmpty();
     assertThat(p.keyField()).isNull();
@@ -81,7 +81,7 @@ class SilverRequestParserTest {
 
     assertThat(p.source()).isEqualTo(SilverSource.VTNET);
     assertThat(p.path()).isEqualTo("nims");
-    assertThat(p.scheduleTime()).isEqualTo("03:00");
+    assertThat(p.cron()).isEqualTo("0 3 * * *");
     assertThat(p.encryptColumns()).containsExactly("msisdn", "imei");
     assertThat(p.keyField()).isEqualTo("start_time");
     assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_nims");
@@ -117,7 +117,7 @@ class SilverRequestParserTest {
 
     assertThat(p.encryptColumns()).isEmpty();
     assertThat(p.keyField()).isNull();
-    assertThat(p.scheduleTime()).isEqualTo("02:30");
+    assertThat(p.cron()).isEqualTo("30 2 * * *");
     assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_ebs_3g_4g");
   }
 
@@ -151,17 +151,32 @@ class SilverRequestParserTest {
   }
 
   @Test
-  @DisplayName("scheduleTime: bắt buộc với mọi phiếu, HH:mm từ 00:00 đến 23:59")
-  void scheduleTimeRules() {
+  @DisplayName("cron: bắt buộc với mọi phiếu, chỉ '<phút> <giờ> * * *' (hằng ngày) hoặc '<phút> * * * *' (hằng giờ), ghi nguyên văn")
+  void cronRules() {
     for (ObjectNode request : List.of(vtt(), nims(), ebs())) {
-      for (String bad : List.of("", "3:00", "03:0", "24:00", "23:60", "0300", "03:00:00", "03.00", "ab:cd", "03:00 ", " 03:00")) {
-        assertThat(fields(request.deepCopy().put("scheduleTime", bad))).as(bad).containsExactly("scheduleTime");
+      for (String bad : List.of("", "03:00", "*/5 * * * *", "* * * * *", "*/2 3 * * *", "0 */2 * * *", "0 3 * * 1", "0 3 1 * *", "60 3 * * *",
+          "0 24 * * *", "-1 3 * * *", "0  3 * * *", "0 3 * * * ", " 0 3 * * *", "0 3 * * *;x", "@daily", "0 3 * *", "0 3 * * * *")) {
+        assertThat(fields(request.deepCopy().put("cron", bad))).as(bad).containsExactly("cron");
       }
-      assertThat(fields((ObjectNode) request.deepCopy().without("scheduleTime"))).containsExactly("scheduleTime");
-      assertThat(fields(request.deepCopy().put("scheduleTime", 300))).containsExactly("scheduleTime");
-      for (String good : List.of("00:00", "03:05", "12:30", "23:59")) {
-        assertThat(SilverRequestParser.parse(request.deepCopy().put("scheduleTime", good)).scheduleTime()).isEqualTo(good);
+      assertThat(fields((ObjectNode) request.deepCopy().without("cron"))).containsExactly("cron");
+      assertThat(fields(request.deepCopy().put("cron", 300))).containsExactly("cron");
+      assertThat(fields(request.deepCopy().put("scheduleTime", "03:00"))).containsExactlyInAnyOrder("scheduleTime");
+      for (String good : List.of("0 0 * * *", "5 3 * * *", "30 12 * * *", "59 23 * * *", "05 03 * * *", "0 * * * *", "5 * * * *", "59 * * * *")) {
+        assertThat(SilverRequestParser.parse(request.deepCopy().put("cron", good)).cron()).isEqualTo(good);
       }
+    }
+  }
+
+  @Test
+  @DisplayName("cron hằng giờ cần dataset có thư mục giờ; nhận ra dạng hằng giờ")
+  void hourlyCron() {
+    assertThat(SilverRequestParser.isHourly("5 * * * *")).isTrue();
+    assertThat(SilverRequestParser.isHourly("5 3 * * *")).isFalse();
+    for (SilverDataset dataset : SilverDataset.values()) {
+      assertThat(dataset.supportsHours()).as(dataset.id()).isTrue(); // every dataset has an hour_glob in its DAG file
+    }
+    for (ObjectNode request : List.of(vtt(), nims(), ebs())) {
+      assertThat(SilverRequestParser.parse(request.deepCopy().put("cron", "5 * * * *")).cron()).isEqualTo("5 * * * *");
     }
   }
 

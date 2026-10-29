@@ -188,9 +188,9 @@ public class SilverRequestService {
 
   // Không ghi purpose (người dùng nhập) hay bất kỳ key nào.
   private static void audit(SilverRequest r, SilverState from, String actor) {
-    AUDIT.info("SILVER_TRANSITION requestCode={} from={} to={} actor={} team={} source={} path={} scheduleTime={} table={} dagId={} "
+    AUDIT.info("SILVER_TRANSITION requestCode={} from={} to={} actor={} team={} source={} path={} cron={} table={} dagId={} "
             + "encryptColumns={} submitError={}",
-        r.code(), from == null ? "-" : from, r.state(), actor, r.team(), r.source(), r.path(), r.scheduleTime(), r.table(), r.dagId(),
+        r.code(), from == null ? "-" : from, r.state(), actor, r.team(), r.source(), r.path(), r.cron(), r.table(), r.dagId(),
         r.encryptColumns().isEmpty() ? "-" : String.join(",", r.encryptColumns()),
         r.submitError() == null ? "-" : r.submitError());
   }

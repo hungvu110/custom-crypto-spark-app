@@ -1,7 +1,7 @@
 {
   "source": "VTT",
   "path": "f001-mpre-call/date=20261024/hour=12",
-  "scheduleTime": "01:30",
+  "cron": "30 1 * * *",
   "table": "vtt_f001_mpre_call",
   "purpose": "Rejected: the path is the dataset (f001-mpre-call), never a day or an hour"
 }

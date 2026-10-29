@@ -1,7 +1,7 @@
 {
   "source": "VTT",
   "path": "f001-mpre-call",
-  "scheduleTime": "01:30",
+  "cron": "30 1 * * *",
   "table": "vtt_f001_mpre_call",
   "purpose": "Approve once the daily load of the VTT table f001-mpre-call at 01:30 (columns already encrypted by VTT) into silver"
 }

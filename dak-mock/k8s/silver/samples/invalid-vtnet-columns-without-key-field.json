@@ -1,7 +1,7 @@
 {
   "source": "VTNET",
   "path": "nims",
-  "scheduleTime": "03:00",
+  "cron": "0 3 * * *",
   "table": "vtnet_nims_infra_cell_4g",
   "encryptColumns": [
     "lng"

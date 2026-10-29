@@ -49,7 +49,7 @@ class SilverSampleFilesTest {
     assertThat(p.source()).isEqualTo(SilverSource.VTT);
     assertThat(p.encryptColumns()).isEmpty();
     assertThat(p.path()).isEqualTo("f001-mpre-call");
-    assertThat(p.scheduleTime()).isEqualTo("01:30");
+    assertThat(p.cron()).isEqualTo("30 1 * * *");
     assertThat(p.table()).isEqualTo("vtt_f001_mpre_call");
     assertThat(p.dagId()).isEqualTo("silver_ingest_vtt_f001_mpre_call");
   }
@@ -60,7 +60,7 @@ class SilverSampleFilesTest {
     SilverRequestParser.Parsed p = parse("valid-vtnet-request.json");
     assertThat(p.source()).isEqualTo(SilverSource.VTNET);
     assertThat(p.path()).isEqualTo("nims");
-    assertThat(p.scheduleTime()).isEqualTo("03:00");
+    assertThat(p.cron()).isEqualTo("0 3 * * *");
     assertThat(p.encryptColumns()).containsExactly("lng", "lat");
     assertThat(p.keyField()).isEqualTo("eci");
     assertThat(p.outputMode()).isNull();
@@ -68,7 +68,18 @@ class SilverSampleFilesTest {
     assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_nims");
 
     assertThat(parse("valid-vtnet-append-request.json").outputMode()).isEqualTo("append");
-    assertThat(parse("valid-vtnet-append-request.json").scheduleTime()).isEqualTo("04:30");
+    assertThat(parse("valid-vtnet-append-request.json").cron()).isEqualTo("30 4 * * *");
+  }
+
+  @Test
+  @DisplayName("the hourly sample is valid: the cron has '*' as the hour, so each run ingests the hour before")
+  void hourly() throws IOException {
+    SilverRequestParser.Parsed p = parse("valid-vtnet-hourly-request.json");
+
+    assertThat(p.cron()).isEqualTo("5 * * * *");
+    assertThat(SilverRequestParser.isHourly(p.cron())).isTrue();
+    assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_ebs_3g_4g");
+    assertThat(SilverRequestParser.isHourly(parse("valid-vtnet-passthrough-request.json").cron())).isFalse();
   }
 
   @Test
@@ -82,7 +93,7 @@ class SilverSampleFilesTest {
     SilverRequestParser.Parsed passthrough = parse("valid-vtnet-passthrough-request.json");
     assertThat(passthrough.encryptColumns()).isEmpty();
     assertThat(passthrough.dagId()).isEqualTo("silver_ingest_vtnet_ebs_3g_4g");
-    assertThat(passthrough.scheduleTime()).isEqualTo("02:30");
+    assertThat(passthrough.cron()).isEqualTo("30 2 * * *");
   }
 
   @Test
@@ -94,7 +105,8 @@ class SilverSampleFilesTest {
     assertThat(rejectedFields("invalid-vtnet-passthrough-with-columns.json")).containsExactlyInAnyOrder("encryptColumns", "keyField");
     assertThat(rejectedFields("invalid-vtnet-day-in-path.json")).containsExactly("path");
     assertThat(rejectedFields("invalid-vtnet-with-batch-id.json")).containsExactly("batchId");
-    assertThat(rejectedFields("invalid-vtnet-missing-schedule-time.json")).containsExactly("scheduleTime");
+    assertThat(rejectedFields("invalid-vtnet-missing-cron.json")).containsExactly("cron");
+    assertThat(rejectedFields("invalid-vtnet-bad-cron.json")).containsExactly("cron");
     assertThat(rejectedFields("invalid-vtnet-unknown-dataset.json")).containsExactly("path");
     assertThat(rejectedFields("invalid-many-errors.json"))
         .containsExactlyInAnyOrder("source", "path", "batchId", "table", "outputMode", "outputDatabase", "purpose");

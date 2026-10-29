@@ -1,7 +1,7 @@
 {
   "source": "VTNET",
   "path": "other_dataset",
-  "scheduleTime": "03:00",
+  "cron": "0 3 * * *",
   "table": "vtnet_other",
   "purpose": "Rejected: the path must be the name of a known VTNET dataset"
 }

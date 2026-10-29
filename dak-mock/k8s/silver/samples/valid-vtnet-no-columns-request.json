@@ -1,7 +1,7 @@
 {
   "source": "VTNET",
   "path": "nims",
-  "scheduleTime": "03:00",
+  "cron": "0 3 * * *",
   "table": "vtnet_nims_infra_cell_4g",
   "encryptColumns": [],
   "purpose": "Daily load of the NIMS dataset at 03:00: decrypt the files only, no column to encrypt (encryptColumns may also be left out)"

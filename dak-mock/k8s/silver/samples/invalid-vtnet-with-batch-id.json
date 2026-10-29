@@ -2,7 +2,7 @@
   "source": "VTNET",
   "path": "nims",
   "batchId": "20261013",
-  "scheduleTime": "03:00",
+  "cron": "0 3 * * *",
   "table": "vtnet_nims_infra_cell_4g",
   "purpose": "Rejected: a recurring request has no batchId, each run writes the batch of its own day"
 }

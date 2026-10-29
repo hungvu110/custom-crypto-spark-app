@@ -1,7 +1,7 @@
 {
   "source": "VTNET",
   "path": "nims/dt=20261013/batch=1",
-  "scheduleTime": "03:00",
+  "cron": "0 3 * * *",
   "table": "vtnet_nims_infra_cell_4g",
   "purpose": "Rejected: the path is the dataset (nims), never a day or a batch: every daily run takes its own day"
 }

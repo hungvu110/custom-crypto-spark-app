@@ -24,10 +24,10 @@ import org.junit.jupiter.api.Test;
 class SilverDatasetDagDriftTest {
 
   private static final Path DAGS = Path.of("../airflow/dags");
-  private static final Pattern ENTRY = Pattern.compile("\"([a-z0-9_-]+)\":\\s*\\{\\s*\"mode\":\\s*\"([a-z-]+)\"");
+  private static final Pattern ENTRY = Pattern.compile("\"([a-z0-9_-]+)\":\\s*(\\{)\\s*\"mode\":\\s*\"([a-z-]+)\"");
 
   /** One dataset as written in a DAG file. */
-  private record DagDataset(String id, String mode) {}
+  private record DagDataset(String id, String mode, boolean hasHourLayout) {}
 
   private static String read(String file) throws IOException {
     return Files.readString(DAGS.resolve(file), StandardCharsets.UTF_8);
@@ -41,16 +41,31 @@ class SilverDatasetDagDriftTest {
     return "silver_ingest_" + source.name().toLowerCase(Locale.ROOT) + ".py";
   }
 
+  /** The text of the entry whose {@code {} is at {@code open}, up to its matching {@code }} (an entry may hold a nested {@code resources} dict). */
+  private static String entryOf(String block, int open) {
+    int depth = 0;
+    for (int i = open; i < block.length(); i++) {
+      char c = block.charAt(i);
+      if (c == '{') {
+        depth++;
+      } else if (c == '}' && --depth == 0) {
+        return block.substring(open, i + 1);
+      }
+    }
+    throw new IllegalStateException("unbalanced braces in DATASETS");
+  }
+
   private static List<DagDataset> dagDatasets(SilverSource source) throws IOException {
     String text = read(dagFile(source));
     int start = text.indexOf("DATASETS = {");
     int end = text.indexOf("\n}\n", start);
     assertThat(start).as("DATASETS block exists in " + dagFile(source)).isGreaterThanOrEqualTo(0);
     assertThat(end).isGreaterThan(start);
-    Matcher m = ENTRY.matcher(text.substring(start, end));
+    String block = text.substring(start, end);
+    Matcher m = ENTRY.matcher(block);
     List<DagDataset> datasets = new ArrayList<>();
     while (m.find()) {
-      datasets.add(new DagDataset(m.group(1), m.group(2)));
+      datasets.add(new DagDataset(m.group(1), m.group(3), entryOf(block, m.start(2)).contains("\"hour_glob\"")));
     }
     return datasets;
   }
@@ -74,6 +89,20 @@ class SilverDatasetDagDriftTest {
       assertThat(dag).as(dagFile(source)).hasSameSizeAs(mock);
       for (int i = 0; i < mock.size(); i++) {
         assertThat(dag.get(i).mode()).as(mock.get(i).id() + " mode").isEqualTo(mock.get(i).mode());
+      }
+    }
+  }
+
+  @Test
+  @DisplayName("a dataset can run hourly in the mock exactly when its DAG file declares an hour_glob")
+  void sameHourLayouts() throws IOException {
+    for (SilverSource source : SilverSource.values()) {
+      List<DagDataset> dag = dagDatasets(source);
+      List<SilverDataset> mock = SilverDataset.of(source);
+
+      assertThat(dag).as(dagFile(source)).hasSameSizeAs(mock);
+      for (int i = 0; i < mock.size(); i++) {
+        assertThat(dag.get(i).hasHourLayout()).as(mock.get(i).id() + " hour layout").isEqualTo(mock.get(i).supportsHours());
       }
     }
   }

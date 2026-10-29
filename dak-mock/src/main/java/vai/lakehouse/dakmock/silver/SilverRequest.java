@@ -7,11 +7,12 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
- * Phiếu chuẩn hoá silver: phiếu ĐỊNH KỲ cho cả một dataset, duyệt một lần, DAG của dataset chạy mỗi ngày lúc {@code scheduleTime} cho dữ liệu
- * của ngày hôm trước. Bất biến: mỗi lần đổi trạng thái tạo bản mới.
+ * Phiếu chuẩn hoá silver: phiếu ĐỊNH KỲ cho cả một dataset, duyệt một lần, DAG của dataset chạy theo {@code cron} của phiếu: cron hằng ngày thì mỗi lần nạp
+ * ngày hôm trước, cron hằng giờ thì mỗi lần nạp giờ liền trước lúc chạy. Bất biến: mỗi lần đổi trạng thái tạo bản mới.
  *
  * @param path           tên dataset của nguồn (DAG của dataset, key {@code by-path} của cả dataset), không phải một ngày hay một lô
- * @param scheduleTime   giờ chạy hằng ngày {@code HH:mm} (Asia/Ho_Chi_Minh)
+ * @param cron           lịch chạy của DAG, ghi nguyên văn vào Airflow (Asia/Ho_Chi_Minh): hằng ngày {@code <phút> <giờ> * * *} hoặc hằng giờ
+ *                       {@code <phút> * * * *}
  * @param table          bảng đích trong database silver do người gửi chọn: chữ thường, số, {@code _}, bắt đầu bằng tiền tố của nguồn
  * @param outputMode     {@code null} = mặc định của DAG ({@code overwrite-partitions})
  * @param encryptColumns cột job mã hoá bằng cdr-crypto trước khi ghi; rỗng nếu dataset không mã hoá cột hoặc phiếu không chọn cột nào
@@ -25,7 +26,7 @@ public record SilverRequest(
     String submittedBy,
     SilverSource source,
     String path,
-    String scheduleTime,
+    String cron,
     String table,
     String outputMode,
     List<String> encryptColumns,
@@ -46,7 +47,7 @@ public record SilverRequest(
 
   /** Phiếu mới, chờ duyệt. */
   static SilverRequest pending(String code, String team, String user, SilverRequestParser.Parsed p, Instant now) {
-    return new SilverRequest(code, team, user, p.source(), p.path(), p.scheduleTime(), p.table(), p.outputMode(), p.encryptColumns(),
+    return new SilverRequest(code, team, user, p.source(), p.path(), p.cron(), p.table(), p.outputMode(), p.encryptColumns(),
         p.keyField(), p.purpose(), SilverState.PENDING_APPROVAL, now, now, null, null, p.dagId(), null, null);
   }
 
@@ -94,7 +95,7 @@ public record SilverRequest(
 
   private SilverRequest copy(SilverState nextState, Instant nextUpdatedAt, String nextDecidedBy, String nextRejectReason,
                              String nextSubmitError, String nextLastRun) {
-    return new SilverRequest(code, team, submittedBy, source, path, scheduleTime, table, outputMode, encryptColumns, keyField, purpose,
+    return new SilverRequest(code, team, submittedBy, source, path, cron, table, outputMode, encryptColumns, keyField, purpose,
         nextState, createdAt, nextUpdatedAt, nextDecidedBy, nextRejectReason, dagId, nextSubmitError, nextLastRun);
   }
 }

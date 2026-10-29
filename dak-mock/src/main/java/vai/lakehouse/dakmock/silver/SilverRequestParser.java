@@ -22,8 +22,9 @@ import vai.lakehouse.dakmock.web.DakApiException.Problem;
  *   <li>{@code path}: exactly the name of a {@link SilverDataset} of the source, never a day or a batch. Canonical form: no leading or
  *       trailing {@code /}, no {@code //}, no {@code ..}, only {@code [A-Za-z0-9_.=+-]} and {@code /}, at most 1024 characters.</li>
  *   <li>{@code batchId}: not allowed, each daily run writes the batch of its own day (yyyyMMdd).</li>
- *   <li>{@code scheduleTime}: required, the daily run time {@code HH:mm} in Asia/Ho_Chi_Minh, from 00:00 to 23:59. Each run ingests the day
- *       before.</li>
+ *   <li>{@code cron}: required, the schedule of the DAG as a cron in Asia/Ho_Chi_Minh, written to Airflow as it is. Two forms: daily
+ *       {@code <minute> <hour> * * *} (each run ingests the day before) and hourly {@code <minute> * * * *} (each run ingests the hour before;
+ *       only for a dataset with an hour layout, {@link SilverDataset#supportsHours()}).</li>
  *   <li>{@code table}: target table chosen by the requester, {@code [a-z0-9_]{1,128}}, starting with the prefix of the source
  *       ({@code vtt_}, {@code vtnet_}).</li>
  *   <li>{@code outputMode} (optional): {@code overwrite-partitions} or {@code append}.</li>
@@ -36,15 +37,16 @@ import vai.lakehouse.dakmock.web.DakApiException.Problem;
 public final class SilverRequestParser {
 
   /** A validated request; {@code dagId} is the DAG of its dataset. */
-  public record Parsed(SilverSource source, String path, String scheduleTime, String table, String outputMode, List<String> encryptColumns,
+  public record Parsed(SilverSource source, String path, String cron, String table, String outputMode, List<String> encryptColumns,
                        String keyField, String purpose, String dagId) {}
 
   public static final String CODE = "invalid_field";
   static final Set<String> OUTPUT_MODES = Set.of("overwrite-partitions", "append");
 
-  private static final Set<String> FIELDS = Set.of("source", "path", "batchId", "scheduleTime", "table", "outputMode", "encryptColumns",
+  private static final Set<String> FIELDS = Set.of("source", "path", "batchId", "cron", "table", "outputMode", "encryptColumns",
       "keyField", "purpose");
-  private static final Pattern TIME = Pattern.compile("([01]\\d|2[0-3]):[0-5]\\d");
+  /** {@code <minute> <hour> * * *} or {@code <minute> * * * *}: the only forms the DAG accepts (airflow/dags/silver_ingest_common.py, SCHEDULE_CRON). */
+  private static final Pattern CRON = Pattern.compile("[0-5]?\\d ([01]?\\d|2[0-3]|\\*) \\* \\* \\*");
   private static final Pattern PATH = Pattern.compile("[A-Za-z0-9_.=+-]+(/[A-Za-z0-9_.=+-]+)*");
   private static final Pattern COLUMN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
   private static final Pattern TABLE = Pattern.compile("[a-z0-9_]{1,128}");
@@ -86,9 +88,13 @@ public final class SilverRequestParser {
     if (body.has("batchId")) {
       problems.add(new Problem("batchId", CODE, "batchId is not allowed: every scheduled run writes the batch of its own day"));
     }
-    String scheduleTime = text(body, "scheduleTime").orElse(null);
-    if (source != null && (scheduleTime == null || !TIME.matcher(scheduleTime).matches())) {
-      problems.add(new Problem("scheduleTime", CODE, "scheduleTime must be the daily run time HH:mm, from 00:00 to 23:59"));
+    String cron = text(body, "cron").orElse(null);
+    boolean cronOk = cron != null && CRON.matcher(cron).matches();
+    if (source != null && !cronOk) {
+      problems.add(new Problem("cron", CODE,
+          "cron must be '<minute> <hour> * * *' (daily) or '<minute> * * * *' (hourly): minute 0-59, hour 0-23, Asia/Ho_Chi_Minh"));
+    } else if (cronOk && dataset != null && isHourly(cron) && !dataset.supportsHours()) {
+      problems.add(new Problem("cron", CODE, "this dataset has no hour layout: only a daily cron '<minute> <hour> * * *' is allowed"));
     }
     String table = text(body, "table").orElse(null);
     if (table == null || !TABLE.matcher(table).matches() || (source != null && !table.startsWith(source.tablePrefix()))) {
@@ -118,7 +124,12 @@ public final class SilverRequestParser {
       throw DakApiException.invalidRequest("the request has " + problems.size() + " problem(s)", problems);
     }
     String dagId = dataset.dagId();
-    return new Parsed(source, path, scheduleTime, table, outputMode, columns, keyField, purpose, dagId);
+    return new Parsed(source, path, cron, table, outputMode, columns, keyField, purpose, dagId);
+  }
+
+  /** {@code true} for the hourly form {@code <minute> * * * *} (a valid cron: the hour field is {@code *}). */
+  public static boolean isHourly(String cron) {
+    return cron.split(" ")[1].equals("*");
   }
 
   /** Optional list: missing, null or empty means that no column is encrypted. */

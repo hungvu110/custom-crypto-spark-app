@@ -30,14 +30,14 @@ public interface SilverDagTrigger {
 
   /**
    * Nội dung Airflow Variable của dataset, đúng khoá DAG factory đọc (airflow/dags/silver_ingest_factory.py): {@code ticket}, {@code table},
-   * {@code cron}, {@code outputMode} nếu người gửi chọn, và với dataset decrypt-encrypt {@code encryptColumns} (có thể rỗng) cùng
+   * {@code cron} (đúng như trên phiếu), {@code outputMode} nếu người gửi chọn, và với dataset decrypt-encrypt {@code encryptColumns} (có thể rỗng) cùng
    * {@code keyField} (chỉ khi có cột mã hoá). Không có key hay bí mật nào.
    */
   static Map<String, Object> scheduleConfig(SilverRequest r) {
     Map<String, Object> config = new LinkedHashMap<>();
     config.put("ticket", r.code());
     config.put("table", r.table());
-    config.put("cron", cron(r.scheduleTime()));
+    config.put("cron", r.cron());
     if (r.outputMode() != null) {
       config.put("outputMode", r.outputMode());
     }
@@ -48,12 +48,5 @@ public interface SilverDagTrigger {
       }
     }
     return config;
-  }
-
-  /** Cron chạy hằng ngày lúc {@code HH:mm} (múi giờ do DAG đặt): {@code 03:05} thành {@code 5 3 * * *}. */
-  static String cron(String scheduleTime) {
-    int hour = Integer.parseInt(scheduleTime.substring(0, 2));
-    int minute = Integer.parseInt(scheduleTime.substring(3, 5));
-    return minute + " " + hour + " * * *";
   }
 }
