@@ -16,9 +16,9 @@ Team gửi phiếu chuẩn hoá ở DAK, admin duyệt, DAK đưa phiếu sang A
 | `decrypt-encrypt` | File có thể bị mã hoá **toàn bộ** | Hỏi DAK key của dataset (`by-path`). Có key → giải mã file; chưa có key (DAK trả rỗng) → đọc nguyên trạng. Rồi mã hoá các cột người gửi phiếu chọn bằng **cdr-crypto** (key theo cột qua `by-column`); **không chọn cột nào thì chỉ giải mã** → ghi bảng. Mọi trường hợp đều thành công | VTNET `nims` |
 
 Dữ liệu lưu theo ngày, bên trong ngày có nhiều lô (VTNET `dt=YYYYMMDD/batch=...`) hoặc nhiều giờ (VTT `date=YYYYMMDD/hour=HH`), nên phiếu chỉ trỏ tới **dataset** (`path` = `nims`, `ebs_3g_4g`,
-`f001-mpre-call`), không trỏ tới ngày, lô hay giờ. Mỗi lần chạy nạp cả thư mục của **ngày hôm trước** vào partition `batch_id = <ngày>` (`yyyyMMdd`):
+`f001-mpre-call`), không trỏ tới ngày, lô hay giờ. Mỗi lần chạy nạp cả thư mục của **ngày hôm trước** vào các dòng `dt = <ngày>` (`yyyyMMdd`), mỗi dòng có thêm cột `hour` (xem `BACKFILL.md`):
 
-| Dataset | Thư mục một ngày | `batch_id` |
+| Dataset | Thư mục một ngày | `dt` |
 | --- | --- | --- |
 | `ebs_3g_4g` | `ebs_3g_4g/dt=YYYYMMDD/` (mọi `batch=HHmm`) | `YYYYMMDD` |
 | `nims` | `nims/dt=YYYYMMDD/` (mọi `batch=N`) | `YYYYMMDD` |
@@ -29,8 +29,8 @@ Dữ liệu lưu theo ngày, bên trong ngày có nhiều lô (VTNET `dt=YYYYMMD
 | Câu hỏi | Quyết định |
 | --- | --- |
 | File ở mode `decrypt-encrypt` có mã hoá không | **Do DAK quyết định lúc chạy**: job luôn gọi `by-path`; có key thì giải mã, chưa có key (DAK trả rỗng `204`, không mở YC) thì đọc nguyên trạng. **DAK đã đồng ý** ([TRA-LOI-DAK-BY-PATH.md](../key-access/TRA-LOI-DAK-BY-PATH.md) mục 5); `202` bị coi là lỗi |
-| Phiếu chuẩn hoá | Team gửi, **admin duyệt**. **Mọi phiếu là phiếu định kỳ** (quyết định 2026-10-28; VTT, `ebs_3g_4g` và `nims` đều chạy một ngày một lần): `path` = **tên dataset**, không có `batchId`, thêm `scheduleTime` (`HH:mm`, giờ chạy hằng ngày, **người gửi chọn**, admin duyệt cả giờ chạy); `table` (người gửi chọn), `outputMode` (tuỳ chọn), `purpose`; dataset `decrypt-encrypt` thêm `encryptColumns` (**có thể rỗng**: chỉ giải mã file), `keyField` (bắt buộc khi có cột). **Duyệt MỘT lần**: DAK ghi cấu hình vào Airflow Variable của dataset và bật DAG, phiếu ở `SCHEDULED` cho tới khi admin `stop`. Cả dataset chỉ có một phiếu chưa kết thúc (của mọi team). dak-mock: [README mục 2.4](../../dak-mock/README.md) |
-| Cách ghi bảng đích | **Ghi đè theo partition của lô.** Job thêm cột partition `batch_id` và mặc định `OUTPUT_MODE=overwrite-partitions`: chỉ thay partition của lô, chạy lại cùng lô không ghi trùng, lô khác giữ nguyên. `batch_id` = **ngày** nạp (`yyyyMMdd`) do DAG tự tính, nên chạy lại một ngày chỉ thay ngày đó. DAG chỉ nhận `overwrite-partitions` hoặc `append`, không nhận `overwrite` (thay cả bảng) |
+| Phiếu chuẩn hoá | Team gửi, **admin duyệt**. **Mọi phiếu là phiếu định kỳ** (quyết định 2026-10-28; VTT, `ebs_3g_4g` và `nims`; mặc định chạy một ngày một lần, có thể chạy hằng giờ): `path` = **tên dataset**, không có `batchId`, thêm `cron` (lịch chạy, giờ `Asia/Ho_Chi_Minh`, **người gửi chọn**, admin duyệt cả lịch; chỉ hai dạng: hằng ngày `<phút> <giờ> * * *` nạp ngày hôm trước, hằng giờ `<phút> * * * *` nạp giờ liền trước lúc chạy (chạy 11:05 nạp giờ 10)); `table` (người gửi chọn), `outputMode` (tuỳ chọn), `purpose`; dataset `decrypt-encrypt` thêm `encryptColumns` (**có thể rỗng**: chỉ giải mã file), `keyField` (bắt buộc khi có cột). **Duyệt MỘT lần**: DAK ghi cấu hình vào Airflow Variable của dataset và bật DAG, phiếu ở `SCHEDULED` cho tới khi admin `stop`. Cả dataset chỉ có một phiếu chưa kết thúc (của mọi team). dak-mock: [README mục 2.4](../../dak-mock/README.md) |
+| Cách ghi bảng đích | **Ghi đè theo partition của lô.** Job thêm cột lô `dt` (partition đầu tiên) và cột `hour` lấy từ đường dẫn file, và mặc định `OUTPUT_MODE=overwrite-partitions`: chỉ thay partition của lô, chạy lại cùng lô không ghi trùng, lô khác giữ nguyên. `dt` = **ngày** nạp (`yyyyMMdd`) do DAG tự tính, nên chạy lại một ngày chỉ thay ngày đó; chạy một khoảng giờ chỉ thay đúng `(dt, hour)` của khoảng đó. DAG chỉ nhận `overwrite-partitions` hoặc `append`, không nhận `overwrite` (thay cả bảng) |
 | Lịch chạy (DAK → Airflow) | Airflow REST không đổi được `schedule` của DAG đã có. **DAG factory đọc Airflow Variable** (quyết định 2026-10-28): duyệt phiếu thì DAK ghi cấu hình (`ticket`, `table`, `cron`, `encryptColumns`, `keyField`, `outputMode`) vào Variable `silver_ingest_vtnet_<dataset>` rồi bật DAG; factory dựng DAG với `schedule` = cron của phiếu. Dừng phiếu: tắt DAG và xoá Variable. Giờ chạy do người gửi phiếu chọn |
 | Ngày mỗi lần chạy nạp | **Ngày hôm trước** (đầu khoảng dữ liệu của lần chạy, đổi sang giờ Việt Nam): lần chạy 03:00 ngày 28 nạp `dt=<ngày 27>`. Không nạp bù khi duyệt (`catchup=False`); nạp bù hoặc chạy thử một ngày bằng thao tác admin `run` (`POST /mock-admin/silver-requests/{code}/run`, body `{"date":"yyyyMMdd"}`): DAK trigger một dag run `conf.date` ngoài lịch, phiếu và lịch không đổi. DAK không còn "trigger khi đủ dữ liệu": giờ chạy trên phiếu phải đặt sau lúc dữ liệu của ngày trước đã đủ |
 | Cột mã hoá | **Tuỳ chọn** (quyết định 2026-10-28): dataset như `nims` hiện không cần mã hoá cột nào nên phiếu để `encryptColumns` rỗng; job chỉ giải mã file, không gọi `by-column` và không cần `keyField`. Spark app, DAG và dak-mock đều hỗ trợ |
@@ -86,7 +86,7 @@ Một DAG **định kỳ** cho mỗi dataset, `silver_ingest_<nguồn>_<dataset>
 | --- | --- | --- | --- |
 | `ticket` | bắt buộc | bắt buộc | Mã phiếu đã duyệt, để tham chiếu |
 | `table` | bắt buộc | bắt buộc | Bảng đích trong `demo_db`, **người gửi phiếu chọn**, bắt đầu bằng `vtt_` (VTT) hoặc `vtnet_` (VTNET) |
-| `cron` | bắt buộc | bắt buộc | Cron hằng ngày `<phút> <giờ> * * *` (từ `scheduleTime` của phiếu) → `schedule` của DAG |
+| `cron` | bắt buộc | bắt buộc | Cron của phiếu, ghi nguyên văn: hằng ngày `<phút> <giờ> * * *` hoặc hằng giờ `<phút> * * * *` → `schedule` của DAG; hằng giờ chỉ khi dataset có `hour_glob` |
 | `outputMode` | tuỳ chọn | tuỳ chọn | `overwrite-partitions` (mặc định) hoặc `append` |
 | `encryptColumns` | không nhận | tuỳ chọn (có thể rỗng) | Cột cần mã hoá, người gửi phiếu chọn; rỗng = chỉ giải mã file |
 | `keyField` | không nhận | bắt buộc khi có cột | Cột giữ plaintext làm nguyên liệu key |
@@ -96,6 +96,37 @@ Cấu hình sai (không phải JSON, cron không phải cron hằng ngày, bản
 
 DAG kiểm `conf` ở task đầu `validate_conf` trước khi tạo job, như DAG khử định danh.
 
+### 3.5 Cấu hình riêng của từng dataset (`DATASETS`)
+
+**Mọi thứ riêng của một dataset nằm ở một chỗ duy nhất**: dòng của dataset đó trong `DATASETS` (file `silver_ingest_vtt.py`, `silver_ingest_vtnet.py`).
+Spark app không chứa tên hay logic của dataset nào; muốn đổi cách xử lý một dataset thì sửa dòng này, không sửa code Spark. Các khoá được khai và
+kiểm tra ở `silver_ingest_common.DATASET_KEYS`; sai khoá hay sai giá trị thì file DAG báo lỗi import ngay khi Airflow đọc, không ngầm dùng giá trị mặc định.
+
+| Khoá | Bắt buộc | Ý nghĩa |
+|---|---|---|
+| `mode` | có | `passthrough` hoặc `decrypt-encrypt` |
+| `hour_glob` | không | Chỗ ghi giờ dưới thư mục của một ngày, `%H%` là giờ (VTT `hour=%H%`, ebs `batch=%H%*`, nims `batch=*/infra_cell_4g-%H%*`). Có thì chạy được theo giờ; không có thì chỉ chạy cả ngày |
+| `partition_by_hour` | không | `true`: bảng partition `(dt, hour)` (dataset lớn); mặc định `false`: chỉ `dt`, `hour` là cột thường (dataset nhỏ). Cần `hour_glob` |
+| `key_path` | không | Chỉ `decrypt-encrypt`: đường dẫn hỏi DAK `by-path` (mặc định là tên dataset) |
+| `resources` | không | Tài nguyên Spark riêng của dataset; khoá nào không khai thì dùng mặc định |
+
+**`resources`** (mỗi khoá tuỳ chọn; mặc định là giá trị mọi dataset dùng từ trước, nên không khai thì hành vi không đổi):
+
+| Khoá | Mặc định | Giới hạn chấp nhận |
+|---|---|---|
+| `executors` | 2 | 1–100 |
+| `executor_cores` | 2 | 1–16 |
+| `executor_memory` | `4096m` | `256m`–`64g` (viết `4096m` hoặc `4g`) |
+| `executor_memory_overhead` | `1024m` | như trên |
+| `driver_cores` | 1 | 1–4 |
+| `driver_memory` | `2048m` | `256m`–`64g` |
+| `driver_memory_overhead` | `512m` | như trên |
+| `shuffle_partitions` | 64 | 1–20000 |
+
+Ví dụ: `"f001-mpre-call": {"mode": "passthrough", "hour_glob": "hour=%H%", "partition_by_hour": True, "resources": {"executors": 10, "executor_cores": 4, "executor_memory": "8g"}}`.
+
+Cách chọn số: một ngày VTT khoảng 165 GB, mỗi giờ khoảng 7 GB. Số task đọc xấp xỉ dung lượng chia 128 MB, nên số core (`executors` × `executor_cores`) quyết định thời gian chạy; `shuffle_partitions` xấp xỉ dung lượng chia 128–200 MB nhưng nhánh `passthrough` ít shuffle nên ít ảnh hưởng. **Các con số phải đo bằng dữ liệu thật** (xem Spark UI: thời gian task, spill, GC) và nằm trong hạn mức (ResourceQuota) của namespace; chưa có số đo nào nên VTT hiện vẫn dùng mặc định.
+
 ## 4. Việc cần làm
 
 | # | Việc | Kiểm |
@@ -104,7 +135,7 @@ DAG kiểm `conf` ở task đầu `validate_conf` trước khi tạo job, như D
 | M1 | dak-mock: `GET /api/v1/keys/by-path` (kiểm `path`, `tag=internal`, client nội bộ), key ở Vault theo SHA-256 của đường dẫn, chưa có key → `204` | Test API |
 | M2 | dak-mock: admin tạo key trực tiếp `POST /mock-admin/path-keys`, `POST /mock-admin/column-keys` | Test API |
 | M3 | dak-mock: phiếu chuẩn hoá silver (gửi, duyệt, trigger DAG qua Airflow REST, theo dõi dag run, chống trùng) | Test parser, service, Airflow giả, API |
-| M5 | dak-mock: phiếu định kỳ (mọi nguồn): `scheduleTime`, duyệt một lần (`SCHEDULED`), ghi Variable + bật DAG qua Airflow REST, `stop`, `lastRun`, chặn trùng theo dataset | Test parser, service, client Airflow (MockWebServer), API |
+| M5 | dak-mock: phiếu định kỳ (mọi nguồn): `cron`, duyệt một lần (`SCHEDULED`), ghi Variable + bật DAG qua Airflow REST, `stop`, `lastRun`, chặn trùng theo dataset | Test parser, service, client Airflow (MockWebServer), API |
 | S1 | `silver-ingest-app`: cấu hình theo env cho hai nguồn, gom mọi lỗi một lượt | Test cấu hình |
 | S2 | `FileCipher` + `AesGcmFileCipher`, giải mã trong bộ nhớ và ra thư mục tạm | Test mã hoá/giải mã, tag sai |
 | S3 | Job `passthrough`: đọc file → ghi bảng | Test với Spark cục bộ |
@@ -125,7 +156,7 @@ DAG kiểm `conf` ở task đầu `validate_conf` trước khi tạo job, như D
 - **Gốc landing cần xác nhận.** DAG đang đặt chung `/prod8/landing/vtnet/` cho mọi dataset VTNET (giả định, tất cả dataset cùng một cụm HDFS). Màn hình `hdfs-kerberos-client-hkh` lại cho thấy `/landing/ebs_3g_4g/dt=...` và `/landing/nims/dt=.../batch=1/infra_cell_4g-<giờ>.csv`: nếu đó là gốc thật thì sửa `INPUT_ROOT` trong `silver_ingest_vtnet.py`.
 - Dữ liệu thật (HDFS): VTNET `/prod8/landing/vtnet/<bảng>/dt=<ngày>/batch=<HHmm>/<file>.csv`; VTT `/landing/vtt/lakehouse/vtt-core/<bảng>/date=<ngày>/hour=<giờ>/`
   (~98 file × 70 MB mỗi giờ). Gốc landing của hai DAG đã đặt theo đây; schema và delimiter từng bảng **chưa khai** (`INPUT_SCHEMA` để trống).
-- Bảng đích đã tồn tại mà không partition theo `batch_id` bị từ chối (exit 1): tạo bảng mới hoặc đổi `OUTPUT_TABLE`.
+- Bảng đích đã tồn tại mà không partition theo `dt` (và `hour` nếu dataset partition theo giờ) bị từ chối (exit 1): tạo bảng mới hoặc đổi `OUTPUT_TABLE`.
 - DAK thật **chưa code** `by-path` (tài liệu mới mục 5): họ chờ câu trả lời mục 6 — đã soạn ở `TRA-LOI-DAK-BY-PATH.md`, cần gửi DAK. Job VTNET chạy được với
   dak-mock; với DAK thật cần DAK làm xong `by-path`.
 - Lần đầu ghi một bảng silver mới: job chờ admin DAK duyệt yêu cầu key cột (tối đa `DAK_PENDING_WAIT_TIMEOUT_SECONDS`). Trong lúc chờ, driver

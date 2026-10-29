@@ -10,13 +10,13 @@ Cách đọc: mỗi bước là **một lệnh**, chạy lần lượt từ trê
 ## 0. Dataset và kịch bản
 
 Mỗi dataset (của VTT lẫn VTNET) có một DAG định kỳ (`silver_ingest_<nguồn>_<dataset>`), một mode của Spark app, và **một phiếu** cho cả dataset. Mỗi lần chạy nạp **một ngày**: thư mục của
-**ngày hôm trước** (mọi `batch=...`/`hour=...` bên trong) vào partition `batch_id = <ngày>`, không bao giờ cả bảng:
+**ngày hôm trước** (mọi `batch=...`/`hour=...` bên trong) vào các dòng `dt = <ngày>` (mỗi dòng có thêm cột `hour`), không bao giờ cả bảng:
 
-| Dataset | DAG | Mode | Thư mục một ngày | `batch_id` |
-| --- | --- | --- | --- | --- |
-| `nims` | `silver_ingest_vtnet_nims` | `decrypt-encrypt` | `nims/dt=YYYYMMDD/batch=N/…` | `YYYYMMDD` |
-| `ebs_3g_4g` | `silver_ingest_vtnet_ebs_3g_4g` | `passthrough` | `ebs_3g_4g/dt=YYYYMMDD/batch=HHmm/…` | `YYYYMMDD` |
-| `f001-mpre-call` (VTT) | `silver_ingest_vtt_f001_mpre_call` | `passthrough` | `f001-mpre-call/date=YYYYMMDD/hour=HH/…` | `YYYYMMDD` |
+| Dataset | DAG | Mode | Thư mục một ngày | `dt` | Partition bảng |
+| --- | --- | --- | --- | --- | --- |
+| `nims` | `silver_ingest_vtnet_nims` | `decrypt-encrypt` | `nims/dt=YYYYMMDD/batch=N/…` | `YYYYMMDD` | `dt` |
+| `ebs_3g_4g` | `silver_ingest_vtnet_ebs_3g_4g` | `passthrough` | `ebs_3g_4g/dt=YYYYMMDD/batch=HHmm/…` | `YYYYMMDD` | `dt, hour` |
+| `f001-mpre-call` (VTT) | `silver_ingest_vtt_f001_mpre_call` | `passthrough` | `f001-mpre-call/date=YYYYMMDD/hour=HH/…` | `YYYYMMDD` | `dt, hour` |
 
 | Kịch bản | Dataset | File landing | Key `by-path` của dataset | Cột mã hoá | Mục |
 | --- | --- | --- | --- | --- | --- |
@@ -255,8 +255,8 @@ kubectl exec vault-cli -n $NS -- vault kv metadata get -mount=kv hla-datalake/da
 Mục này giải thích các lệnh sẽ dùng ở các kịch bản; mỗi kịch bản có lệnh đầy đủ của nó.
 
 - **Gửi phiếu:** `curl -s -X POST localhost:8085/mock-portal/silver-requests -H "X-Mock-Portal-Token: $PT" -H 'Content-Type: application/json' --data @<file phiếu>.json`.
-  Phiếu đúng: `201`, `"state": "PENDING_APPROVAL"`, `"code": "SLV-<năm>-000001"`, `"dagId"` là DAG của dataset, `"scheduleTime"` là giờ chạy, **không có** `batchId`.
-  Sai thì `400 invalid_request` với `problems[]` liệt kê mọi lỗi (vd `path` là một ngày/lô thay vì tên dataset, có `batchId`, thiếu `scheduleTime`, `table` không bắt đầu bằng tiền tố của nguồn).
+  Phiếu đúng: `201`, `"state": "PENDING_APPROVAL"`, `"code": "SLV-<năm>-000001"`, `"dagId"` là DAG của dataset, `"cron"` là lịch chạy, **không có** `batchId`.
+  Sai thì `400 invalid_request` với `problems[]` liệt kê mọi lỗi (vd `path` là một ngày/lô thay vì tên dataset, có `batchId`, thiếu hoặc sai `cron`, `table` không bắt đầu bằng tiền tố của nguồn).
   Dataset đang có phiếu chưa kết thúc thì `409 duplicate_request`. **Ghi lại `code`** rồi đặt `CODE=<code>` cho các lệnh sau.
 - **Duyệt một lần:** `curl -s -X POST localhost:8085/mock-admin/silver-requests/$CODE/approve -H "X-Mock-Admin-Token: $AT"` → `"state": "SCHEDULED"`. Nếu `SUBMIT_FAILED` thì đọc `submitError`
   (`airflow dag not found` = DAG chưa vào Airflow; `airflow denied the request` = sai user/mật khẩu hoặc thiếu quyền Variables/DAGs; `airflow unavailable` = sai địa chỉ), sửa rồi
@@ -287,7 +287,7 @@ cat > /tmp/nims-n1.json <<'JSON'
 {
   "source": "VTNET",
   "path": "nims",
-  "scheduleTime": "03:00",
+  "cron": "0 3 * * *",
   "table": "vtnet_nims_infra_cell_4g",
   "encryptColumns": [],
   "purpose": "Test N1: daily load of the nims dataset at 03:00, decrypt the files only, no column to encrypt"
@@ -357,20 +357,20 @@ curl -s localhost:8085/mock-portal/silver-requests/$CODE -H "X-Mock-Portal-Token
 
 | Mục log | Nội dung |
 | --- | --- |
-| `1. CONFIG` | `MODE: decrypt-encrypt`, `KEY_PATH: nims`, `CDR_ENCRYPT_COLUMNS: (none)`, `INPUT_PATH: …/nims/dt=20261013`, `BATCH: batch_id = 20261013` |
+| `1. CONFIG` | `MODE: decrypt-encrypt`, `KEY_PATH: nims`, `CDR_ENCRYPT_COLUMNS: (none)`, `INPUT_PATH: …/nims/dt=20261013`, `BATCH: dt = 20261013`, `HOURS: hour from /batch=[^/]*/infra_cell_4g…`, `OUTPUT_PARTITION_BY: dt` |
 | `3. PATH KEY (DAK by-path)` | `path: nims`; `path key received (keyVersion=…): files are encrypted, decrypting with aes-256-gcm` |
 | `4. COLUMN KEYS` | `no column to encrypt: DAK by-column is not called, columns are written as they are` |
-| `5. READ, ENCRYPT COLUMNS, WRITE` | `files = 2` (hai lô của ngày), `decrypting in memory (text format)`, cột `tac, eci, lng, lat, city, district, cell_status, batch_id`, `written demo_db.vtnet_nims_infra_cell_4g` |
+| `5. READ, ENCRYPT COLUMNS, WRITE` | `files = 2` (hai lô của ngày), `decrypting in memory (text format)`, cột `tac, eci, lng, lat, city, district, cell_status, hour, dt`, `written demo_db.vtnet_nims_infra_cell_4g` |
 | cuối | `JOB SUCCEEDED — 2 file(s) decrypted and written to demo_db.vtnet_nims_infra_cell_4g`, exit code `0` |
 
 Log **không** được chứa giá trị key hay dòng dữ liệu giải mã. Kỳ vọng cuối: dag run `success`, `lastRun` là `SUCCEEDED` (phiếu vẫn `SCHEDULED`), driver exit code `0`.
 
 ### 5.5 Kiểm bảng
 
-Số dòng của ngày vừa nạp (1 dòng: `20261013 | 100`, tức hai lô × 50 dòng):
+Số dòng của ngày vừa nạp theo giờ (giờ lấy từ tên file `infra_cell_4g-HHmmss.csv`; tổng 100 dòng, tức hai lô × 50 dòng):
 
 ```sql
-SELECT batch_id, count(*) FROM demo_db.vtnet_nims_infra_cell_4g GROUP BY batch_id;
+SELECT dt, hour, count(*) FROM demo_db.vtnet_nims_infra_cell_4g GROUP BY dt, hour ORDER BY hour;
 ```
 
 Đọc vài dòng (phải đọc được như file `.plain`, **không** phải byte rác):
@@ -379,7 +379,7 @@ SELECT batch_id, count(*) FROM demo_db.vtnet_nims_infra_cell_4g GROUP BY batch_i
 SELECT * FROM demo_db.vtnet_nims_infra_cell_4g ORDER BY eci LIMIT 5;
 ```
 
-Kiểm partition (`partitionColumns = [batch_id]`):
+Kiểm partition (`partitionColumns = [dt]`: nims chỉ partition theo ngày, `hour` là cột thường):
 
 ```sql
 DESCRIBE DETAIL demo_db.vtnet_nims_infra_cell_4g;
@@ -442,7 +442,7 @@ cat > /tmp/ebs-e1.json <<'JSON'
 {
   "source": "VTNET",
   "path": "ebs_3g_4g",
-  "scheduleTime": "02:30",
+  "cron": "30 2 * * *",
   "table": "vtnet_ebs_3g_4g",
   "purpose": "Test E1: daily load of the ebs_3g_4g dataset at 02:30, write as it is"
 }
@@ -485,10 +485,10 @@ kubectl logs -n $NS <tên>-driver | grep -E "SILVER|READ|WRITE|JOB"
 
 Log: `3. READ SOURCE` (`files = 2`: hai lô `batch=1520`, `batch=1540`), `4. WRITE TARGET`, `JOB SUCCEEDED — 2 file(s) written`; **không có** mục `PATH KEY`/`COLUMN KEYS`.
 
-Kiểm bảng `demo_db.vtnet_ebs_3g_4g`, partition `batch_id=20261012`, 100 dòng, cột đúng như file (`imsi, lac, sac, eci, event_time, event_ids, event_result, date_hour`):
+Kiểm bảng `demo_db.vtnet_ebs_3g_4g`, `dt=20261012`, 100 dòng, cột đúng như file (`imsi, lac, sac, eci, event_time, event_ids, event_result, date_hour`) cộng `hour` (từ tên thư mục `batch=HHmm`) và `dt`; `partitionColumns = [dt, hour]`:
 
 ```sql
-SELECT batch_id, count(*) FROM demo_db.vtnet_ebs_3g_4g GROUP BY batch_id;
+SELECT dt, hour, count(*) FROM demo_db.vtnet_ebs_3g_4g GROUP BY dt, hour ORDER BY hour;
 ```
 
 Dừng phiếu:
@@ -508,7 +508,7 @@ cat > /tmp/vtt-v1.json <<'JSON'
 {
   "source": "VTT",
   "path": "f001-mpre-call",
-  "scheduleTime": "01:30",
+  "cron": "30 1 * * *",
   "table": "vtt_f001_mpre_call",
   "purpose": "Test V1: daily load of the VTT table f001-mpre-call at 01:30, write as it is"
 }
@@ -540,10 +540,10 @@ curl -s -X POST localhost:8085/mock-admin/silver-requests/$CODE/run -H "X-Mock-A
 ```
 
 Log: `3. READ SOURCE` (`files = 2`: hai giờ của ngày), `4. WRITE TARGET`, `JOB SUCCEEDED — 2 file(s) written`; không có `PATH KEY`/`COLUMN KEYS`, không cần Secret `spark-dak-client`.
-Bảng `demo_db.vtt_f001_mpre_call`, partition `batch_id=20261012`, 100 dòng, giá trị các cột **giống file** (không bị mã hoá thêm, không bị đổi); bảng không có cột `hour`:
+Bảng `demo_db.vtt_f001_mpre_call`, `dt=20261012`, 100 dòng, giá trị các cột **giống file** (không bị mã hoá thêm, không bị đổi), cộng cột `hour` (từ thư mục `hour=HH`) và `dt`; `partitionColumns = [dt, hour]`:
 
 ```sql
-SELECT batch_id, count(*) FROM demo_db.vtt_f001_mpre_call GROUP BY batch_id;
+SELECT dt, hour, count(*) FROM demo_db.vtt_f001_mpre_call GROUP BY dt, hour ORDER BY hour;
 ```
 
 Một ngày VTT thật có khoảng 24 giờ × 98 file × 70 MB: cần executor đủ lớn. Dừng phiếu:
@@ -554,7 +554,7 @@ curl -s -X POST localhost:8085/mock-admin/silver-requests/$CODE/stop -H "X-Mock-
 
 ## 7. Kiểm lịch thật
 
-Phiếu `SCHEDULED` tự chạy mỗi ngày. Để thấy một lần chạy theo lịch: gửi phiếu với `scheduleTime` vài phút sau giờ hiện tại, đặt file vào thư mục của **hôm qua** (`dt=<hôm qua>`), duyệt, rồi đợi. Kiểm dag run mới nhất
+Phiếu `SCHEDULED` tự chạy mỗi ngày. Để thấy một lần chạy theo lịch: gửi phiếu với `cron` chạy vài phút sau giờ hiện tại (vd bây giờ 14:20 thì `"cron": "25 14 * * *"`), đặt file vào thư mục của **hôm qua** (`dt=<hôm qua>`), duyệt, rồi đợi. Kiểm dag run mới nhất
 (phải có dag run `scheduled__…`):
 
 ```bash
@@ -567,14 +567,14 @@ Xem `lastRun` của phiếu:
 curl -s localhost:8085/mock-portal/silver-requests/$CODE -H "X-Mock-Portal-Token: $PT"
 ```
 
-Kỳ vọng: bảng có partition `batch_id = <hôm qua>`; không có dag run nào cho các ngày trước lúc duyệt (`catchup=False`).
+Kỳ vọng: bảng có các dòng `dt = <hôm qua>`; không có dag run nào cho các ngày trước lúc duyệt (`catchup=False`).
 
 ## 8. Lỗi thường gặp
 
 | Hiện tượng | Nguyên nhân | Cách xử lý |
 | --- | --- | --- |
 | `400 invalid_request`, `path` | `path` không đúng là tên dataset của nguồn (`nims`, `ebs_3g_4g` của VTNET; `f001-mpre-call` của VTT): có ngày/lô/giờ (`nims/dt=…`), sai chữ hoa/thường, hoặc dataset của nguồn khác | Chỉ gửi tên dataset; chạy bù một ngày bằng `/run` (mục 4) |
-| `400 invalid_request`, `batchId` / `scheduleTime` | Phiếu có `batchId` (không được có), hoặc thiếu/sai `scheduleTime` (`HH:mm`) | Bỏ `batchId`, đặt `scheduleTime` |
+| `400 invalid_request`, `batchId` / `cron` | Phiếu có `batchId` (không được có), hoặc thiếu/sai `cron` (chỉ `<phút> <giờ> * * *` hoặc `<phút> * * * *`) | Bỏ `batchId`, đặt `cron` đúng dạng |
 | `400 invalid_request`, `encryptColumns`/`keyField` | Dataset passthrough (`ebs_3g_4g`, `f001-mpre-call`) có hai trường này | Bỏ hai trường |
 | `400 invalid_request`, `table` | Bảng không bắt đầu bằng tiền tố của nguồn (`vtt_`, `vtnet_`) hoặc có chữ hoa/`-` | Dùng `vtnet_nims_…`, `vtt_f001_mpre_call` |
 | Phiếu `409 duplicate_request` | Dataset đang có phiếu chưa kết thúc (kể cả `SCHEDULED`, của team nào cũng vậy) | Dừng hoặc huỷ phiếu cũ (mục 9) |
@@ -585,7 +585,7 @@ Kỳ vọng: bảng có partition `batch_id = <hôm qua>`; không có dag run n�
 | Job exit 1, `INPUT_PATH does not exist` / `No file under INPUT_PATH` | Thư mục `dt=<ngày>` của ngày đó chưa có hoặc rỗng (dữ liệu chưa về trước giờ chạy) | Đặt giờ chạy muộn hơn; nạp bù bằng `/run` với `date` |
 | Job exit 1, "no such column …" / cột `_c0` | Không có header, hoặc sai tên cột | Mục 0: đặt `INPUT_SCHEMA` |
 | Job exit 1, `FileDecryptionException … wrong key or corrupted file` | Key của dataset khác key đã mã hoá file | Tạo đúng key (mục 3.4) |
-| Bảng ghi **byte rác** mà dag run `success` (`nims`) | File mã hoá nhưng DAK **chưa có** key của dataset → `204` → job đọc ciphertext, không có cột nào để báo lỗi | Tạo key dataset **trước** khi file được nạp; luôn kiểm bảng (mục 5.5); xoá partition lỗi (`DELETE FROM … WHERE batch_id = …`) rồi chạy lại ngày đó |
+| Bảng ghi **byte rác** mà dag run `success` (`nims`) | File mã hoá nhưng DAK **chưa có** key của dataset → `204` → job đọc ciphertext, không có cột nào để báo lỗi | Tạo key dataset **trước** khi file được nạp; luôn kiểm bảng (mục 5.5); xoá partition lỗi (`DELETE FROM … WHERE dt = …`) rồi chạy lại ngày đó |
 | Job exit 1, `403 key_disabled` | Key của dataset đang bị khoá | Admin mở khoá: `curl -s -X POST localhost:8085/mock-admin/path-keys/enable -H "X-Mock-Admin-Token: $AT" -H 'Content-Type: application/json' -d '{"path":"nims"}'` |
 | Driver không lấy được token DAK | Sai `DAK_TOKEN_URL`/`DAK_CLIENT_ID`, thiếu Secret `spark-dak-client` | Mục 1, dòng 6–8 |
 | Driver lỗi `PKIX path building failed` / `UnknownHostException sso-lakehouse…` | Thiếu hoặc sai ConfigMap `keycloak-ca`, hoặc sai IP host alias | Mục 1, dòng 8b |
@@ -678,6 +678,6 @@ Bỏ các biến chứa bí mật:
 unset PT AT AP PK
 ```
 
-- Xoá bảng thử nếu cần: `DROP TABLE demo_db.vtnet_nims_infra_cell_4g` (và `vtnet_ebs_3g_4g`, `vtt_f001_mpre_call`), xoá luôn partition. Xoá một ngày: `DELETE FROM demo_db.<bảng> WHERE batch_id = '<ngày>'`.
+- Xoá bảng thử nếu cần: `DROP TABLE demo_db.vtnet_nims_infra_cell_4g` (và `vtnet_ebs_3g_4g`, `vtt_f001_mpre_call`), xoá luôn partition. Xoá một ngày: `DELETE FROM demo_db.<bảng> WHERE dt = '<ngày>'`.
 - Key `by-path` của dataset `nims` là key thử: thay bằng key thật của VTNET khi chạy thật.
 - SparkApplication tự xoá sau 7 ngày (`timeToLiveSeconds`).
