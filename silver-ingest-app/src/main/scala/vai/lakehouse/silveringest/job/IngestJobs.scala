@@ -18,6 +18,15 @@ object IngestResult {
   final case class Written(files: Int, decrypted: Boolean = false) extends IngestResult
 }
 
+/** Đọc file plaintext của `INPUT_PATH`; có `HOUR_PATH_REGEX` thì chia theo giờ của file và gắn cột giờ ([[HourGroups]]). */
+private[job] object PlainSource {
+
+  def read(spark: SparkSession, cfg: IngestConfig, files: Seq[SourceFile]): DataFrame = cfg.hours match {
+    case None => SourceReader.read(spark, cfg.input, Seq(cfg.input.path))
+    case Some(h) => HourGroups.read(h, files)(group => SourceReader.read(spark, cfg.input, group.map(_.path)))
+  }
+}
+
 /** Passthrough: files are read and written as they are (e.g. VTT files already encrypted by column). No DAK call, no decryption. */
 object PassthroughJob {
 
@@ -25,7 +34,7 @@ object PassthroughJob {
     Log.section("3. READ SOURCE")
     val files = SourceFiles.list(spark, cfg.input.path)
     Log.kv("files", files.size)
-    val df = SourceReader.read(spark, cfg.input, Seq(cfg.input.path))
+    val df = PlainSource.read(spark, cfg, files)
     Log.kv("columns", df.columns.mkString(", "))
 
     Log.section("4. WRITE TARGET")
@@ -83,12 +92,15 @@ object DecryptEncryptJob {
     Log.kv("files", files.size)
     fileKey match {
       case None =>
-        write(spark, cfg, encrypt(SourceReader.read(spark, cfg.input, Seq(cfg.input.path))))
+        write(spark, cfg, encrypt(PlainSource.read(spark, cfg, files)))
         IngestResult.Written(files.size)
       case Some((cipher, key)) =>
         val staging = v.stagingPath.map(base => s"${base.stripSuffix("/")}/${spark.sparkContext.applicationId}-${UUID.randomUUID()}")
         try {
-          write(spark, cfg, encrypt(decrypted(spark, cfg, files, cipher, key, staging)))
+          val plain = cfg.hours.fold(decrypted(spark, cfg, files, cipher, key, staging)) { h =>
+            HourGroups.read(h, files)(group => decrypted(spark, cfg, group, cipher, key, staging))
+          }
+          write(spark, cfg, encrypt(plain))
           IngestResult.Written(files.size, decrypted = true)
         } finally staging.foreach { dir =>
           if (EncryptedSource.delete(spark, dir)) Log.info(s"staging directory removed: $dir")

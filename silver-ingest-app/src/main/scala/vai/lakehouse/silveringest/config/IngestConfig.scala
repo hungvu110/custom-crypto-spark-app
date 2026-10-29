@@ -1,6 +1,7 @@
 package vai.lakehouse.silveringest.config
 
 import java.util.Locale
+import java.util.regex.{Pattern, PatternSyntaxException}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Try
@@ -71,6 +72,13 @@ final case class InputSpec(path: String, format: InputFormat, schema: Option[Str
 final case class Batch(column: String, value: String)
 
 /**
+ * Giờ của từng dòng: job thêm cột `column` = giờ `HH` suy ra từ ĐƯỜNG DẪN file nguồn bằng `pathRegex` (đúng một nhóm bắt, không khớp
+ * thì `NA`). Đặt cột này vào `OUTPUT_PARTITION_BY` nếu muốn bảng partition theo giờ; không thì nó là cột thường. `replace` (rỗng = cả ngày):
+ * chỉ các giờ này của lô bị thay khi `overwrite-partitions`, nên chạy lại vài giờ không đụng các giờ khác của ngày và không ghi trùng.
+ */
+final case class Hours(column: String, pathRegex: String, replace: Seq[String] = Nil)
+
+/**
  * Phần riêng của chế độ decrypt-encrypt.
  *
  * @param keyPath        đường dẫn gửi cho DAK `by-path` (một key cho cả file/thư mục): TƯƠNG ĐỐI theo gốc `KEY_PATH_ROOT` của nguồn, ở
@@ -102,7 +110,8 @@ final case class IngestConfig(
     warehousePath: Option[String],
     enableHiveSupport: Boolean,
     decryptEncrypt: Option[DecryptEncryptSettings],
-    batch: Option[Batch] = None) {
+    batch: Option[Batch] = None,
+    hours: Option[Hours] = None) {
 
   def target: String = s"$outputDb.$outputTable"
 
@@ -115,6 +124,7 @@ final case class IngestConfig(
     "INPUT_OPTION_*"      -> (if (input.options.isEmpty) "(none)" else input.options.keys.toSeq.sorted.mkString(", ")),
     "OUTPUT"              -> s"$target [${outputFormat.name}, $outputMode]",
     "BATCH"               -> batch.fold("(none)")(b => s"${b.column} = ${b.value}"),
+    "HOURS"               -> hours.fold("(none)")(h => s"${h.column} from ${h.pathRegex}" + (if (h.replace.isEmpty) "" else s"; replace ${h.replace.mkString(",")}")),
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
@@ -138,6 +148,8 @@ object IngestConfig {
 
   val DefaultBatchColumn = "batch_date"
   private val BatchValue = "^[A-Za-z0-9_.:-]{1,64}$"
+  val DefaultHourColumn = "hour"
+  private val HourValue = "^([01]\\d|2[0-3])$"
 
   /** Thuật toán giải mã file được hỗ trợ; phải khớp `FileCipher.forName`. Chỉ dùng khi `by-path` có key cho đường dẫn. */
   val FileCiphers = Seq("aes-256-gcm")
@@ -213,6 +225,26 @@ object IngestConfig {
         if (raw("BATCH_COLUMN").isDefined) errors += "BATCH_COLUMN: only used together with BATCH_VALUE"
         None
     }
+    val hours = raw("HOUR_PATH_REGEX") match {
+      case Some(pattern) =>
+        try {
+          if (Pattern.compile(pattern).matcher("").groupCount != 1) errors += "HOUR_PATH_REGEX: must have exactly one capture group (the hour)"
+        } catch {
+          case _: PatternSyntaxException => errors += "HOUR_PATH_REGEX: not a valid regular expression"
+        }
+        val column = raw("HOUR_COLUMN").getOrElse(DefaultHourColumn)
+        if (!column.matches(ColumnName)) errors += s"HOUR_COLUMN: invalid column name '$column'"
+        if (batch.exists(_.column.equalsIgnoreCase(column))) errors += "HOUR_COLUMN: must differ from BATCH_COLUMN"
+        val replace = raw("BATCH_HOURS").map(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq).getOrElse(Nil)
+        replace.filterNot(_.matches(HourValue)).foreach(h => errors += s"BATCH_HOURS: invalid hour '$h' (two digits, 00 to 23)")
+        if (replace.distinct.size != replace.size) errors += "BATCH_HOURS: duplicated hour"
+        if (replace.nonEmpty && batch.isEmpty) errors += "BATCH_HOURS: only used together with BATCH_VALUE"
+        Some(Hours(column, pattern, replace))
+      case None =>
+        val set = Seq("HOUR_COLUMN", "BATCH_HOURS").filter(k => raw(k).isDefined)
+        if (set.nonEmpty) errors += s"${set.mkString("/")}: only used together with HOUR_PATH_REGEX"
+        None
+    }
     val outputMode = raw("OUTPUT_MODE").map(_.toLowerCase(Locale.ROOT))
       .getOrElse(if (batch.isDefined) OverwritePartitions else "overwrite")
     if (!OutputModes.contains(outputMode)) errors += s"OUTPUT_MODE='$outputMode': must be one of ${OutputModes.mkString(" / ")}"
@@ -244,7 +276,7 @@ object IngestConfig {
 
     if (errors.nonEmpty) Left(errors.toList)
     else Right(IngestConfig(mode, raw("APP_NAME").getOrElse(s"SilverIngest-${mode.name}"), input, outDb, outTable,
-      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch))
+      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours))
   }
 
   private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],

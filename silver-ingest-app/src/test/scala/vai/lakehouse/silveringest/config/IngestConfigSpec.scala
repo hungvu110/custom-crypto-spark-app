@@ -168,6 +168,37 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
       include("must not be CDR_KEY_FIELD")
   }
 
+  it should "dựng phần giờ: cột hour mặc định, regex một nhóm bắt, các giờ cần thay" in {
+    val env = common ++ Map("BATCH_VALUE" -> "20261013", "BATCH_COLUMN" -> "dt", "HOUR_PATH_REGEX" -> "/hour=(\\d{2})(?:/|$)")
+
+    IngestConfig.fromEnv(Mode.Passthrough, env).toOption.get.hours shouldBe Some(Hours("hour", "/hour=(\\d{2})(?:/|$)", Nil))
+    val some = IngestConfig.fromEnv(Mode.Passthrough, env ++ Map("HOUR_COLUMN" -> "h", "BATCH_HOURS" -> "10, 11,12")).toOption.get
+    some.hours shouldBe Some(Hours("h", "/hour=(\\d{2})(?:/|$)", Seq("10", "11", "12")))
+    // The hour column is a partition only when it is listed in OUTPUT_PARTITION_BY (after the batch column).
+    IngestConfig.fromEnv(Mode.Passthrough, env ++ Map("OUTPUT_PARTITION_BY" -> "hour")).toOption.get.partitionBy shouldBe Seq("dt", "hour")
+    IngestConfig.fromEnv(Mode.Passthrough, env).toOption.get.partitionBy shouldBe Seq("dt")
+    IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.hours shouldBe None
+    IngestConfig.fromEnv(Mode.Passthrough, env ++ Map("BATCH_HOURS" -> "")).toOption.get.hours.get.replace shouldBe Nil
+  }
+
+  it should "từ chối cấu hình giờ sai mà không lặp lại regex" in {
+    val env = common ++ Map("BATCH_VALUE" -> "20261013", "HOUR_PATH_REGEX" -> "/hour=(\\d{2})/")
+
+    errors(Mode.Passthrough, env ++ Map("HOUR_PATH_REGEX" -> "/hour=(\\d{2}")) should include("not a valid regular expression")
+    errors(Mode.Passthrough, env ++ Map("HOUR_PATH_REGEX" -> "/hour=\\d{2}/")) should include("exactly one capture group")
+    errors(Mode.Passthrough, env ++ Map("HOUR_PATH_REGEX" -> "/(a)(b)/")) should include("exactly one capture group")
+    errors(Mode.Passthrough, env ++ Map("HOUR_COLUMN" -> "bad-name")) should include("invalid column name")
+    errors(Mode.Passthrough, env ++ Map("BATCH_COLUMN" -> "hour")) should include("must differ from BATCH_COLUMN")
+    errors(Mode.Passthrough, env ++ Map("BATCH_HOURS" -> "9")) should include("invalid hour")
+    errors(Mode.Passthrough, env ++ Map("BATCH_HOURS" -> "24")) should include("invalid hour")
+    errors(Mode.Passthrough, env ++ Map("BATCH_HOURS" -> "10,10")) should include("duplicated hour")
+    errors(Mode.Passthrough, common ++ Map("HOUR_COLUMN" -> "hour")) should include("only used together with HOUR_PATH_REGEX")
+    errors(Mode.Passthrough, common ++ Map("BATCH_HOURS" -> "10")) should include("only used together with HOUR_PATH_REGEX")
+    errors(Mode.Passthrough, common ++ Map("HOUR_PATH_REGEX" -> "/hour=(\\d{2})/", "BATCH_HOURS" -> "10")) should
+      include("only used together with BATCH_VALUE")
+    errors(Mode.Passthrough, env ++ Map("HOUR_PATH_REGEX" -> "secret(")) should not include "secret"
+  }
+
   "describe" should "không chứa giá trị nhạy cảm và nêu rõ nguồn" in {
     val text = IngestConfig.fromEnv(Mode.DecryptEncrypt, vtnet).toOption.get.describe.map { case (k, v) => s"$k=$v" }.mkString(";")
 

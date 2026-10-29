@@ -45,14 +45,14 @@ toán: cài `FileCipher` (`crypto/FileCipher.scala`), thêm tên vào `FileCiphe
 
 | Env | Nguồn | Mặc định | Ý nghĩa |
 | --- | --- | --- | --- |
-| `INPUT_PATH` | cả hai mode | bắt buộc | File hoặc thư mục cần nạp (đường dẫn tuyệt đối hoặc URI; DAG ghép gốc landing + `conf.path`). VTNET liệt kê mọi file trong cây, bỏ file ẩn `_*`, `.*` |
+| `INPUT_PATH` | cả hai mode | bắt buộc | File hoặc thư mục cần nạp (đường dẫn tuyệt đối hoặc URI; DAG ghép gốc landing + `conf.path`). VTNET liệt kê mọi file trong cây, bỏ file ẩn `_*`, `.*`. Có thể là mẫu Hadoop (`*`, `?`, `{a,b}`), vd `.../dt=20261013/hour={10,11,12}`: nạp các đường dẫn khớp mẫu (dùng để nạp vài giờ của một ngày); không khớp gì thì lỗi `INPUT_PATH does not exist` |
 | `INPUT_FORMAT` | cả hai mode | bắt buộc | `csv`, `tsv`, `txt` (= csv), `text`, `json`, `parquet`, `orc`, `avro` |
 | `INPUT_SCHEMA` | cả hai mode | suy từ dữ liệu | Schema DDL, vd `msisdn STRING, amount INT`. Nên đặt cho VTNET để không phải đọc (giải mã) thêm một lượt để suy schema |
 | `INPUT_OPTION_<tên>` | cả hai mode | — | Option đọc của Spark, vd `INPUT_OPTION_header=true`, `INPUT_OPTION_recursiveFileLookup=true` (VTT, thư mục lồng nhau) |
 | `OUTPUT_DB`, `OUTPUT_TABLE` | cả hai mode | bắt buộc | Bảng đích `[A-Za-z0-9_]{1,128}`. Database được tạo nếu chưa có |
 | `OUTPUT_FORMAT` | cả hai mode | `delta` | `delta` hoặc `hive` (Parquet) |
 | `BATCH_VALUE` | cả hai mode | không | Mã lô (DAG: ngày của lần chạy `yyyyMMdd`), 1–64 ký tự `[A-Za-z0-9_.:-]`. Job thêm cột `BATCH_COLUMN` = giá trị này vào mọi dòng, làm partition **đầu tiên** của bảng đích |
-| `BATCH_COLUMN` | cả hai mode | `batch_date` (DAG đặt `batch_id`) | Tên cột lô. Không được trùng cột có sẵn trong dữ liệu, cột cần mã hoá hay `CDR_KEY_FIELD` |
+| `BATCH_COLUMN` | cả hai mode | `batch_date` (DAG đặt `dt`) | Tên cột lô. Không được trùng cột có sẵn trong dữ liệu, cột cần mã hoá hay `CDR_KEY_FIELD` |
 | `OUTPUT_MODE` | cả hai mode | `overwrite-partitions` nếu có `BATCH_VALUE`, ngược lại `overwrite` | `overwrite-partitions`: chỉ thay partition của lô (chạy lại cùng lô không ghi trùng, lô khác giữ nguyên; cần `BATCH_VALUE`). `overwrite`: thay **cả bảng**. `append`: ghi nối (chạy lại cùng lô là ghi trùng) |
 | `OUTPUT_PARTITION_BY` | cả hai mode | không | Cột partition thêm sau cột lô, phân cách bằng dấu phẩy. Không được là cột cần mã hoá |
 | `WAREHOUSE_PATH`, `ENABLE_HIVE_SUPPORT`, `APP_NAME` | cả hai mode | | Như pseudonymize-table-app |
@@ -64,6 +64,9 @@ toán: cài `FileCipher` (`crypto/FileCipher.scala`), thêm tên vào `FileCiphe
 | `CDR_ON_MISSING` | decrypt-encrypt | `request` | `onMissing` gửi `by-column`. `request`: cột chưa có key thì DAK mở yêu cầu và job chờ duyệt. `none`: không mở yêu cầu (cột thiếu key → exit 5 ngay) |
 | `DAK_PENDING_WAIT_TIMEOUT_SECONDS` | decrypt-encrypt | `0` (không chờ); DAG đặt `7200` | Chờ admin DAK duyệt yêu cầu key cột tối đa bao lâu. Trong lúc chờ, driver và executor vẫn giữ tài nguyên |
 | `DAK_PENDING_WAIT_INITIAL_SECONDS`, `DAK_PENDING_WAIT_MULTIPLIER`, `DAK_PENDING_WAIT_MAX_INTERVAL_SECONDS` | decrypt-encrypt | `30`, `2`, `300` (DAG: `30`, `2`, `600`) | Exponential backoff: lần gọi lại đầu sau 30 s, mỗi lần sau nhân 2, tối đa 600 s một lần |
+| `HOUR_PATH_REGEX` | cả hai mode | — | Bật cột giờ: regex có ĐÚNG MỘT nhóm bắt, áp lên đường dẫn của từng file nguồn để lấy giờ `HH`; không khớp thì `NA`. File được chia theo giờ ở driver, đọc (hoặc giải mã) từng nhóm rồi gắn giờ của nhóm, nên dùng được cả với file mã hoá cả file |
+| `HOUR_COLUMN` | cả hai mode | `hour` | Tên cột giờ; chỉ dùng cùng `HOUR_PATH_REGEX`; phải khác `BATCH_COLUMN`. Là partition khi được liệt kê trong `OUTPUT_PARTITION_BY` (sau cột lô), không thì là cột thường |
+| `BATCH_HOURS` | cả hai mode | — (cả ngày) | Các giờ `HH` cách nhau dấu phẩy của lô bị thay khi `overwrite-partitions` (Delta: `replaceWhere` `<lô> = ... AND <giờ> IN (...)`); rỗng = thay cả lô. Cần `BATCH_VALUE` và `HOUR_PATH_REGEX`. Dữ liệu ghi ra phải nằm trong các giờ này, không thì Delta từ chối. Hive: bỏ qua (ghi đè động theo partition) |
 | `DECRYPT_STAGING_PATH` | decrypt-encrypt | bắt buộc với `parquet`/`orc`/`avro` | Thư mục tạm cho file giải mã bằng key `by-path`; không được nằm trong `INPUT_PATH`. Không dùng khi DAK không có key |
 | `CRYPTO_PREFIX_SOURCE=dak`, `DAK_ADDR`, `DAK_TOKEN_URL`, `DAK_CLIENT_ID`, `DAK_CLIENT_SECRET`, `DAK_TAG=internal`, `DAK_CALLER` | decrypt-encrypt | | Client **nội bộ** của DAK, dùng cho cả `by-path` và `by-column` (key-prefix-lib) |
 
@@ -120,7 +123,7 @@ và xoá Variable. Không có Variable (hoặc Variable sai) thì DAG không có
 | `keyField` | không nhận | bắt buộc khi có cột mã hoá | Cột giữ plaintext → `CDR_KEY_FIELD` |
 
 **Mỗi lần chạy** nạp thư mục `<dataset>/dt=<ngày>` của **ngày hôm trước** (ngày ở đầu khoảng dữ liệu của lần chạy, đổi sang giờ Việt Nam; `ds` của Airflow là ngày
-UTC nên lệch một ngày với lần chạy trước 07:00) vào partition `batch_id = <ngày>` (`yyyyMMdd`) của bảng: chạy lại một ngày chỉ thay ngày đó. Cả cây thư mục của ngày
+UTC nên lệch một ngày với lần chạy trước 07:00) vào các dòng `dt = <ngày>` (`yyyyMMdd`) của bảng: chạy lại một ngày chỉ thay ngày đó. Cả cây thư mục của ngày
 được đọc (`INPUT_OPTION_recursiveFileLookup=true`, nên `batch=1520` không thành cột partition). Ngày đó không có thư mục hoặc không có file là lỗi (job exit 1).
 `catchup=False` (duyệt phiếu không nạp bù các ngày cũ), `max_active_runs=1`. `conf` chỉ dùng khi chạy tay: `{"date": "yyyyMMdd"}` nạp một ngày khác (nạp bù).
 
@@ -167,7 +170,7 @@ Chạy thử đầu-cuối với dak-mock ([dak-mock/README.md](../dak-mock/READ
 1. File thử có mã hoá: tạo key cho **dataset** bằng `POST /mock-admin/path-keys` với `{"path": "nims", "keyValue": "<base64 32
    byte>"}` và mã hoá file bằng đúng key đó theo định dạng `aes-256-gcm` ở mục 1 (`AesGcmFileCipher.encrypt` trong test là ví dụ). File thử
    không mã hoá: bỏ qua bước này.
-2. Gửi phiếu `POST /mock-portal/silver-requests` (`path` là tên dataset, kèm `scheduleTime`), admin `POST /mock-admin/silver-requests/<mã>/approve` →
+2. Gửi phiếu `POST /mock-portal/silver-requests` (`path` là tên dataset, kèm `cron`), admin `POST /mock-admin/silver-requests/<mã>/approve` →
    mock ghi Variable và bật DAG (phiếu thành `SCHEDULED`). Chạy thử không chờ lịch: trigger tay một dag run với `{"date": "<ngày có dữ liệu>"}`.
 3. Có cột mã hoá, lần đầu các cột chưa có key: DAK mở YC cột, job chờ (phiếu vẫn `RUNNING`) → admin `POST /mock-admin/yc/<mã YC>/fulfill` → job gọi lại,
    cột `READY`, ghi bảng → phiếu `SUCCEEDED`.

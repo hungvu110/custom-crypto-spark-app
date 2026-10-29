@@ -2,7 +2,7 @@ package vai.lakehouse.silveringest.job
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions.{col, lit}
-import vai.lakehouse.silveringest.config.{IngestConfig, OutputFormat}
+import vai.lakehouse.silveringest.config.{Batch, IngestConfig, OutputFormat}
 
 /**
  * Ghi DataFrame vào bảng đích `OUTPUT_DB.OUTPUT_TABLE` (tạo database nếu chưa có), theo `OUTPUT_FORMAT`/`OUTPUT_MODE`.
@@ -28,15 +28,25 @@ object TableWriter {
     (cfg.outputMode, cfg.batch) match {
       case (IngestConfig.OverwritePartitions, Some(b)) if exists =>
         if (cfg.outputFormat == OutputFormat.Delta) {
-          // Giá trị lô đã qua kiểm [A-Za-z0-9_.:-] nên đặt thẳng vào điều kiện được.
-          df.write.format("delta").mode("overwrite").option("replaceWhere", s"${quote(b.column)} = '${b.value}'")
-            .saveAsTable(table)
+          df.write.format("delta").mode("overwrite").option("replaceWhere", replaceCondition(cfg, b)).saveAsTable(table)
         } else insertOverwriteDynamic(spark, df, table)
       case _ =>
         // Bảng chưa có (kể cả overwrite-partitions lần đầu), hoặc overwrite / append.
         val mode = if (cfg.outputMode == IngestConfig.OverwritePartitions) "overwrite" else cfg.outputMode
         val writer = df.write.format(cfg.outputFormat.sparkFormat).mode(mode)
         (if (cfg.partitionBy.isEmpty) writer else writer.partitionBy(cfg.partitionBy: _*)).saveAsTable(table)
+    }
+  }
+
+  /**
+   * Điều kiện `replaceWhere`: các dòng của lô, và nếu chạy chỉ vài giờ (`BATCH_HOURS`) thì chỉ các giờ đó của lô. Giá trị lô đã qua kiểm
+   * [A-Za-z0-9_.:-] và giờ là hai chữ số nên đặt thẳng vào điều kiện được. Dữ liệu ghi ra phải thoả điều kiện này, không thì Delta báo lỗi
+   * (chặn việc ghi giờ ngoài khoảng đã chọn).
+   */
+  private def replaceCondition(cfg: IngestConfig, b: Batch): String = {
+    val day = s"${quote(b.column)} = '${b.value}'"
+    cfg.hours.filter(_.replace.nonEmpty).fold(day) { h =>
+      s"$day AND ${quote(h.column)} IN (${h.replace.map(hour => s"'$hour'").mkString(", ")})"
     }
   }
 
