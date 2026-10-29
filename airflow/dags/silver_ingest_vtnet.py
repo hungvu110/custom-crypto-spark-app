@@ -7,7 +7,7 @@ mode (common.MODES).
   nims       silver_ingest_vtnet_nims       decrypt-encrypt  nims/dt=YYYYMMDD/(batch=...)
 
 How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
-A run ingests the folder of the day BEFORE the run (all its batch subfolders) into the partition batch_id = <day>; a manual run can take
+A run ingests the folder of the day BEFORE the run (all its batch subfolders) into the partitions dt = <day>; a manual run can take
 another day: conf {"date": "yyyyMMdd"}.
 
 passthrough: read the files and write the table as they are (no DAK call).
@@ -36,11 +36,16 @@ INPUT_ROOT = f"{common.HDFS}/prod8/landing/vtnet/"
 # driver and the executors keep their resources.
 PENDING_WAIT = {"timeout": 7200, "initial": 30, "max_interval": 600, "multiplier": 2}
 
-# The datasets of VTNET, one DAG each. `mode`: a key of common.MODES. `key_path` (decrypt-encrypt only): the path sent to DAK by-path, one key
-# for the whole dataset (defaults to the dataset name). ASSUMPTION: adjust to the real data.
+# The datasets of VTNET, one DAG each. Everything that is specific to a dataset is in ITS entry below, nowhere else: the keys (mode, hour_glob,
+# partition_by_hour, key_path, resources) are described, and checked when this file is parsed, in common.DATASET_KEYS. ASSUMPTION: adjust to
+# the real data. The datasets write the hour differently (`hour_glob`, `%H%` = the hour):
+#   ebs_3g_4g  batch=HHmm folders (batch=1000, batch=1010, ...): the hour is the start of the folder name, so "batch=%H%*".
+#   nims       batch=N folders hold files named infra_cell_4g-HHmmss.csv: the hour is in the FILE name, so "batch=*/infra_cell_4g-%H%*".
+# A small dataset (nims) stays partitioned by day, a big one (ebs_3g_4g) by (dt, hour). The Spark resources are the defaults of
+# common.RESOURCE_DEFAULTS until a dataset sets its own, e.g. "resources": {"executors": 10, "executor_cores": 4, "executor_memory": "8g"}.
 DATASETS = {
-    "ebs_3g_4g": {"mode": "passthrough"},
-    "nims": {"mode": "decrypt-encrypt"},
+    "ebs_3g_4g": {"mode": "passthrough", "hour_glob": "batch=%H%*", "partition_by_hour": True},
+    "nims": {"mode": "decrypt-encrypt", "hour_glob": "batch=*/infra_cell_4g-%H%*"},
 }
 
 # Settings shared by every dataset. ASSUMPTION: adjust to the real VTNET data (format, schema, target database).
@@ -97,7 +102,8 @@ def source_for(dataset, settings, config=None):
         "day_dir": "dt",
         "main_class": common.MODES[mode],
         "input_root": INPUT_ROOT,
-        "conf_keys": ("date",),
+        "conf_keys": common.CONF_KEYS,
+        **common.dataset_fields(settings),  # hour_glob, partition_by_hour, resources
         "schedule_keys": ("ticket", "table", "cron", "outputMode"),
         "table_prefix": "vtnet_",
         "env": dict(BASE_ENV),

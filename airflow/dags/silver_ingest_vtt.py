@@ -6,7 +6,7 @@ encrypted column by column: the job only reads them and writes the table (passth
   f001-mpre-call  silver_ingest_vtt_f001_mpre_call  passthrough  f001-mpre-call/date=YYYYMMDD/(hour=...)
 
 How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
-A run ingests the folder of the day BEFORE the run (all its hour subfolders) into the partition batch_id = <day>; a manual run can take
+A run ingests the folder of the day BEFORE the run (all its hour subfolders) into the partitions dt = <day>; a manual run can take
 another day: conf {"date": "yyyyMMdd"}.
 """
 
@@ -22,9 +22,12 @@ import silver_ingest_factory as factory  # noqa: E402
 # Landing root of VTT (ASSUMPTION, adjust to the cluster). INPUT_PATH = INPUT_ROOT + <dataset>/date=<day>.
 INPUT_ROOT = f"{common.HDFS}/landing/vtt/lakehouse/vtt-core/"
 
-# The datasets (tables of the landing root) of VTT, one DAG each. `mode`: a key of common.MODES. ASSUMPTION: add the real tables.
+# The datasets (tables of the landing root) of VTT, one DAG each. Everything that is specific to a dataset is in ITS entry below, nowhere else: the
+# keys (mode, hour_glob, partition_by_hour, key_path, resources) are described, and checked when this file is parsed, in common.DATASET_KEYS.
+# ASSUMPTION: add the real tables. VTT writes one folder per hour, date=YYYYMMDD/hour=HH, so `hour_glob` is "hour=%H%" (`%H%` = the hour).
+# A VTT day is about 165 GB: set `resources` for it (common.RESOURCE_DEFAULTS are small) once its run time has been measured.
 DATASETS = {
-    "f001-mpre-call": {"mode": "passthrough"},
+    "f001-mpre-call": {"mode": "passthrough", "hour_glob": "hour=%H%", "partition_by_hour": True},
 }
 
 # Settings shared by every dataset. ASSUMPTION: adjust to the real VTT data (format, schema, target database).
@@ -51,7 +54,8 @@ def source_for(dataset, settings, config=None):
         "day_dir": "date",
         "main_class": common.MODES[settings["mode"]],
         "input_root": INPUT_ROOT,
-        "conf_keys": ("date",),
+        "conf_keys": common.CONF_KEYS,
+        **common.dataset_fields(settings),  # hour_glob, partition_by_hour, resources
         "schedule_keys": ("ticket", "table", "cron", "outputMode"),
         "table_prefix": "vtt_",
         "env": dict(BASE_ENV),

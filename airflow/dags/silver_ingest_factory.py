@@ -2,7 +2,7 @@
 
 HOW A DATASET GETS ITS SCHEDULE. A request is approved ONCE, for the whole dataset (its `path` is the dataset, not a day). On approval DAK
 (1) writes the approved settings into the Airflow Variable named like the DAG, as JSON, through the Airflow REST API, and (2) switches the DAG
-on. The DAG file calls `register` below: every time Airflow parses it, each dataset's Variable is read and the DAG is built with the daily cron
+on. The DAG file calls `register` below: every time Airflow parses it, each dataset's Variable is read and the DAG is built with the cron
 of the request as its `schedule` and the table, columns and output mode of the request as fixed settings. No Variable (or one that is not valid)
 means a DAG without schedule that never runs. Stopping the request deletes the Variable and switches the DAG off. A change takes effect when
 Airflow parses the DAG file again (about every 30 seconds).
@@ -12,7 +12,7 @@ Airflow parses the DAG file again (about every 30 seconds).
                                          "encryptColumns": ["msisdn"] (decrypt-encrypt only, may be empty), "keyField": "start_time"}
 
 The DAG id and the Variable name are the same string: silver_ingest_<prefix>_<dataset with "-" turned into "_">.
-What a run does is described in silver_ingest_common.py (RUN_DATE) and in the DAG files (modes, datasets).
+What a run does is described in silver_ingest_common.py (run_date, input_path, batch_hours) and in the DAG files (modes, datasets).
 """
 
 import json
@@ -79,7 +79,7 @@ def make_validator(source, problem):
 def build_dag(dag_id, source, prefix, mode, problem):
     config = source["fixed"]
     if config:
-        doc = f"Approved request {config['ticket']}: table {config['table']}, daily cron `{config['cron']}` ({common.RUN_TIMEZONE})."
+        doc = f"Approved request {config['ticket']}: table {config['table']}, cron `{config['cron']}` ({common.RUN_TIMEZONE}), each run ingests the {common.schedule_unit(config['cron'])} before."
     elif problem:
         doc = f"The settings in the Airflow Variable are not used ({problem}); this DAG has no schedule."
     else:
@@ -88,12 +88,17 @@ def build_dag(dag_id, source, prefix, mode, problem):
         dag_id,
         description=f"Daily load of the files of one {prefix.upper()} dataset ({mode}) into the demo database",
         doc_md=doc,
-        schedule=config["cron"] if config else None,  # the daily cron of the approved request
+        schedule=config["cron"] if config else None,  # the cron of the approved request
         start_date=pendulum.datetime(2026, 1, 1, tz=common.RUN_TIMEZONE),
-        catchup=False,  # no backfill when a request is approved; a manual run with conf.date ingests another day
+        catchup=False,  # no backfill when a request is approved; silver_ingest_backfill.py runs a range of days or hours
         # MUST be False: native rendering turns "2" into 2 and Kubernetes answers 422 (an env value must be a string).
         render_template_as_native_obj=False,
-        user_defined_macros={"k8s_name": common.k8s_name},
+        user_defined_macros={
+            "k8s_name": common.k8s_name,
+            "input_path": common.input_path,
+            "run_date": common.run_date,
+            "batch_hours": common.batch_hours,
+        },
         max_active_runs=1,  # a day is ingested once at a time
         is_paused_upon_creation=False,
         tags=["silver", prefix, "dak", "daily", mode],
@@ -120,6 +125,7 @@ def register(namespace, prefix, datasets, source_for):
     sources = {}
     problems = {}
     for dataset, settings in datasets.items():
+        common.check_dataset(dataset, settings)  # a typo in DATASETS is an import error, not a silent default
         dag_id = dag_id_of(prefix, dataset)
         config, problem = read_config(dag_id, source_for(dataset, settings))
         sources[dag_id] = source_for(dataset, settings, config)
