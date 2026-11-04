@@ -71,9 +71,11 @@ final case class TableInput(db: String, table: String, range: Option[InputRange]
  * `from`/`to` are continuous keys `yyyyMMddHHmm` (both ends inclusive, compared with the START time of each directory, so
  * `batch=0020` is 00:20); `hours` (optional) additionally filters the hour of day, e.g. 6-18 (every minute of those
  * hours). `hourConstrained` = the user constrained the time of day (hour in FROM/TO, or INPUT_HOURS).
+ * `hourPartitioned` (TABLE source only, set by the job after it looks at the table) = the hour column is a partition column of the
+ * source; when false (day-partitioned table) only the date is filtered and an hour constraint is rejected.
  */
 final case class InputRange(from: Long, to: Long, hours: Option[(Int, Int)], dateKey: String, hourKey: String,
-                            hourConstrained: Boolean) {
+                            hourConstrained: Boolean, hourPartitioned: Boolean = true) {
 
   def acceptsDate(date: String): Boolean = date.toLong >= from / 10000 && date.toLong <= to / 10000
 
@@ -125,7 +127,8 @@ final case class JobConfig(
     outputPartitionBy: Seq[String] = Nil,
     skipExisting: Boolean = false,
     writeRetries: Int = 0,
-    retryWaitSeconds: Int = 30) {
+    retryWaitSeconds: Int = 30,
+    partitionByDefaulted: Boolean = false) {
 
   def source: String = input.describe
 
@@ -195,9 +198,6 @@ object JobConfig {
         if (raw("INPUT_FORMAT").isDefined || raw("INPUT_SCHEMA").isDefined || inputOptions(env).nonEmpty) {
           errors += "INPUT_FORMAT/INPUT_SCHEMA/INPUT_OPTION_*: only valid together with INPUT_PATH"
         }
-        if (Seq("INPUT_DATE_KEY", "INPUT_HOUR_KEY").exists(k => raw(k).isDefined)) {
-          errors += "INPUT_DATE_KEY/INPUT_HOUR_KEY: only valid together with INPUT_PATH (a table is always filtered on its date and hour columns)"
-        }
         // A table has hour partitions only: a minute-resolution bound (yyyyMMddHHmm) has nothing to match.
         Seq("INPUT_FROM", "INPUT_TO").filter(k => raw(k).exists(_.length == 12)).foreach { k =>
           errors += s"$k: minutes (yyyyMMddHHmm) are only valid together with INPUT_PATH; use yyyyMMdd or yyyyMMddHH for a table"
@@ -230,7 +230,8 @@ object JobConfig {
       OutputFormat.Delta
     }).getOrElse(OutputFormat.Delta)
 
-    // Partition của bảng đích: mặc định (date, hour) khi đọc theo khoảng ngày/giờ; "none" để tắt.
+    // Partition của bảng đích: mặc định (date, hour) khi đọc theo khoảng ngày/giờ; "none" để tắt. Với nguồn BẢNG, job còn đối chiếu
+    // với partition thật của bảng nguồn khi chạy (xem PseudonymizeTableJob.followSourcePartitioning) nếu giá trị này là mặc định.
     val partitionBy = raw("OUTPUT_PARTITION_BY") match {
       case Some(v) if v.equalsIgnoreCase("none") => Nil
       case Some(v) =>
@@ -305,7 +306,8 @@ object JobConfig {
     if (errors.nonEmpty) Left(errors.toList)
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
       outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true),
-      badFiles, parallelism, checkFull, partitionBy, skipExisting, writeRetries, retryWaitSeconds))
+      badFiles, parallelism, checkFull, partitionBy, skipExisting, writeRetries, retryWaitSeconds,
+      partitionByDefaulted = raw("OUTPUT_PARTITION_BY").isEmpty))
   }
 
   private val InputOptionPrefix = "INPUT_OPTION_"
@@ -332,7 +334,7 @@ object JobConfig {
   private val DateTime = "^([0-9]{8})(?:([0-9]{2})([0-9]{2})?)?$".r
 
   /** `INPUT_FROM`/`INPUT_TO` = `yyyyMMdd`, `yyyyMMddHH` or `yyyyMMddHHmm` (both ends inclusive), `INPUT_HOURS` = `a-b` or `h`. */
-  private def inputRange(env: Map[String, String], errors: ArrayBuffer[String]): Option[InputRange] = {
+  private[pseudonymizetable] def inputRange(env: Map[String, String], errors: ArrayBuffer[String]): Option[InputRange] = {
     def raw(k: String) = env.get(k).map(_.trim).filter(_.nonEmpty)
     val keys = Seq("INPUT_FROM", "INPUT_TO", "INPUT_HOURS").map(raw)
     val dateKey = raw("INPUT_DATE_KEY").getOrElse("date")
@@ -401,6 +403,6 @@ object JobConfig {
     parsed
   }
 
-  private def isAbsoluteUri(value: String): Boolean =
+  private[pseudonymizetable] def isAbsoluteUri(value: String): Boolean =
     Try(new java.net.URI(value)).toOption.exists(u => u.getScheme != null && Option(u.getPath).exists(_.startsWith("/")))
 }

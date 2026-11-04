@@ -481,4 +481,63 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
 
     spark.catalog.tableExists("crm", "subscriber_no_range") shouldBe false
   }
+
+  // ---- silver layout: partition columns `dt` (+ `hour`), the job follows the partitioning of the source table ----
+
+  private def silverTable(name: String, partitionedBy: String): Unit = {
+    spark.sql(s"CREATE TABLE crm.$name (id BIGINT, isdn STRING, dt STRING, hour STRING) USING parquet PARTITIONED BY ($partitionedBy)")
+    spark.sql(
+      s"""INSERT INTO crm.$name (id, isdn, dt, hour) VALUES
+         |  (1, '84900000001', '20261012', '05'), (2, '84900000002', '20261012', '18'),
+         |  (3, '84900000003', '20261013', 'NA'), (4, '84900000004', '20261013', '18'),
+         |  (5, '84900000005', '20261014', '05')""".stripMargin)
+  }
+
+  private val silverKeys = Seq("INPUT_DATE_KEY" -> "dt", "INPUT_HOUR_KEY" -> "hour")
+
+  it should "silver table partitioned by (dt, hour): writes one partition at a time and partitions the target by (dt, hour)" in {
+    silverTable("silver_dh", "dt, hour")
+
+    runEvents("silver_dh", "silver_dh_out", (silverKeys ++ Seq("INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261014", "INPUT_HOURS" -> "18")): _*) shouldBe 0
+
+    idsOf("crm.silver_dh_out") shouldBe Set(2L, 4L)
+    spark.sql("DESCRIBE DETAIL crm.silver_dh_out").select("partitionColumns").head().getSeq[String](0) shouldBe Seq("dt", "hour")
+  }
+
+  it should "silver table partitioned by (dt, hour): a rerun of one hour replaces only that hour" in {
+    silverTable("silver_rerun", "dt, hour")
+    val whole = silverKeys ++ Seq("INPUT_FROM" -> "20261012", "INPUT_TO" -> "20261012")
+
+    runEvents("silver_rerun", "silver_rerun_out", whole: _*) shouldBe 0
+    spark.sql("INSERT INTO crm.silver_rerun (id, isdn, dt, hour) VALUES (6, '84900000006', '20261012', '18')")
+    runEvents("silver_rerun", "silver_rerun_out", (silverKeys ++ Seq("INPUT_FROM" -> "2026101218", "INPUT_TO" -> "2026101218")): _*) shouldBe 0
+
+    idsOf("crm.silver_rerun_out") shouldBe Set(1L, 2L, 6L)
+    spark.table("crm.silver_rerun_out").count() shouldBe 3L
+  }
+
+  it should "silver table partitioned by dt only: filters by date, keeps the NA hour rows and partitions the target by dt" in {
+    silverTable("silver_day", "dt")
+
+    runEvents("silver_day", "silver_day_out", (silverKeys ++ Seq("INPUT_FROM" -> "20261013", "INPUT_TO" -> "20261013")): _*) shouldBe 0
+
+    idsOf("crm.silver_day_out") shouldBe Set(3L, 4L) // hour = NA is not lost
+    spark.sql("DESCRIBE DETAIL crm.silver_day_out").select("partitionColumns").head().getSeq[String](0) shouldBe Seq("dt")
+  }
+
+  it should "silver table partitioned by dt only: an hour constraint is rejected and nothing is written" in {
+    silverTable("silver_day_hours", "dt")
+
+    runEvents("silver_day_hours", "silver_day_hours_out", (silverKeys ++ Seq("INPUT_FROM" -> "20261013", "INPUT_HOURS" -> "18")): _*) shouldBe
+      PseudonymizeTableApp.ExitRuntimeError
+
+    spark.catalog.tableExists("crm", "silver_day_hours_out") shouldBe false
+  }
+
+  it should "table source with a range that matches no data fails instead of writing an empty table" in {
+    silverTable("silver_none", "dt, hour")
+
+    runEvents("silver_none", "silver_none_out", (silverKeys ++ Seq("INPUT_FROM" -> "20300101", "INPUT_TO" -> "20300101")): _*) shouldBe
+      PseudonymizeTableApp.ExitRuntimeError
+  }
 }

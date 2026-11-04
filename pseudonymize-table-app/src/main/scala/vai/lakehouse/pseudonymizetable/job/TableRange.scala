@@ -15,7 +15,8 @@ object TableRange {
 
   /** Fails early, before any write, when the table lacks a partition column the range needs. */
   def requireColumns(columns: Seq[String], range: InputRange, source: String): Unit = {
-    val missing = Seq(range.dateKey, range.hourKey).filterNot(columns.contains)
+    val needed = if (range.hourPartitioned) Seq(range.dateKey, range.hourKey) else Seq(range.dateKey)
+    val missing = needed.filterNot(columns.contains)
     if (missing.nonEmpty) {
       throw new IllegalArgumentException(s"INPUT_FROM/INPUT_TO/INPUT_HOURS need the columns ${range.dateKey} (yyyyMMdd) and " +
         s"${range.hourKey} (HH) in $source, missing: ${missing.mkString(", ")}")
@@ -24,16 +25,17 @@ object TableRange {
 
   def condition(range: InputRange): Column = {
     val date = col(quote(range.dateKey))
-    val hour = col(quote(range.hourKey))
+    val hour = col(quote(range.hourKey)) // only read when range.hourPartitioned
     val dateFrom = if (range.from == 0L) None else Some(f"${range.from / 10000}%08d")
     val dateTo = if (range.to == Long.MaxValue) None else Some(f"${range.to / 10000}%08d")
     // Start time of the row's hour, same scale as range.from/to (yyyyMMddHHmm with minute 00).
     val startKey = date.cast("long") * 10000L + hour.cast("long") * 100L
     val parts = Seq(
       dateFrom.map(d => date >= lit(d)), dateTo.map(d => date <= lit(d)),
-      if (range.from == 0L) None else Some(startKey >= lit(range.from)),
-      if (range.to == Long.MaxValue) None else Some(startKey <= lit(range.to)),
-      range.hours.map { case (a, b) => hour.cast("int").between(a, b) }).flatten
+      // A day-partitioned table has no usable hour (silver writes `NA` when it cannot read it): filter by date only, never by hour.
+      if (!range.hourPartitioned || range.from == 0L) None else Some(startKey >= lit(range.from)),
+      if (!range.hourPartitioned || range.to == Long.MaxValue) None else Some(startKey <= lit(range.to)),
+      range.hours.filter(_ => range.hourPartitioned).map { case (a, b) => hour.cast("int").between(a, b) }).flatten
     parts.reduceOption(_ && _).getOrElse(lit(true))
   }
 

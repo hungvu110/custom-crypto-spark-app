@@ -1,5 +1,8 @@
 package vai.lakehouse.pseudonymizetable.job
 
+import java.util.Locale
+
+import scala.util.Try
 import scala.util.control.NonFatal
 
 import org.apache.spark.SparkConf
@@ -140,13 +143,45 @@ object PseudonymizeTableJob {
       case NonFatal(e) => Log.warn(s"Could not scan files for diagnosis: ${e.getMessage}")
     }
 
+  /** Partition columns of a catalog table (Delta tables report them through DESCRIBE DETAIL, other formats through the catalog). */
+  private[job] def partitionColumnsOf(spark: SparkSession, db: String, table: String): Seq[String] = {
+    val fromCatalog = spark.catalog.listColumns(db, table).collect().filter(_.isPartition).map(_.name).toSeq
+    if (fromCatalog.nonEmpty) fromCatalog
+    else Try(spark.sql(s"DESCRIBE DETAIL ${quoted(db, table)}").select("partitionColumns").head().getSeq[String](0)).getOrElse(Nil)
+  }
+
+  /**
+   * TABLE source with a date/hour range: follow the partitioning of the source table (the silver tables). The hour is a filter and
+   * an output partition only when the source is partitioned by it; a day-partitioned table (its `hour` is a plain column, `NA` when
+   * unknown) is filtered by date only and an hour constraint is rejected instead of silently dropping rows. An explicit
+   * OUTPUT_PARTITION_BY is left untouched.
+   */
+  private[job] def followSourcePartitioning(spark: SparkSession, cfg: JobConfig): JobConfig = cfg.input match {
+    case TableInput(db, table, Some(range)) if spark.catalog.tableExists(db, table) =>
+      val sourcePartitions = partitionColumnsOf(spark, db, table).map(_.toLowerCase(Locale.ROOT))
+      if (!sourcePartitions.contains(range.dateKey.toLowerCase(Locale.ROOT))) cfg
+      else {
+        val hourPartitioned = sourcePartitions.contains(range.hourKey.toLowerCase(Locale.ROOT))
+        if (!hourPartitioned && range.hourConstrained) {
+          throw new IllegalArgumentException(s"${cfg.source} is partitioned by ${sourcePartitions.mkString(", ")} only, it has no partition " +
+            s"${range.hourKey}: INPUT_HOURS and the hour in INPUT_FROM/INPUT_TO cannot be applied, use whole days (yyyyMMdd)")
+        }
+        val followed = if (cfg.partitionByDefaulted) {
+          Seq(range.dateKey) ++ (if (hourPartitioned) Seq(range.hourKey) else Nil)
+        } else cfg.outputPartitionBy
+        cfg.copy(input = TableInput(db, table, Some(range.copy(hourPartitioned = hourPartitioned))), outputPartitionBy = followed)
+      }
+    case _ => cfg
+  }
+
   private def doRun(spark: SparkSession, cfg: JobConfig): JobResult = {
     val stats = new SparkStats(spark.sparkContext)
     spark.sparkContext.addSparkListener(stats)
     try runSteps(spark, cfg, stats) finally spark.sparkContext.removeSparkListener(stats)
   }
 
-  private def runSteps(spark: SparkSession, cfg: JobConfig, stats: SparkStats): JobResult = {
+  private def runSteps(spark: SparkSession, requested: JobConfig, stats: SparkStats): JobResult = {
+    val cfg = followSourcePartitioning(spark, requested)
     val pseudonymizer = pseudonymizerFor(cfg, spark.sparkContext.getConf)
     val policy = TablePolicy(cfg.source, cfg.pseudoColumns.map(c => ColumnRule(c.name, c.mode)))
 
@@ -288,9 +323,12 @@ object PseudonymizeTableJob {
       // Đăng ký bảng trong metastore TRƯỚC khi ghi: việc ghi có thể kéo dài hàng giờ và metastore chỉ còn phải xử lý ở
       // lúc đầu (NameNode rảnh), không phải sau khi đã ghi xong như `saveAsTable` trên bảng chưa có.
       if (!exists) createEmptyTable(spark, cfg, df, table) else requireSamePartitioning(spark, cfg)
-      val tuples = partitionTuples(cfg, known)
+      val tuples = partitionTuples(cfg, known, source)
       tuples match {
         case Some(keys) =>
+          if (keys.isEmpty) {
+            throw new IllegalStateException(s"No data in ${cfg.source} for ${cfg.outputPartitionBy.mkString("/")} within the requested range")
+          }
           val results = keys.zipWithIndex.map { case (values, i) =>
             writePartition(spark, cfg, source, transform, table, values, i + 1, keys.size, stats)
           }
@@ -313,15 +351,28 @@ object PseudonymizeTableJob {
     }
   }
 
-  /** Danh sách giá trị partition (theo thứ tự `OUTPUT_PARTITION_BY`) khi biết trước từ thư mục nguồn; `None` nếu không. */
-  private def partitionTuples(cfg: JobConfig, known: Option[Seq[InputPartition]]): Option[Seq[Seq[String]]] = {
+  /**
+   * Danh sách giá trị partition (theo thứ tự `OUTPUT_PARTITION_BY`) khi biết trước; `None` nếu không. Nguồn file: từ thư mục đã liệt
+   * kê. Nguồn bảng: các giá trị khác nhau của cột partition trong phần đã lọc theo khoảng (đọc cột partition, không đọc dữ liệu).
+   */
+  private def partitionTuples(cfg: JobConfig, known: Option[Seq[InputPartition]], source: DataFrame): Option[Seq[Seq[String]]] = {
     val cols = cfg.outputPartitionBy
     (known, cfg.input) match {
       case (Some(ps), in: FileInput)
           if ps.nonEmpty && ps.forall(_.hour.isDefined) && in.range.exists(r => Seq(r.dateKey, r.hourKey) == cols) =>
         Some(ps.flatMap(p => p.hour.map(h => Seq(p.date, h))))
+      case (_, _: TableInput) if cols.nonEmpty => Some(distinctTuples(source, cols))
       case _ => None
     }
+  }
+
+  private def distinctTuples(source: DataFrame, cols: Seq[String]): Seq[Seq[String]] = {
+    val tuples = source.select(cols.map(c => col(quote(c)).cast(StringType)): _*).distinct().collect()
+      .map(r => cols.indices.map(r.getString)).toSeq.sortBy(_.mkString("/"))
+    if (tuples.exists(_.contains(null))) {
+      throw new IllegalStateException(s"The source has rows with a NULL ${cols.mkString("/")} partition value: they cannot be written partition by partition")
+    }
+    tuples
   }
 
   /** `col1 = v1 AND col2 = v2` on the partition columns (as strings, matching the on-disk directory names). */
@@ -464,10 +515,7 @@ object PseudonymizeTableJob {
   /** Điều kiện chỉ giữ các partition vừa xử lý (target của overwrite-partitions còn partition khác không thuộc lần chạy này). */
   private def partitionFilter(cfg: JobConfig, source: DataFrame, known: Option[Seq[InputPartition]]): Column = {
     val cols = cfg.outputPartitionBy
-    val tuples: Seq[Seq[String]] = partitionTuples(cfg, known).getOrElse {
-      source.select(cols.map(c => col(quote(c)).cast(StringType)): _*).distinct().collect()
-        .map(r => cols.indices.map(r.getString)).toSeq
-    }
+    val tuples: Seq[Seq[String]] = partitionTuples(cfg, known, source).getOrElse(distinctTuples(source, cols))
     tuples.map(t => cols.zip(t).map { case (c, v) => col(quote(c)).cast(StringType) === v }.reduce(_ && _)).reduce(_ || _)
   }
 

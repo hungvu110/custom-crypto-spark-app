@@ -148,7 +148,15 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors("INPUT_HOURS" -> "18-6") should include("INPUT_HOURS")
     errors("INPUT_FROM" -> "20261012", "OUTPUT_PARTITION_BY" -> "none", "OUTPUT_MODE" -> "overwrite-partitions") should
       include("requires OUTPUT_PARTITION_BY")
-    JobConfig.fromEnv(base + ("INPUT_DATE_KEY" -> "dt")).left.toOption.get.mkString should include("only valid together with INPUT_PATH")
+  }
+
+  it should "take the partition column names of a table source from INPUT_DATE_KEY / INPUT_HOUR_KEY (silver uses dt)" in {
+    val cfg = JobConfig.fromEnv(base ++ Map("INPUT_FROM" -> "20261012", "INPUT_DATE_KEY" -> "dt")).toOption.get
+    val range = cfg.input.asInstanceOf[TableInput].range.get
+    (range.dateKey, range.hourKey) shouldBe (("dt", "hour"))
+    cfg.outputPartitionBy shouldBe Seq("dt", "hour")
+    cfg.partitionByDefaulted shouldBe true
+    JobConfig.fromEnv(base ++ Map("INPUT_FROM" -> "20261012", "OUTPUT_PARTITION_BY" -> "none")).toOption.get.partitionByDefaulted shouldBe false
   }
 
   it should "accept a date/hour range on a table source and default to partition (date, hour) + overwrite-partitions" in {
@@ -182,7 +190,6 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors("INPUT_HOURS" -> "18-6") should include("INPUT_HOURS")
     errors("INPUT_FROM" -> "202610140020") should include("INPUT_FROM: minutes (yyyyMMddHHmm) are only valid together with INPUT_PATH")
     errors("INPUT_TO" -> "202610140020") should include("INPUT_TO: minutes (yyyyMMddHHmm) are only valid together with INPUT_PATH")
-    errors("INPUT_FROM" -> "20261012", "INPUT_HOUR_KEY" -> "h") should include("only valid together with INPUT_PATH")
     errors("OUTPUT_MODE" -> "overwrite-partitions") should include("requires OUTPUT_PARTITION_BY")
     errors("INPUT_FROM" -> "20261012", "PSEUDO_COLUMNS" -> "date") should include("must not be listed in PSEUDO_COLUMNS")
   }

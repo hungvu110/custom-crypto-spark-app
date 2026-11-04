@@ -294,6 +294,24 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(env["TABLE_NAME"], "users_cdr_2")
         self.assertEqual(env["PSEUDO_COLUMNS"], "name:HASH")
 
+    def test_the_source_partition_columns_are_the_silver_ones_and_cannot_be_overridden(self):
+        env = driver_env(render(DAK_RUN_ID, dak_conf()))
+
+        self.assertEqual((env["INPUT_DATE_KEY"], env["INPUT_HOUR_KEY"]), ("dt", "hour"))
+
+    def test_a_rerun_of_the_same_request_may_add_an_r_suffix_to_the_run_id(self):
+        for run_id in ("deid-2026-000007-r2", "deid-2026-000007-r10"):
+            dag.check_conf(run_id, dak_conf())
+            self.assertEqual(render(run_id, dak_conf())["metadata"]["name"], run_id)
+        for bad in ("deid-2026-000007-r", "deid-2026-000007-x2", "deid-2026-000007-r2-r3", "deid-2026-000007-R2"):
+            with self.assertRaises(ValueError):
+                dag.check_conf(bad, dak_conf())
+
+    def test_only_one_run_at_a_time_because_runs_share_the_result_table(self):
+        dag_kwargs = [r.kwargs for r in dag.recorded if "max_active_runs" in r.kwargs]
+
+        self.assertEqual(dag_kwargs[0]["max_active_runs"], 1)
+
     def test_an_env_missing_from_conf_gets_its_default(self):
         conf = dak_conf()
         for name in ("OUTPUT_MODE", "OUTPUT_FORMAT", "ENABLE_HIVE_SUPPORT"):

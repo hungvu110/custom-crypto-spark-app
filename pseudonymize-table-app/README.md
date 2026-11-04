@@ -68,9 +68,9 @@ Test (không cần cluster/Vault/HDFS): `mvn -B -pl pseudonymize-table-app -am t
 | ----------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DB_NAME` + `TABLE_NAME`            | —                                                                      | **Nguồn là bảng** trong catalog. Chỉ `[A-Za-z0-9_]`. Bắt buộc nếu không dùng `INPUT_PATH`                                                                                                                                                                               |
 | `INPUT_PATH`                        | —                                                                      | **Nguồn là file/thư mục**, vd `/landing/vtt/lakehouse/vtt-core/f016-mpre-tot-charge-m/date=20261012/hour=18/` (đường dẫn tuyệt đối hoặc URI `hdfs://…`; glob được). Loại trừ với `DB_NAME`/`TABLE_NAME` (xem 3.5)                                                       |
-| `INPUT_FROM` / `INPUT_TO`           | —                                                                      | Khoảng thời gian **liên tục**, bao gồm hai đầu, `yyyyMMdd` hoặc `yyyyMMddHH` (FROM mặc định giờ 00, TO mặc định 23). Với `INPUT_PATH` là **gốc** của cây `date=…/hour=…/`; với `DB_NAME`/`TABLE_NAME` là lọc trên hai cột partition `date`, `hour` (xem 3.8)                                                                              |
+| `INPUT_FROM` / `INPUT_TO`           | —                                                                      | Khoảng thời gian **liên tục**, bao gồm hai đầu, `yyyyMMdd` hoặc `yyyyMMddHH` (FROM mặc định giờ 00, TO mặc định 23). Với `INPUT_PATH` là **gốc** của cây `date=…/hour=…/`; với `DB_NAME`/`TABLE_NAME` là lọc trên hai cột partition `date`, `hour` hoặc tên đặt bằng `INPUT_DATE_KEY`/`INPUT_HOUR_KEY` (xem 3.8)                                                                              |
 | `INPUT_HOURS`                       | —                                                                      | Lọc thêm giờ trong ngày cho mọi ngày của khoảng: `6-18` hoặc `18`                                                                                                                                                                                                       |
-| `INPUT_DATE_KEY` / `INPUT_HOUR_KEY` | `date` / `hour` | Tên khoá thư mục tầng ngày / tầng giờ-batch nếu khác mặc định, vd `dt` / `batch`; cũng là tên cột partition |
+| `INPUT_DATE_KEY` / `INPUT_HOUR_KEY` | `date` / `hour` | Tên khoá thư mục (nguồn file) hoặc tên cột partition (nguồn bảng) tầng ngày / tầng giờ-batch nếu khác mặc định, vd `dt` / `batch` |
 | `INPUT_FORMAT`                      | (bắt buộc khi có `INPUT_PATH`)                                         | `parquet` / `orc` / `avro` / `json` / `delta` / `csv` / `tsv` / `txt` (= `csv`, text phân tách ký tự) / `text` (mỗi dòng 1 cột `value`)                                                                                                                                 |
 | `INPUT_SCHEMA`                      | —                                                                      | Schema DDL cho file không có schema sẵn, vd `isdn STRING, imei STRING, amount DOUBLE`. Không có thì csv/tsv/txt đặt tên cột `_c0, _c1, …`                                                                                                                               |
 | `INPUT_OPTION_<tên>`                | —                                                                      | Option của Spark reader, vd `INPUT_OPTION_delimiter=\|`, `INPUT_OPTION_header=true`, `INPUT_OPTION_encoding=UTF-8`                                                                                                                                                      |
@@ -212,12 +212,19 @@ job trước khi `ignoreCorruptFiles` có tác dụng).
 | `FROM=20261012 TO=20261014 HOURS=6-8` | Giờ 06–08 của mỗi ngày 12, 13, 14       |
 
 **Nguồn là bảng (`DB_NAME` + `TABLE_NAME`).** `INPUT_FROM`/`INPUT_TO`/`INPUT_HOURS` cũng dùng được, với cùng ý nghĩa ở bảng trên.
-Bảng nguồn phải có hai cột chuỗi `date` (`yyyyMMdd`) và `hour` (`HH`), tên cố định (không có `INPUT_DATE_KEY`/`INPUT_HOUR_KEY`);
-thiếu một trong hai cột thì job dừng trước khi ghi. Job lọc ngay trên nguồn bằng so sánh thẳng trên hai cột partition nên Spark
-chỉ đọc partition trong khoảng. Dạng phút `yyyyMMddHHmm` bị từ chối (bảng chỉ có giờ). Có khoảng thì bảng đích mặc định
-partition theo `(date, hour)` và `OUTPUT_MODE` mặc định `overwrite-partitions` như nguồn file; hai cột `date`, `hour` không được
-nằm trong `PSEUDO_COLUMNS`. Khác nguồn file: ghi **một lượt** (không có thử lại/bỏ qua theo từng partition vì không liệt kê
-thư mục trước).
+Mặc định bảng nguồn có hai cột partition chuỗi `date` (`yyyyMMdd`) và `hour` (`HH`); tên khác (bảng silver dùng `dt`/`hour`) thì đặt
+`INPUT_DATE_KEY`/`INPUT_HOUR_KEY`. Thiếu cột thì job dừng trước khi ghi. Job lọc ngay trên nguồn bằng so sánh thẳng trên cột partition
+nên Spark chỉ đọc partition trong khoảng. Dạng phút `yyyyMMddHHmm` bị từ chối (bảng chỉ có giờ). Hai cột không được nằm trong
+`PSEUDO_COLUMNS`.
+
+**Bám partition của bảng nguồn.** Khi `OUTPUT_PARTITION_BY` không đặt, bảng đích partition giống bảng nguồn: `(dt, hour)` nếu nguồn
+partition theo cả hai, chỉ `(dt)` nếu nguồn partition theo ngày (vd dataset nhỏ `nims`, cột `hour` chỉ là cột thường và có thể là
+`NA`). Nguồn partition theo ngày thì chỉ lọc theo ngày; `INPUT_HOURS` hay giờ trong `INPUT_FROM`/`INPUT_TO` bị từ chối (lỗi rõ ràng,
+không ghi gì) thay vì âm thầm bỏ các dòng `NA`.
+
+Có khoảng thì `OUTPUT_MODE` mặc định `overwrite-partitions` như nguồn file, và **ghi từng partition**: danh sách `(dt, hour)` lấy từ
+các giá trị khác nhau của cột partition trong khoảng, mỗi partition được ghi và commit riêng, có log tiến độ, thử lại
+(`OUTPUT_WRITE_RETRIES`) và `OUTPUT_SKIP_EXISTING` như nguồn file. Khoảng không có dữ liệu thì job báo lỗi, không tạo bảng rỗng.
 
 **Thư mục theo batch (vd 20 phút).** Tầng thứ hai nhận giá trị `HH` (`hour=05`) hoặc `HHMM` 3–4 chữ số (`batch=0020`,
 `batch=1740`); giá trị sai (giờ > 23, phút > 59) bị bỏ qua. Ví dụ nguồn `/landing/ebs_3g_4g/dt=20261014/batch=0020/`:
@@ -300,7 +307,7 @@ Lưu ý quan trọng:
 - **Không dùng `restartPolicy: OnFailure` với `OUTPUT_MODE=append` khi chưa bật `OUTPUT_SKIP_EXISTING`**: các partition đã ghi sẽ bị ghi thêm lần nữa.
 - Operator chạy lại cả khi app thoát với exit `2` (sai cấu hình) cho đến hết `onFailureRetries`; hãy kiểm tra cấu hình trước khi apply.
 - **Chạy tay lại phần còn thiếu** (không cần cờ nào): đặt `INPUT_FROM` bằng batch bị lỗi đầu tiên; `overwrite-partitions` an toàn kể cả khi khoảng chồng lấn.
-- Thử lại chỉ áp dụng khi biết trước danh sách partition (đọc theo `INPUT_FROM`/`INPUT_TO`); ghi một lượt (`overwrite` cả bảng) không có thử lại hay bỏ qua.
+- Thử lại chỉ áp dụng khi ghi theo từng partition (có `INPUT_FROM`/`INPUT_TO`/`INPUT_HOURS`, nguồn file hay bảng); ghi một lượt (`overwrite` cả bảng) không có thử lại hay bỏ qua.
 
 ## 4. Env của `pseudonym-udf` cần truyền vào
 
@@ -504,3 +511,27 @@ FROM crm.subscriber_pseudonymized;          -- so với cùng truy vấn trên c
   trong table properties) nên Spark tự fallback. Vô hại với Spark/Delta; log4j2 đã hạ logger này xuống `error`. Engine đọc
   qua connector **Hive** sẽ không thấy đủ cột: dùng `OUTPUT_FORMAT=hive` (Parquet) nếu cần.
 - Chưa kiểm chứng trên cluster thật (HDFS Isilon + Kerberos, image Docker, Vault/DAK); đã kiểm chứng bằng test local.
+
+## Bảo trì bảng đích: xoá vùng khi phiếu hết hạn và VACUUM
+
+Cùng image/jar với job khử định danh, hai `mainClass` khác. Mỗi team có bảng đích riêng (vd `ebs_teamA`, `ebs_teamB` từ cùng bảng silver
+`ebs`) nên xoá của team này không chạm team khác. DAG: `deid_purge_range` và `deid_vacuum` trong `airflow/dags/deid_maintenance.py`.
+
+**`PurgeRangeApp`** — xoá các partition `(INPUT_DATE_KEY, INPUT_HOUR_KEY)` nằm trong `INPUT_FROM`..`INPUT_TO` (+ `INPUT_HOURS`) của
+`OUTPUT_DB`.`OUTPUT_TABLE`. `INPUT_FROM` và `INPUT_TO` **luôn bắt buộc** (khoảng hở sẽ xoá cả bảng). Chỉ chạm cột partition nên Delta bỏ
+file chứ không ghi lại dữ liệu.
+
+| Tình huống | Exit | Ý nghĩa với DAK |
+|---|---|---|
+| Xoá được | 0 | xong |
+| Chạy lại, không còn partition nào trong khoảng | 0 | xong (idempotent) |
+| Bảng không tồn tại (log `TABLE_NOT_FOUND`) | 0 | xong: đã xoá trước đó hoặc chưa từng tạo |
+| Thiếu `INPUT_FROM`/`INPUT_TO`, tên sai | 2 | cấu hình sai, chưa xoá gì |
+| Cột ngày không phải partition, bảng không phải Delta, bảng partition theo ngày mà khoảng có giờ | 1 | từ chối, chưa xoá gì |
+| Quyền, hạ tầng... | 1 | thử lại và báo động |
+
+**`VacuumApp`** — Delta chỉ đánh dấu file là "removed" sau khi xoá/ghi đè; `VACUUM` mới xoá file khỏi HDFS. Cho tới lúc đó dữ liệu của
+phiếu hết hạn vẫn còn trên HDFS và đọc được bằng time travel. Env: `VACUUM_TARGETS` (`<db>` = mọi bảng Delta của database, hoặc
+`<db>.<table>`, cách nhau bằng dấu phẩy), `VACUUM_RETAIN_HOURS` (mặc định 168; nhỏ hơn 168 thì job tự tắt kiểm tra retention của Delta cho
+lần chạy đó). Bảng lỗi không chặn các bảng còn lại; có bảng lỗi thì exit 1 ở cuối. DAG `deid_vacuum` chạy 03:00 mỗi ngày, đọc Airflow
+Variable `deid_vacuum_targets` và `deid_vacuum_retain_hours`.
