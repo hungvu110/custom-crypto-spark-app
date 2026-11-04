@@ -23,7 +23,9 @@
 The environment constants (namespace, image, Kerberos, HDFS) are the ones of sample_dag_deid_pseudonymize_table.py: change them there.
 The tests do not need Airflow: python3 -B -m unittest discover -s airflow/tests
 """
+import os
 import re
+import sys
 
 import pendulum
 from airflow import DAG
@@ -31,7 +33,10 @@ from airflow.exceptions import AirflowFailException
 from airflow.operators.python import PythonOperator
 from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
 
-import sample_dag_deid_pseudonymize_table as deid
+# Airflow only puts the root of the dags folder on sys.path: when this file sits in a subfolder (e.g. .../dags/dags/), the folder of the
+# file itself has to be added or the import below fails.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sample_dag_deid_pseudonymize_table as deid  # noqa: E402
 
 PURGE_DAG_ID = "deid_purge_range"  # DEID: DAK must be allowed to trigger it
 VACUUM_DAG_ID = "deid_vacuum"
