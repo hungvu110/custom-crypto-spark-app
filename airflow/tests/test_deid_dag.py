@@ -189,11 +189,23 @@ class CheckConfTest(unittest.TestCase):
 
     def test_table_conf_values_are_still_checked(self):
         for key, bad in (("database", "demo-db"), ("table", "../t"), ("pseudoColumns", "a:ENCRYPT"),
-                         ("keySecretName", "other-secret"), ("requestCode", "PYC-1"), ("table", None)):
+                         ("keySecretName", "other-secret"), ("keySecretName", "deid-key-"), ("keySecretName", "deid-key-A"),
+                         ("keySecretName", "deid-key-5/../x"), ("requestCode", "PYC 1"), ("requestCode", "-PYC"),
+                         ("requestCode", "R" * 64), ("requestCode", ""), ("table", None)):
             conf = dak_conf()
             conf[key] = bad
             with self.assertRaises(ValueError, msg=f"{key}={bad!r}"):
                 self.check(DAK_RUN_ID, conf)
+
+    def test_the_naming_of_the_real_dak_is_accepted(self):
+        for code, secret in (("REQ-2026-000011", "deid-key-5"), ("PYC-2026-000007", "deid-key-2026-000007"),
+                             ("PYC-1", "deid-key-12345678"), ("REQ_7.a", "pseudonym-keys")):
+            conf = dak_conf()
+            conf["requestCode"], conf["keySecretName"] = code, secret
+            self.check(DAK_RUN_ID, conf)
+            spec = render(DAK_RUN_ID, conf)
+            self.assertEqual(spec["spec"]["driver"]["labels"]["dak.vai/request-code"], code)
+            self.assertEqual(spec["spec"]["volumes"][0]["secret"]["secretName"], secret)
 
     def test_a_dag_run_id_that_looks_like_a_dak_run_but_is_malformed_is_rejected(self):
         with self.assertRaises(ValueError):

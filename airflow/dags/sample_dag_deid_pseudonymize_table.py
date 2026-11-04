@@ -101,8 +101,11 @@ MANUAL_OUTPUT = {"OUTPUT_DB": "demo_db", "OUTPUT_TABLE": "users_cdr_2_deid_manua
 
 NAME = re.compile(r"[A-Za-z0-9_]{1,128}")
 PSEUDO_COLUMNS = re.compile(r"[A-Za-z0-9_]{1,128}:HASH(,[A-Za-z0-9_]{1,128}:HASH)*")
-SECRET_NAME = re.compile(r"deid-key-\d{4}-\d{6}|pseudonym-keys")
-REQUEST_CODE = re.compile(r"PYC-\d{4}-\d{6}")
+# The ticket code and the key Secret name are DAK's naming, not ours: no fixed prefix or digit count (PYC-2026-000007, REQ-2026-000011, deid-key-5,
+# deid-key-2026-000007 are all accepted). Only what Kubernetes needs is kept: the code ends up in a label value (<= 63 chars, alphanumeric at both
+# ends) and the Secret name in a volume (DNS-1123). The `deid-key-` prefix stays so that this DAG can never mount a Secret that is not a request key.
+SECRET_NAME = re.compile(r"deid-key-[a-z0-9]([-a-z0-9]{0,200}[a-z0-9])?|pseudonym-keys")
+REQUEST_CODE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?")
 # A re-run of the same request (extension after the zone was deleted) adds -r2, -r3, ... to the run id (and so to the SparkApplication name).
 DAK_RUN_ID = re.compile(r"deid-\d{4}-\d{6}(-r[0-9]{1,3})?")
 

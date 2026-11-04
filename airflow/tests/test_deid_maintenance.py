@@ -141,7 +141,7 @@ class PurgeConfTest(unittest.TestCase):
         self.rejected("purge-2026-000007-x", conf())
         self.rejected("purge-2026-7", conf())
         c = conf()
-        c["requestCode"] = "PYC-1"
+        c["requestCode"] = "PYC 1"
         self.rejected(run_conf=c)
         c = conf()
         c["pseudoColumns"] = "name:HASH"
