@@ -28,6 +28,8 @@ pseudonymize-table-app/
 │   ├── pseudonymize-table.yaml         # SparkApplication, nguồn là bảng
 │   ├── pseudonymize-file.yaml          # SparkApplication, nguồn là file/thư mục (INPUT_PATH)
 │   └── pseudonym-keys-secret.yaml      # mẫu Secret khoá (CRYPTO_PREFIX_SOURCE=file) — chỉ có chỗ trống
+├── sql/
+│   └── sample_telecom_tables.sql       # Spark SQL: tạo + nạp 2 bảng Delta viễn thông giả (cdr_voice theo dt/hour, subscriber_profile theo dt) để thử job
 └── src/
     ├── main/resources/log4j2.properties
     ├── main/scala/vai/lakehouse/pseudonymizetable/
