@@ -79,7 +79,9 @@ SELECT
 FROM (SELECT explode(sequence(1, 100000)) AS id);
 
 -- Kiểm tra:
--- SHOW PARTITIONS demo_db.cdr_voice;
+-- Bảng Delta không hỗ trợ SHOW PARTITIONS (lỗi PARTITION_MANAGEMENT_IS_UNSUPPORTED). Xem partition bằng:
+-- DESCRIBE DETAIL demo_db.cdr_voice;                                  -- partitionColumns, numFiles, sizeInBytes
+-- SELECT DISTINCT dt, hour FROM demo_db.cdr_voice ORDER BY dt, hour;
 -- SELECT dt, hour, count(*) FROM demo_db.cdr_voice GROUP BY dt, hour ORDER BY dt, hour;
 
 -- ------------------------------------------------------------------------------------------------------------------------------
@@ -109,5 +111,7 @@ INSERT INTO demo_db.subscriber_profile VALUES
  ('84868001234','Vũ Minh Hải',    '092088045678',DATE'1988-09-09','Cần Thơ',       '3 Hòa Bình, Ninh Kiều',   'V120',TIMESTAMP'2020-12-05 11:20:00','20261013');
 
 -- Kiểm tra:
--- SHOW PARTITIONS demo_db.subscriber_profile;
+-- Bảng Delta không hỗ trợ SHOW PARTITIONS, dùng:
+-- DESCRIBE DETAIL demo_db.subscriber_profile;                         -- partitionColumns, numFiles, sizeInBytes
+-- SELECT DISTINCT dt FROM demo_db.subscriber_profile ORDER BY dt;
 -- SELECT dt, count(*) FROM demo_db.subscriber_profile GROUP BY dt ORDER BY dt;
