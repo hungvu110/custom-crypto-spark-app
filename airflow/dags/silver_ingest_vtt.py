@@ -3,11 +3,12 @@
 encrypted column by column: the job only reads them and writes the table (passthrough mode), it never calls DAK.
 
   dataset         DAG                               mode         folder of a day
-  f001-mpre-call  silver_ingest_vtt_f001_mpre_call  passthrough  f001-mpre-call/date=YYYYMMDD/(hour=...)
+  f001-mpre-call  silver_ingest_vtt_f001_mpre_call  passthrough  f001-mpre-call/date=YYYYMMDD/   (the hour is the column hour_id)
 
 How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
-A run ingests the folder of the day BEFORE the run (all its hour subfolders) into the partitions dt = <day>; a manual run can take
-another day: conf {"date": "yyyyMMdd"}.
+A run ingests the folder of the day BEFORE the run (all its files) into the partitions dt = <day>, hour = <hour of each row, from the
+column hour_id>; a manual run can take another day: conf {"date": "yyyyMMdd"}. The folder has no hour layout, so only whole days run
+(a daily cron; no hourly cron, no fromHour/toHour).
 """
 
 import os
@@ -24,17 +25,18 @@ INPUT_ROOT = f"{common.HDFS}/landing/vtt/lakehouse/vtt-core/"
 
 # The datasets (tables of the landing root) of VTT, one DAG each. Everything that is specific to a dataset is in ITS entry below, nowhere else: the
 # keys (mode, hour_glob, partition_by_hour, key_path, resources) are described, and checked when this file is parsed, in common.DATASET_KEYS.
-# ASSUMPTION: add the real tables. VTT writes one folder per hour, date=YYYYMMDD/hour=HH, so `hour_glob` is "hour=%H%" (`%H%` = the hour).
+# ASSUMPTION: add the real tables. VTT writes ONE folder per day, date=YYYYMMDD, and every row carries its hour in the column `hour_id` (not
+# encrypted), so the hour comes from `hour_column` and not from a path (`hour_glob`): the silver table gets the partitions (dt, hour).
 # A VTT day is about 165 GB: set `resources` for it (common.RESOURCE_DEFAULTS are small) once its run time has been measured.
 DATASETS = {
-    "f001-mpre-call": {"mode": "passthrough", "hour_glob": "hour=%H%", "partition_by_hour": True},
+    "f001-mpre-call": {"mode": "passthrough", "hour_column": "hour_id", "partition_by_hour": True},
 }
 
 # Settings shared by every dataset. ASSUMPTION: adjust to the real VTT data (format, schema, target database).
 BASE_ENV = {
     "INPUT_FORMAT": "csv",
     "INPUT_OPTION_header": "true",
-    # The folder of a day holds hour=... subfolders: read them all, and do not turn `hour=12` into a partition column.
+    # Read the whole folder of a day, including any subfolder, and do not turn a folder name such as `hour=12` into a partition column.
     "INPUT_OPTION_recursiveFileLookup": "true",
     "OUTPUT_DB": "demo_db",
     "OUTPUT_FORMAT": "delta",

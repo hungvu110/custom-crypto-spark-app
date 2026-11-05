@@ -72,11 +72,13 @@ final case class InputSpec(path: String, format: InputFormat, schema: Option[Str
 final case class Batch(column: String, value: String)
 
 /**
- * Giờ của từng dòng: job thêm cột `column` = giờ `HH` suy ra từ ĐƯỜNG DẪN file nguồn bằng `pathRegex` (đúng một nhóm bắt, không khớp
- * thì `NA`). Đặt cột này vào `OUTPUT_PARTITION_BY` nếu muốn bảng partition theo giờ; không thì nó là cột thường. `replace` (rỗng = cả ngày):
- * chỉ các giờ này của lô bị thay khi `overwrite-partitions`, nên chạy lại vài giờ không đụng các giờ khác của ngày và không ghi trùng.
+ * Giờ của từng dòng: job thêm cột `column` = giờ `HH`, suy ra từ ĐƯỜNG DẪN file nguồn bằng `pathRegex` (đúng một nhóm bắt, không khớp
+ * thì `NA`), hoặc từ một CỘT của chính dữ liệu (`sourceColumn`, `pathRegex` để rỗng): giá trị `0`..`23` được đệm thành `HH`, giá trị khác
+ * hoặc rỗng thành `NA`. Đặt cột này vào `OUTPUT_PARTITION_BY` nếu muốn bảng partition theo giờ; không thì nó là cột thường. `replace` (rỗng =
+ * cả ngày): chỉ các giờ này của lô bị thay khi `overwrite-partitions`, nên chạy lại vài giờ không đụng các giờ khác của ngày và không ghi trùng;
+ * chỉ dùng với giờ từ đường dẫn (file của một ngày chứa mọi giờ nên giờ từ cột luôn thay cả ngày).
  */
-final case class Hours(column: String, pathRegex: String, replace: Seq[String] = Nil)
+final case class Hours(column: String, pathRegex: String, replace: Seq[String] = Nil, sourceColumn: Option[String] = None)
 
 /**
  * Phần riêng của chế độ decrypt-encrypt.
@@ -124,7 +126,10 @@ final case class IngestConfig(
     "INPUT_OPTION_*"      -> (if (input.options.isEmpty) "(none)" else input.options.keys.toSeq.sorted.mkString(", ")),
     "OUTPUT"              -> s"$target [${outputFormat.name}, $outputMode]",
     "BATCH"               -> batch.fold("(none)")(b => s"${b.column} = ${b.value}"),
-    "HOURS"               -> hours.fold("(none)")(h => s"${h.column} from ${h.pathRegex}" + (if (h.replace.isEmpty) "" else s"; replace ${h.replace.mkString(",")}")),
+    "HOURS"               -> hours.fold("(none)") { h =>
+      h.sourceColumn.fold(s"${h.column} from ${h.pathRegex}")(c => s"${h.column} from column $c") +
+        (if (h.replace.isEmpty) "" else s"; replace ${h.replace.mkString(",")}")
+    },
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
@@ -225,24 +230,40 @@ object IngestConfig {
         if (raw("BATCH_COLUMN").isDefined) errors += "BATCH_COLUMN: only used together with BATCH_VALUE"
         None
     }
-    val hours = raw("HOUR_PATH_REGEX") match {
-      case Some(pattern) =>
+    def hourColumn(): String = {
+      val column = raw("HOUR_COLUMN").getOrElse(DefaultHourColumn)
+      if (!column.matches(ColumnName)) errors += s"HOUR_COLUMN: invalid column name '$column'"
+      if (batch.exists(_.column.equalsIgnoreCase(column))) errors += "HOUR_COLUMN: must differ from BATCH_COLUMN"
+      column
+    }
+    val hourRegex = raw("HOUR_PATH_REGEX")
+    val hourSource = raw("HOUR_FROM_COLUMN")
+    if (hourRegex.isDefined && hourSource.isDefined) {
+      errors += "HOUR_PATH_REGEX/HOUR_FROM_COLUMN: only one of them can be set (the hour comes from the path or from a column)"
+    }
+    val hours = (hourRegex, hourSource) match {
+      case (Some(pattern), _) =>
         try {
           if (Pattern.compile(pattern).matcher("").groupCount != 1) errors += "HOUR_PATH_REGEX: must have exactly one capture group (the hour)"
         } catch {
           case _: PatternSyntaxException => errors += "HOUR_PATH_REGEX: not a valid regular expression"
         }
-        val column = raw("HOUR_COLUMN").getOrElse(DefaultHourColumn)
-        if (!column.matches(ColumnName)) errors += s"HOUR_COLUMN: invalid column name '$column'"
-        if (batch.exists(_.column.equalsIgnoreCase(column))) errors += "HOUR_COLUMN: must differ from BATCH_COLUMN"
+        val column = hourColumn()
         val replace = raw("BATCH_HOURS").map(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq).getOrElse(Nil)
         replace.filterNot(_.matches(HourValue)).foreach(h => errors += s"BATCH_HOURS: invalid hour '$h' (two digits, 00 to 23)")
         if (replace.distinct.size != replace.size) errors += "BATCH_HOURS: duplicated hour"
         if (replace.nonEmpty && batch.isEmpty) errors += "BATCH_HOURS: only used together with BATCH_VALUE"
         Some(Hours(column, pattern, replace))
-      case None =>
+      case (None, Some(source)) =>
+        if (!source.matches(ColumnName)) errors += s"HOUR_FROM_COLUMN: invalid column name '$source'"
+        val column = hourColumn()
+        if (raw("BATCH_HOURS").isDefined) {
+          errors += "BATCH_HOURS: not used with HOUR_FROM_COLUMN (a file holds every hour of its day: the whole day is replaced)"
+        }
+        Some(Hours(column, "", Nil, Some(source)))
+      case (None, None) =>
         val set = Seq("HOUR_COLUMN", "BATCH_HOURS").filter(k => raw(k).isDefined)
-        if (set.nonEmpty) errors += s"${set.mkString("/")}: only used together with HOUR_PATH_REGEX"
+        if (set.nonEmpty) errors += s"${set.mkString("/")}: only used together with HOUR_PATH_REGEX or HOUR_FROM_COLUMN"
         None
     }
     val outputMode = raw("OUTPUT_MODE").map(_.toLowerCase(Locale.ROOT))

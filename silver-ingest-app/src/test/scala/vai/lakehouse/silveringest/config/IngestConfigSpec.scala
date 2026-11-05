@@ -199,6 +199,30 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     errors(Mode.Passthrough, env ++ Map("HOUR_PATH_REGEX" -> "secret(")) should not include "secret"
   }
 
+  it should "dựng giờ lấy từ một cột của dữ liệu (HOUR_FROM_COLUMN): cột hour mặc định, không có regex" in {
+    val env = common ++ Map("BATCH_VALUE" -> "20261013", "BATCH_COLUMN" -> "dt", "HOUR_FROM_COLUMN" -> "hour_id")
+
+    IngestConfig.fromEnv(Mode.Passthrough, env).toOption.get.hours shouldBe Some(Hours("hour", "", Nil, Some("hour_id")))
+    IngestConfig.fromEnv(Mode.Passthrough, env ++ Map("HOUR_COLUMN" -> "h")).toOption.get.hours shouldBe
+      Some(Hours("h", "", Nil, Some("hour_id")))
+    // Same rule as the hour of a path: a partition only when listed in OUTPUT_PARTITION_BY (after the batch column).
+    IngestConfig.fromEnv(Mode.Passthrough, env ++ Map("OUTPUT_PARTITION_BY" -> "hour")).toOption.get.partitionBy shouldBe Seq("dt", "hour")
+    IngestConfig.fromEnv(Mode.Passthrough, env).toOption.get.partitionBy shouldBe Seq("dt")
+    val described = IngestConfig.fromEnv(Mode.Passthrough, env).toOption.get.describe.toMap
+    described("HOURS") should include("hour_id")
+  }
+
+  it should "từ chối cấu hình HOUR_FROM_COLUMN sai" in {
+    val env = common ++ Map("BATCH_VALUE" -> "20261013", "BATCH_COLUMN" -> "dt", "HOUR_FROM_COLUMN" -> "hour_id")
+
+    errors(Mode.Passthrough, env ++ Map("HOUR_PATH_REGEX" -> "/hour=(\\d{2})/")) should include("only one of")
+    errors(Mode.Passthrough, env ++ Map("HOUR_FROM_COLUMN" -> "bad-name")) should include("invalid column name")
+    errors(Mode.Passthrough, env ++ Map("HOUR_COLUMN" -> "bad-name")) should include("invalid column name")
+    errors(Mode.Passthrough, env ++ Map("BATCH_COLUMN" -> "hour")) should include("must differ from BATCH_COLUMN")
+    errors(Mode.Passthrough, env ++ Map("BATCH_HOURS" -> "10")) should include("not used with HOUR_FROM_COLUMN")
+    errors(Mode.Passthrough, common ++ Map("HOUR_COLUMN" -> "hour")) should include("HOUR_PATH_REGEX or HOUR_FROM_COLUMN")
+  }
+
   "describe" should "không chứa giá trị nhạy cảm và nêu rõ nguồn" in {
     val text = IngestConfig.fromEnv(Mode.DecryptEncrypt, vtnet).toOption.get.describe.map { case (k, v) => s"$k=$v" }.mkString(";")
 

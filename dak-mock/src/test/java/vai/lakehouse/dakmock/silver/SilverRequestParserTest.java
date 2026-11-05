@@ -161,8 +161,18 @@ class SilverRequestParserTest {
       assertThat(fields((ObjectNode) request.deepCopy().without("cron"))).containsExactly("cron");
       assertThat(fields(request.deepCopy().put("cron", 300))).containsExactly("cron");
       assertThat(fields(request.deepCopy().put("scheduleTime", "03:00"))).containsExactlyInAnyOrder("scheduleTime");
-      for (String good : List.of("0 0 * * *", "5 3 * * *", "30 12 * * *", "59 23 * * *", "05 03 * * *", "0 * * * *", "5 * * * *", "59 * * * *")) {
+      for (String good : List.of("0 0 * * *", "5 3 * * *", "30 12 * * *", "59 23 * * *", "05 03 * * *")) {
         assertThat(SilverRequestParser.parse(request.deepCopy().put("cron", good)).cron()).isEqualTo(good);
+      }
+      // An hourly cron needs an hour layout: VTT's day folder has none (its hour is a column), so for it only a daily cron is accepted.
+      boolean hasHourLayout = !"f001-mpre-call".equals(request.path("path").asText());
+      for (String hourly : List.of("0 * * * *", "5 * * * *", "59 * * * *")) {
+        ObjectNode hourlyRequest = request.deepCopy().put("cron", hourly);
+        if (hasHourLayout) {
+          assertThat(SilverRequestParser.parse(hourlyRequest).cron()).isEqualTo(hourly);
+        } else {
+          assertThat(fields(hourlyRequest)).as(hourly).containsExactly("cron");
+        }
       }
     }
   }
@@ -173,11 +183,13 @@ class SilverRequestParserTest {
     assertThat(SilverRequestParser.isHourly("5 * * * *")).isTrue();
     assertThat(SilverRequestParser.isHourly("5 3 * * *")).isFalse();
     for (SilverDataset dataset : SilverDataset.values()) {
-      assertThat(dataset.supportsHours()).as(dataset.id()).isTrue(); // every dataset has an hour_glob in its DAG file
+      // Only the datasets with an hour_glob in their DAG file can run hourly; VTT's hour is a column of the data (hour_column), not a path.
+      assertThat(dataset.supportsHours()).as(dataset.id()).isEqualTo(dataset != SilverDataset.F001_MPRE_CALL);
     }
-    for (ObjectNode request : List.of(vtt(), nims(), ebs())) {
+    for (ObjectNode request : List.of(nims(), ebs())) {
       assertThat(SilverRequestParser.parse(request.deepCopy().put("cron", "5 * * * *")).cron()).isEqualTo("5 * * * *");
     }
+    assertThat(fields(vtt().put("cron", "5 * * * *"))).containsExactly("cron");
   }
 
   @Test

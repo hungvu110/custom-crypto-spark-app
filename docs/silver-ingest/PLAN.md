@@ -22,7 +22,7 @@ Dữ liệu lưu theo ngày, bên trong ngày có nhiều lô (VTNET `dt=YYYYMMD
 | --- | --- | --- |
 | `ebs_3g_4g` | `ebs_3g_4g/dt=YYYYMMDD/` (mọi `batch=HHmm`) | `YYYYMMDD` |
 | `nims` | `nims/dt=YYYYMMDD/` (mọi `batch=N`) | `YYYYMMDD` |
-| VTT `f001-mpre-call` | `f001-mpre-call/date=YYYYMMDD/` (mọi `hour=HH`) | `YYYYMMDD` |
+| VTT `f001-mpre-call` | `f001-mpre-call/date=YYYYMMDD/` (chỉ thư mục ngày; giờ là cột `hour_id` của dữ liệu) | `YYYYMMDD` |
 
 ## 2. Quyết định đã chốt
 
@@ -105,8 +105,9 @@ kiểm tra ở `silver_ingest_common.DATASET_KEYS`; sai khoá hay sai giá trị
 | Khoá | Bắt buộc | Ý nghĩa |
 |---|---|---|
 | `mode` | có | `passthrough` hoặc `decrypt-encrypt` |
-| `hour_glob` | không | Chỗ ghi giờ dưới thư mục của một ngày, `%H%` là giờ (VTT `hour=%H%`, ebs `batch=%H%*`, nims `batch=*/infra_cell_4g-%H%*`). Có thì chạy được theo giờ; không có thì chỉ chạy cả ngày |
-| `partition_by_hour` | không | `true`: bảng partition `(dt, hour)` (dataset lớn); mặc định `false`: chỉ `dt`, `hour` là cột thường (dataset nhỏ). Cần `hour_glob` |
+| `hour_glob` | không | Chỗ ghi giờ dưới thư mục của một ngày, `%H%` là giờ (ebs `batch=%H%*`, nims `batch=*/infra_cell_4g-%H%*`). Có thì chạy được theo giờ; không có thì chỉ chạy cả ngày |
+| `hour_column` | không | Giờ KHÔNG nằm trong đường dẫn mà trong một cột của dữ liệu (landing chỉ có thư mục ngày, file chứa mọi giờ; VTT: `hour_id`, không mã hoá). Job ghi cột `hour` = `HH` (giá trị `0`..`23`, ngoài ra `NA`) bên cạnh cột gốc. Chỉ chạy cả ngày (không cron hằng giờ, không `fromHour`/`toHour`). Không dùng cùng `hour_glob` |
+| `partition_by_hour` | không | `true`: bảng partition `(dt, hour)` (dataset lớn); mặc định `false`: chỉ `dt`, `hour` là cột thường (dataset nhỏ). Cần `hour_glob` hoặc `hour_column` |
 | `key_path` | không | Chỉ `decrypt-encrypt`: đường dẫn hỏi DAK `by-path` (mặc định là tên dataset) |
 | `resources` | không | Tài nguyên Spark riêng của dataset; khoá nào không khai thì dùng mặc định |
 
@@ -123,7 +124,7 @@ kiểm tra ở `silver_ingest_common.DATASET_KEYS`; sai khoá hay sai giá trị
 | `driver_memory_overhead` | `512m` | như trên |
 | `shuffle_partitions` | 64 | 1–20000 |
 
-Ví dụ: `"f001-mpre-call": {"mode": "passthrough", "hour_glob": "hour=%H%", "partition_by_hour": True, "resources": {"executors": 10, "executor_cores": 4, "executor_memory": "8g"}}`.
+Ví dụ: `"f001-mpre-call": {"mode": "passthrough", "hour_column": "hour_id", "partition_by_hour": True, "resources": {"executors": 10, "executor_cores": 4, "executor_memory": "8g"}}`.
 
 Cách chọn số: một ngày VTT khoảng 165 GB, mỗi giờ khoảng 7 GB. Số task đọc xấp xỉ dung lượng chia 128 MB, nên số core (`executors` × `executor_cores`) quyết định thời gian chạy; `shuffle_partitions` xấp xỉ dung lượng chia 128–200 MB nhưng nhánh `passthrough` ít shuffle nên ít ảnh hưởng. **Các con số phải đo bằng dữ liệu thật** (xem Spark UI: thời gian task, spill, GC) và nằm trong hạn mức (ResourceQuota) của namespace; chưa có số đo nào nên VTT hiện vẫn dùng mặc định.
 
@@ -156,6 +157,9 @@ Cách chọn số: một ngày VTT khoảng 165 GB, mỗi giờ khoảng 7 GB. S
 - **Gốc landing cần xác nhận.** DAG đang đặt chung `/prod8/landing/vtnet/` cho mọi dataset VTNET (giả định, tất cả dataset cùng một cụm HDFS). Màn hình `hdfs-kerberos-client-hkh` lại cho thấy `/landing/ebs_3g_4g/dt=...` và `/landing/nims/dt=.../batch=1/infra_cell_4g-<giờ>.csv`: nếu đó là gốc thật thì sửa `INPUT_ROOT` trong `silver_ingest_vtnet.py`.
 - Dữ liệu thật (HDFS): VTNET `/prod8/landing/vtnet/<bảng>/dt=<ngày>/batch=<HHmm>/<file>.csv`; VTT `/landing/vtt/lakehouse/vtt-core/<bảng>/date=<ngày>/hour=<giờ>/`
   (~98 file × 70 MB mỗi giờ). Gốc landing của hai DAG đã đặt theo đây; schema và delimiter từng bảng **chưa khai** (`INPUT_SCHEMA` để trống).
+- **VTT: giờ nằm trong cột, không trong đường dẫn.** Theo người vận hành, landing VTT chỉ có thư mục ngày `date=<ngày>/` và mỗi dòng có giờ ở cột
+  `hour_id` (không mã hoá), nên `DATASETS` dùng `hour_column` thay `hour_glob`: bảng silver partition `(dt, hour)`, chỉ nạp cả ngày. Dòng ghi chú
+  `hour=<giờ>` ngay trên là quan sát trước đó, cần đối chiếu lại bằng `hdfs dfs -ls` (có thư mục giờ thì dùng `hour_glob` như ebs).
 - Bảng đích đã tồn tại mà không partition theo `dt` (và `hour` nếu dataset partition theo giờ) bị từ chối (exit 1): tạo bảng mới hoặc đổi `OUTPUT_TABLE`.
 - DAK thật **chưa code** `by-path` (tài liệu mới mục 5): họ chờ câu trả lời mục 6 — đã soạn ở `TRA-LOI-DAK-BY-PATH.md`, cần gửi DAK. Job VTNET chạy được với
   dak-mock; với DAK thật cần DAK làm xong `by-path`.

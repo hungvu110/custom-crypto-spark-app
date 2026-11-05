@@ -145,6 +145,7 @@ EBS = _VTNET[EBS_ID]
 NIMS = _VTNET[NIMS_ID]
 NIMS_ENC = _dags_of(encrypting_module)[NIMS_ID]
 ALL_DAGS = (VTT, EBS, NIMS)
+PATH_HOUR_DAGS = (EBS, NIMS)  # the datasets whose hour is in the path (hour_glob); VTT's hour is a column of the data (hour_column)
 
 ROOT_VTT = vtt_module.INPUT_ROOT
 ROOT_VTNET = vtnet_module.INPUT_ROOT
@@ -537,8 +538,6 @@ class HoursTest(unittest.TestCase):
     def test_each_dataset_selects_the_hour_the_way_its_data_is_laid_out(self):
         one = {"date": "20261013", "fromHour": "10"}
         many = {"date": "20261013", "fromHour": "10", "toHour": "12"}
-        self.assertEqual(self.path(VTT, one), ROOT_VTT + "f001-mpre-call/date=20261013/hour=10")
-        self.assertEqual(self.path(VTT, many), ROOT_VTT + "f001-mpre-call/date=20261013/hour={10,11,12}")
         self.assertEqual(self.path(EBS, one), ROOT_VTNET + "ebs_3g_4g/dt=20261013/batch=10*")
         self.assertEqual(self.path(EBS, many), ROOT_VTNET + "ebs_3g_4g/dt=20261013/batch={10,11,12}*")
         self.assertEqual(self.path(NIMS, one), ROOT_VTNET + "nims/dt=20261013/batch=*/infra_cell_4g-10*")
@@ -546,7 +545,7 @@ class HoursTest(unittest.TestCase):
 
     def test_hours_are_two_digits_and_may_be_given_as_numbers_or_text(self):
         for conf in ({"date": "20261013", "fromHour": 5, "toHour": 7}, {"date": "20261013", "fromHour": "5", "toHour": "07"}):
-            self.assertTrue(self.path(VTT, conf).endswith("hour={05,06,07}"), conf)
+            self.assertTrue(self.path(EBS, conf).endswith("batch={05,06,07}*"), conf)
 
     def test_every_run_writes_the_day_into_dt_and_says_which_hours_it_replaces(self):
         env = lambda dag, conf: driver_env(render(dag, conf, run_id="manual__x"))  # noqa: E731
@@ -555,17 +554,19 @@ class HoursTest(unittest.TestCase):
             ({"date": "20261013", "fromHour": "10"}, "10"),
             ({"date": "20261013", "fromHour": "10", "toHour": "12"}, "10,11,12"),
         ):
-            for dag in ALL_DAGS:
+            for dag in PATH_HOUR_DAGS:
                 # The batch is the DAY whatever the run is: no other batch format exists, so runs by day and by hour cannot disagree.
                 self.assertEqual((env(dag, conf)["BATCH_COLUMN"], env(dag, conf)["BATCH_VALUE"]), ("dt", "20261013"), (dag.DAG_ID, conf))
                 self.assertEqual(env(dag, conf)["BATCH_HOURS"], hours, (dag.DAG_ID, conf))
+        # VTT has no hour layout: a run is always a whole day, it never says which hours it replaces.
+        self.assertEqual((env(VTT, {"date": "20261013"})["BATCH_COLUMN"], env(VTT, {"date": "20261013"})["BATCH_VALUE"]), ("dt", "20261013"))
+        self.assertNotIn("BATCH_HOURS", env(VTT, {"date": "20261013"}))
         self.assertEqual(driver_env(render(EBS))["BATCH_HOURS"], "")  # a scheduled run replaces the whole day
 
     def test_the_hour_column_is_read_from_the_path_with_the_regex_of_the_dataset(self):
         import re
 
         for dag, paths in (
-            (VTT, {"hdfs://nn/x/f001-mpre-call/date=20261013/hour=09/part-1.csv": "09"}),
             (EBS, {"hdfs://nn/x/ebs_3g_4g/dt=20261013/batch=1520/ebs_3g_4g-152000.csv": "15"}),
             (NIMS, {"hdfs://nn/x/nims/dt=20261013/batch=2/infra_cell_4g-130012.csv": "13"}),
         ):
@@ -591,7 +592,12 @@ class HoursTest(unittest.TestCase):
         self.assertTrue(self.path(EBS, {"date": "20261013"}).endswith("ebs_3g_4g/dt=20261013"))
 
     def test_hours_need_a_day_a_sane_range_and_a_dataset_with_an_hour_layout(self):
-        for dag in ALL_DAGS:
+        # VTT's hour is a column of the data: its folder has no hour layout, so only a whole day can be run.
+        common.check_conf(VTT.SOURCE, {"date": "20261013"})
+        for bad in ({"date": "20261013", "fromHour": "10"}, {"date": "20261013", "fromHour": "10", "toHour": "12"}):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_conf(VTT.SOURCE, bad)
+        for dag in PATH_HOUR_DAGS:
             common.check_conf(dag.SOURCE, {"date": "20261013", "fromHour": "00", "toHour": "23"})
             for bad in (
                 {"fromHour": "10"},  # the day is missing
@@ -617,10 +623,41 @@ class HoursTest(unittest.TestCase):
         with self.assertRaises(_AirflowFailException):
             validate(dag_run=_DagRun("r", {"fromHour": "10"}))
 
-    def test_every_dataset_declares_an_hour_glob_with_the_hour_token(self):
+    def test_every_dataset_says_where_its_hour_comes_from_exactly_once(self):
         for dag in ALL_DAGS:
+            self.assertEqual(bool(dag.SOURCE["hour_glob"]) + bool(dag.SOURCE["hour_column"]), 1, dag.DAG_ID)
+        for dag in PATH_HOUR_DAGS:
             self.assertIn(common.HOUR_TOKEN, dag.SOURCE["hour_glob"], dag.DAG_ID)
             self.assertNotIn("}}", dag.SOURCE["hour_glob"])  # it is written inside a Jinja expression
+        self.assertEqual(VTT.SOURCE["hour_column"], "hour_id")
+
+
+class HourColumnTest(unittest.TestCase):
+    """VTT's landing has only the day folder and the hour is the column `hour_id` of the data: the job derives the column `hour` from it."""
+
+    def test_the_job_derives_the_hour_from_the_column_and_partitions_the_table_by_it(self):
+        env = driver_env(render(VTT))
+        self.assertEqual((env["HOUR_FROM_COLUMN"], env["HOUR_COLUMN"], env["OUTPUT_PARTITION_BY"]), ("hour_id", "hour", "hour"))
+        self.assertEqual((env["BATCH_COLUMN"], env["BATCH_VALUE"]), ("dt", "20261027"))
+        for name in ("HOUR_PATH_REGEX", "BATCH_HOURS"):
+            self.assertNotIn(name, env)
+
+    def test_a_run_reads_the_whole_folder_of_its_day(self):
+        self.assertEqual(driver_env(render(VTT))["INPUT_PATH"], ROOT_VTT + "f001-mpre-call/date=20261027")
+        manual = driver_env(render(VTT, {"date": "20261013"}, run_id="manual__x"))
+        self.assertEqual(manual["INPUT_PATH"], ROOT_VTT + "f001-mpre-call/date=20261013")
+        self.assertEqual(manual["BATCH_VALUE"], "20261013")
+
+    def test_the_table_is_partitioned_by_day_only_when_partition_by_hour_is_off(self):
+        source = {**VTT.SOURCE, "partition_by_hour": False}
+        env = {item["name"]: item["value"] for item in common.build_spec(source)["spec"]["driver"]["env"]}
+        self.assertEqual(env["HOUR_FROM_COLUMN"], "hour_id")
+        self.assertNotIn("OUTPUT_PARTITION_BY", env)
+
+    def test_an_hourly_cron_is_refused_because_a_run_cannot_take_one_hour_of_the_day_folder(self):
+        with self.assertRaises(ValueError):
+            common.check_schedule_config(VTT.SOURCE, {**VTT_CONFIG, "cron": "5 * * * *"})
+        common.check_schedule_config(VTT.SOURCE, dict(VTT_CONFIG))
 
 
 class DatasetSettingsTest(unittest.TestCase):
@@ -637,6 +674,8 @@ class DatasetSettingsTest(unittest.TestCase):
         common.check_dataset("d", self.GOOD)
         common.check_dataset("d", {"mode": "passthrough"})
         common.check_dataset("d", {"mode": "decrypt-encrypt", "key_path": "nims", "hour_glob": "batch=*/f-%H%*"})
+        common.check_dataset("d", {"mode": "passthrough", "hour_column": "hour_id", "partition_by_hour": True})
+        common.check_dataset("d", {"mode": "passthrough", "hour_column": "HourId"})
 
     def test_a_typo_or_a_wrong_value_is_rejected_and_names_the_dataset(self):
         for bad in (
@@ -653,7 +692,12 @@ class DatasetSettingsTest(unittest.TestCase):
             {"mode": "passthrough", "hour_glob": "hour={%H%}"},
             {"mode": "passthrough", "hour_glob": "hour= %H%"},
             {"mode": "passthrough", "hour_glob": 5},
-            {"mode": "passthrough", "partition_by_hour": True},  # the hour is read from the path: needs hour_glob
+            {"mode": "passthrough", "partition_by_hour": True},  # the hour comes from the path or a column: needs hour_glob or hour_column
+            {"mode": "passthrough", "hour_column": "hour-id"},
+            {"mode": "passthrough", "hour_column": "1hour"},
+            {"mode": "passthrough", "hour_column": ""},
+            {"mode": "passthrough", "hour_column": 5},
+            {"mode": "passthrough", "hour_column": "hour_id", "hour_glob": "hour=%H%"},  # one source of the hour only
             {"mode": "passthrough", "hour_glob": "hour=%H%", "partition_by_hour": "yes"},
             {"mode": "passthrough", "key_path": "nims"},  # decrypt-encrypt only
             {"mode": "decrypt-encrypt", "key_path": " "},

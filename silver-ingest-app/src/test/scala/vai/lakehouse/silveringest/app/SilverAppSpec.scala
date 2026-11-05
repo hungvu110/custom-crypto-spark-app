@@ -475,7 +475,65 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     hourCounts("vtt_hours_f") shouldBe Map(("20261013", "10") -> 1L, ("20261013", "NA") -> 1L)
   }
 
-  it should "áp dụng cho file đã mã hoá cả file (nims): giải mã từng nhóm giờ, bảng chỉ partition theo ngày" in {
+  // ---------------------------------------------------------------- GIỜ LẤY TỪ MỘT CỘT (HOUR_FROM_COLUMN)
+
+  /** One file for the whole day (no hour folders); every row carries its hour in the column `hour_id` (as the source writes it: `5`, `05`...). */
+  private def hourIdDay(name: String, rows: Seq[(String, Int)]): Path = {
+    val day = dir(name)
+    val lines = "msisdn,hour_id,amount" +: rows.map { case (hour, amount) => s"849000$amount,$hour,$amount" }
+    write(day.resolve("part-1.csv"), lines.mkString("", "\n", "\n").getBytes(UTF_8))
+    day
+  }
+
+  private def hourIdEnv(extra: (String, String)*): Seq[(String, String)] =
+    Seq("OUTPUT_FORMAT" -> "delta", "BATCH_COLUMN" -> "dt", "BATCH_VALUE" -> "20261013", "HOUR_FROM_COLUMN" -> "hour_id",
+      "OUTPUT_PARTITION_BY" -> "hour") ++ extra
+
+  "Giờ lấy từ cột" should "đệm số 0, đặt NA cho giờ sai, partition (dt, hour) và giữ nguyên cột gốc" in {
+    val day = hourIdDay("hourid/a", Seq("5" -> 1, "05" -> 2, "17" -> 3, "x" -> 4, "24" -> 5, "" -> 6))
+
+    vtt(day, "vtt_hourid_a", hourIdEnv(): _*) shouldBe SilverApp.ExitOk
+
+    hourCounts("vtt_hourid_a") shouldBe Map(("20261013", "05") -> 2L, ("20261013", "17") -> 1L, ("20261013", "NA") -> 3L)
+    partitionColumns("vtt_hourid_a") shouldBe Seq("dt", "hour")
+    // The source column is written as it came: `5` and `05` are still told apart there.
+    spark.table("silver.vtt_hourid_a").where("hour = '05'").select("hour_id").collect().map(_.getString(0)).toSet shouldBe Set("5", "05")
+  }
+
+  it should "chạy lại cả ngày thay mọi giờ của ngày đó nhưng không đụng ngày khác" in {
+    vtt(hourIdDay("hourid/b-d1", Seq("5" -> 1, "6" -> 2)), "vtt_hourid_b", hourIdEnv(): _*) shouldBe SilverApp.ExitOk
+    vtt(hourIdDay("hourid/b-d2", Seq("5" -> 3)), "vtt_hourid_b", hourIdEnv("BATCH_VALUE" -> "20261014"): _*) shouldBe SilverApp.ExitOk
+
+    // The day 13 is rerun and now only has hour 07: hours 05 and 06 of that day are gone, the day 14 is untouched.
+    vtt(hourIdDay("hourid/b-d1-again", Seq("7" -> 4)), "vtt_hourid_b", hourIdEnv(): _*) shouldBe SilverApp.ExitOk
+    hourCounts("vtt_hourid_b") shouldBe Map(("20261013", "07") -> 1L, ("20261014", "05") -> 1L)
+  }
+
+  it should "ghi cột hour thường khi không đặt OUTPUT_PARTITION_BY (bảng chỉ partition theo ngày)" in {
+    val env = hourIdEnv().filterNot(_._1 == "OUTPUT_PARTITION_BY")
+    vtt(hourIdDay("hourid/c", Seq("9" -> 1, "10" -> 2)), "vtt_hourid_c", env: _*) shouldBe SilverApp.ExitOk
+
+    partitionColumns("vtt_hourid_c") shouldBe Seq("dt")
+    hourCounts("vtt_hourid_c") shouldBe Map(("20261013", "09") -> 1L, ("20261013", "10") -> 1L)
+  }
+
+  it should "báo lỗi và không ghi gì khi dữ liệu không có cột giờ đã khai" in {
+    val day = dir("hourid/d")
+    write(day.resolve("part-1.csv"), "msisdn,amount\n84900001,1\n".getBytes(UTF_8))
+
+    vtt(day, "vtt_hourid_d", hourIdEnv(): _*) shouldBe SilverApp.ExitRuntimeError
+    spark.catalog.tableExists("silver", "vtt_hourid_d") shouldBe false
+  }
+
+  it should "báo lỗi khi cột hour đích đã có trong dữ liệu và không phải cột nguồn của giờ" in {
+    val day = dir("hourid/e")
+    write(day.resolve("part-1.csv"), "msisdn,hour_id,hour\n84900001,5,x\n".getBytes(UTF_8))
+
+    vtt(day, "vtt_hourid_e", hourIdEnv(): _*) shouldBe SilverApp.ExitRuntimeError
+    spark.catalog.tableExists("silver", "vtt_hourid_e") shouldBe false
+  }
+
+  "Giờ" should "áp dụng cho file đã mã hoá cả file (nims): giải mã từng nhóm giờ, bảng chỉ partition theo ngày" in {
     val day = hourDay("hours/nims-a", Seq("09", "10", "11"), encryptFiles = true)
     val env = vtnetEnv(day, "nims_hours", "CDR_ENCRYPT_COLUMNS" -> "", "CDR_KEY_FIELD" -> "", "OUTPUT_FORMAT" -> "delta",
       "BATCH_COLUMN" -> "dt", "BATCH_VALUE" -> "20261013", "HOUR_PATH_REGEX" -> hourRegex)

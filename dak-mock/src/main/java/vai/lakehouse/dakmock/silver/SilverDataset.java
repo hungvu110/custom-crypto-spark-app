@@ -16,8 +16,11 @@ import java.util.stream.Collectors;
  */
 public enum SilverDataset {
 
-  /** VTT table: the files are already encrypted by column, so they are written as they are. */
-  F001_MPRE_CALL(SilverSource.VTT, "f001-mpre-call", false, true),
+  /**
+   * VTT table: the files are already encrypted by column, so they are written as they are. The landing has only the day folder and the hour is
+   * the column {@code hour_id} of the data ({@code hour_column} in the DAG file), so there is no hour layout: only a daily cron is accepted.
+   */
+  F001_MPRE_CALL(SilverSource.VTT, "f001-mpre-call", false, false),
 
   /** Passthrough: files are written as they are, so the request has no columns to encrypt. */
   EBS_3G_4G(SilverSource.VTNET, "ebs_3g_4g", false, true),

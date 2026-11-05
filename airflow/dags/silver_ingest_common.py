@@ -426,11 +426,15 @@ rm -f {TRUSTSTORE_DIR}/ca-*.pem
 #   mode               required  a key of MODES: passthrough, or decrypt-encrypt (DAK by-path / by-column keys).
 #   hour_glob          optional  where the hour is written under the folder of a day, with HOUR_TOKEN for the hour(s). It lets a scheduled
 #                                hourly run, a manual run or silver_ingest_backfill.py ingest only some hours; without it only whole days.
+#   hour_column        optional  the hour is NOT in the path but in this column of the data (the landing has only the day folder, every file holds
+#                                all the hours of its day). The job writes the column `hour` ("HH", from 0..23 or 00..23, otherwise NA) next to it.
+#                                Whole days only: no hourly cron, no fromHour/toHour (those need hour_glob). Not together with hour_glob.
 #   partition_by_hour  optional  true: the table is partitioned by (dt, hour) (big datasets); false (default): by dt only, `hour` is an
-#                                ordinary column (small datasets, no 24 tiny partitions a day). Needs hour_glob.
+#                                ordinary column (small datasets, no 24 tiny partitions a day). Needs hour_glob or hour_column.
 #   key_path           optional  decrypt-encrypt only: the path asked from DAK by-path, one key for the whole dataset (default: the dataset).
 #   resources          optional  Spark resources of the job of this dataset, any of the keys of RESOURCE_DEFAULTS (the rest keep the default).
-DATASET_KEYS = ("mode", "hour_glob", "partition_by_hour", "key_path", "resources")
+DATASET_KEYS = ("mode", "hour_glob", "hour_column", "partition_by_hour", "key_path", "resources")
+HOUR_COLUMN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")  # the same rule as a column name of the job
 
 # Resources of the Spark job. These defaults are what every dataset used before `resources` existed; the sizes of a big dataset are set in
 # its own entry of DATASETS. Rule of thumb for `shuffle_partitions`: the data of one run divided by 128-200 MB.
@@ -512,11 +516,17 @@ def check_dataset(dataset, settings):
             or any(bad in glob for bad in ("'", '"', "{", "}", "\\", " "))
         ):
             raise ValueError(f"{dataset}: hour_glob must be a relative path containing {HOUR_TOKEN} (no quotes, braces, spaces or backslashes)")
+    column = settings.get("hour_column")
+    if "hour_column" in settings:
+        if not isinstance(column, str) or not HOUR_COLUMN_NAME.fullmatch(column):
+            raise ValueError(f"{dataset}: hour_column must be the name of a column (letters, digits and '_', not starting with a digit)")
+        if glob:
+            raise ValueError(f"{dataset}: hour_glob and hour_column are exclusive (the hour comes from the path or from a column)")
     if "partition_by_hour" in settings:
         if not isinstance(settings["partition_by_hour"], bool):
             raise ValueError(f"{dataset}: partition_by_hour must be true or false")
-        if settings["partition_by_hour"] and not glob:
-            raise ValueError(f"{dataset}: partition_by_hour needs hour_glob (the hour is read from the path)")
+        if settings["partition_by_hour"] and not (glob or column):
+            raise ValueError(f"{dataset}: partition_by_hour needs hour_glob or hour_column (where the hour comes from)")
     if "key_path" in settings:
         if settings["mode"] != "decrypt-encrypt":
             raise ValueError(f"{dataset}: key_path is only for the decrypt-encrypt mode")
@@ -531,6 +541,7 @@ def dataset_fields(settings):
 
     return {
         "hour_glob": settings.get("hour_glob", ""),
+        "hour_column": settings.get("hour_column", ""),
         "partition_by_hour": settings.get("partition_by_hour", False),
         "resources": resources_of(settings),
     }
@@ -580,6 +591,15 @@ def build_spec(source):
             {"name": "HOUR_PATH_REGEX", "value": hour_regex(source["hour_glob"])},
             {"name": "HOUR_COLUMN", "value": HOUR_COLUMN},
             {"name": "BATCH_HOURS", "value": "{{ batch_hours('" + unit + "', dag_run.conf, data_interval_start) }}"},
+        ]
+        if source.get("partition_by_hour"):
+            job_env.append({"name": "OUTPUT_PARTITION_BY", "value": HOUR_COLUMN})
+    elif source.get("hour_column"):
+        # The hour is a column of the data (the landing has only the day folder): the job derives `hour` from it. No BATCH_HOURS: the files of a
+        # day hold every hour, so a run always replaces the whole day (dt), whatever the hours of its rows.
+        job_env += [
+            {"name": "HOUR_FROM_COLUMN", "value": source["hour_column"]},
+            {"name": "HOUR_COLUMN", "value": HOUR_COLUMN},
         ]
         if source.get("partition_by_hour"):
             job_env.append({"name": "OUTPUT_PARTITION_BY", "value": HOUR_COLUMN})
