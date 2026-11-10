@@ -685,6 +685,8 @@ def build_spec(source):
                 "spark.eventLog.dir": EVENT_LOG_DIR,
                 "spark.eventLog.rolling.enabled": "true",
                 "spark.eventLog.rolling.maxFileSize": "128m",
+                # Settings that are specific to one source (e.g. spark.cdrcrypto.audit.* of VTNET).
+                **source.get("extra_spark_conf", {}),
             },
         },
     }

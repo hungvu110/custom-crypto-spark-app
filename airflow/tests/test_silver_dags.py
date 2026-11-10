@@ -523,6 +523,19 @@ class SpecTest(unittest.TestCase):
             self.assertIn("cdr-crypto-udf", spec["sparkConf"]["spark.jars"])
             self.assertIn("DataLakeSecurity_jv8.jar", spec["sparkConf"]["spark.jars"])
 
+    def test_the_decrypt_encrypt_dags_turn_on_the_cdr_crypto_audit_log_and_the_others_do_not(self):
+        conf = render(NIMS_ENC)["spec"]["sparkConf"]
+        self.assertEqual(conf["spark.cdrcrypto.audit.enabled"], "true")
+        self.assertEqual(conf["spark.cdrcrypto.audit.sinks"], "log")
+        self.assertEqual(conf["spark.cdrcrypto.audit.tenant"], "tenantw1xjixm")
+        self.assertEqual(conf["spark.cdrcrypto.audit.workspace"], "wsw7vtwvi")
+        self.assertEqual(conf["spark.cdrcrypto.audit.team"], "teamtscauiy")
+        self.assertEqual(conf["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
+        self.assertEqual(render(NIMS)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
+        for dag in (VTT, EBS):  # no cdr_encrypt here: nothing to audit
+            keys = render(dag)["spec"]["sparkConf"].keys()
+            self.assertFalse([k for k in keys if k.startswith("spark.cdrcrypto.audit")])
+
     def test_the_validate_task_runs_before_the_job(self):
         for dag in ALL_DAGS:
             self.assertTrue(callable(task(dag, "validate_conf").kwargs["python_callable"]))
