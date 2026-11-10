@@ -91,6 +91,8 @@ spec:
 
       # ================= ENV CỦA pseudonym-udf (README mục 4) — CHỈ driver cần =================
       # Nguồn khoá: file (Secret mount) | vault | dak. Lib tự đọc các biến CRYPTO_*/VAULT_*/DAK_* này.
+      # Manifest mẫu này chạy tay bằng Secret `pseudonym-keys`. Job do DAK trigger (DAG deid_pseudonymize_table) KHÔNG dùng Secret:
+      # CRYPTO_PREFIX_SOURCE=dak + REQUEST_CODE, job tự GET /api/v1/keys/deid (README mục 4.6).
       - name: CRYPTO_PREFIX_SOURCE
         value: file
       - name: CRYPTO_KEY_PREFIX_DIR
@@ -118,10 +120,7 @@ spec:
       # - name: DAK_CLIENT_ID
       #   value: team-de-ws8
       # - name: DAK_CLIENT_SECRET
-      #   valueFrom:
-      #     secretKeyRef:
-      #       name: spark-dak-client
-      #       key: clientSecret
+      #   value: <client_secret>   # via the DAG, DAK sends client_id/client_secret in conf.env
     volumeMounts:
       - name: pseudonym-keys
         mountPath: /etc/pseudonym-keys

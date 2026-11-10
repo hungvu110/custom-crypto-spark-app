@@ -2,6 +2,7 @@ package vai.lakehouse.pseudonymizetable.config
 
 import java.util.Locale
 
+import vai.lakehouse.keyprefix.DeidRequestCode
 import vai.lakehouse.pseudonym.PseudonymMode
 
 import scala.collection.mutable.ArrayBuffer
@@ -128,7 +129,8 @@ final case class JobConfig(
     skipExisting: Boolean = false,
     writeRetries: Int = 0,
     retryWaitSeconds: Int = 30,
-    partitionByDefaulted: Boolean = false) {
+    partitionByDefaulted: Boolean = false,
+    requestCode: Option[String] = None) {
 
   def source: String = input.describe
 
@@ -303,11 +305,18 @@ object JobConfig {
       errors += "INPUT_BAD_FILES/INPUT_CHECK_PARALLELISM/INPUT_CHECK_FULL: only valid together with INPUT_PATH"
     }
 
+    // Mã phiếu khai thác (REQ-<năm>-<6 số>): gửi kèm khi lấy key khử định danh từ DAK (CRYPTO_PREFIX_SOURCE=dak), để DAK không phải
+    // chọn phiếu và job đối chiếu được phiếu DAK trả về. Không bí mật nên đi qua env.
+    val requestCode = raw("REQUEST_CODE")
+    requestCode.filterNot(DeidRequestCode.isValid).foreach { _ =>
+      errors += "REQUEST_CODE: must look like REQ-<year>-<6 digits> (or PYC-...)"
+    }
+
     if (errors.nonEmpty) Left(errors.toList)
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
       outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true),
       badFiles, parallelism, checkFull, partitionBy, skipExisting, writeRetries, retryWaitSeconds,
-      partitionByDefaulted = raw("OUTPUT_PARTITION_BY").isEmpty))
+      partitionByDefaulted = raw("OUTPUT_PARTITION_BY").isEmpty, requestCode = requestCode))
   }
 
   private val InputOptionPrefix = "INPUT_OPTION_"

@@ -112,6 +112,12 @@ public final class DakApiException extends RuntimeException {
     return new DakApiException(HttpStatus.CONFLICT, "invalid_state", message, message);
   }
 
+  /** Team có nhiều phiếu khai thác cùng bảng: không tự chọn, bên gọi gửi lại kèm {@code requestCode}. */
+  public static DakApiException ambiguousRequest(java.util.List<String> codes) {
+    String message = "Nhiều phiếu khai thác cho bảng này: " + String.join(", ", codes) + " — gửi lại kèm requestCode";
+    return new DakApiException(HttpStatus.CONFLICT, "ambiguous_request", message, message);
+  }
+
   /** Đã có phiếu khử định danh đang hoạt động trùng bảng và tập cột; {@code existingCode} là phiếu cũ của cùng team. */
   public static DakApiException duplicateRequest(String existingCode) {
     String message = "An active request for the same table and columns already exists: " + existingCode;

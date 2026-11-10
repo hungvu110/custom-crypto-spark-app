@@ -1,9 +1,9 @@
 package vai.lakehouse.pseudonym.spark
 
 import org.apache.spark.SparkConf
-import vai.lakehouse.keyprefix.{ChainedConfigSource, EnvConfigSource, PrefixSource, PrefixSourceFactory, SparkConfSource}
+import vai.lakehouse.keyprefix.{ChainedConfigSource, ConfigSource, DakTableRef, DeidKey, DeidKeySourceFactory, EnvConfigSource, PrefixSource, PrefixSourceFactory, SparkConfSource}
 import vai.lakehouse.pseudonym.ConfigurationException
-import vai.lakehouse.pseudonym.core.{KeyProvider, PrefixSourceKeyProvider}
+import vai.lakehouse.pseudonym.core.{DakDeidKeyProvider, KeyProvider, PrefixSourceKeyProvider}
 
 import scala.util.Try
 
@@ -20,6 +20,9 @@ import scala.util.Try
  * Mọi hàm nhận `SparkConf` tường minh — lib KHÔNG đọc `SparkEnv` toàn cục (trừ extension do Spark tự khởi tạo, xem
  * `PseudonymExtension`).
  */
+/** Bảng và phiếu khai thác mà job khử định danh đang chạy; dùng khi nguồn khoá là `dak` (`GET /api/v1/keys/deid`). */
+final case class DeidTarget(database: String, table: String, requestCode: Option[String])
+
 object PseudonymConf {
 
   val ConfPrefix       = "spark.pseudonym."
@@ -27,10 +30,29 @@ object PseudonymConf {
   val AesSivVersionKey = "spark.pseudonym.aes-siv.version"
   val MappingPathKey   = "spark.pseudonym.mapping.path"
 
-  def prefixSource(conf: SparkConf): PrefixSource =
-    PrefixSourceFactory.create(new ChainedConfigSource(Seq(
-      new SparkConfSource(conf, ConfPrefix),
-      new EnvConfigSource())))
+  private def configSource(conf: SparkConf): ConfigSource =
+    new ChainedConfigSource(Seq(new SparkConfSource(conf, ConfPrefix), new EnvConfigSource()))
+
+  def prefixSource(conf: SparkConf): PrefixSource = PrefixSourceFactory.create(configSource(conf))
+
+  /**
+   * Khoá của job khử định danh một bảng. Nguồn `dak`: một lần GET `/api/v1/keys/deid` cho `deid` (khoá HASH của phiếu), không đọc
+   * Secret. `onFetched` được gọi sau mỗi lần GET thành công (để job ghi `requestCode`/`keyVersion` vào log, không có giá trị khoá).
+   * Nguồn khác (`file`, `vault`): như `keyProvider(conf)` (`deid` bị bỏ qua).
+   */
+  def keyProvider(conf: SparkConf, deid: DeidTarget, onFetched: DeidKey => Unit = _ => ()): KeyProvider = {
+    val cfg = configSource(conf)
+    if (DeidKeySourceFactory.isDak(cfg)) {
+      val source = DeidKeySourceFactory.create(cfg)
+      val table = Try(DakTableRef.parse(s"${deid.database}.${deid.table}")).getOrElse(
+        throw new ConfigurationException("With source=dak the source table must be '<database>.<table>' (letters, digits, '_')"))
+      new DakDeidKeyProvider(() => {
+        val key = source.fetch(table, deid.requestCode)
+        onFetched(key)
+        key
+      })
+    } else keyProvider(conf)
+  }
 
   def keyProvider(conf: SparkConf, source: PrefixSource): KeyProvider =
     new PrefixSourceKeyProvider(source, version(conf, HmacVersionKey), version(conf, AesSivVersionKey))

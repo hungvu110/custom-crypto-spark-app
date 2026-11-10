@@ -372,7 +372,7 @@ Chỉ khoá của chế độ đang dùng mới bị đọc: chạy `HASH` mà t
 | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `file`  | File `<CRYPTO_KEY_PREFIX_DIR>/pseudonym.hmac_v1` (key của K8s Secret, xem `k8s/pseudonym-keys-secret.yaml`)      |
 | `vault` | KV v2 tại `<VAULT_KV_MOUNT>/data/<VAULT_KV_PATH>/pseudonym.hmac_v1`, field `<VAULT_KEY_FIELD>`                   |
-| `dak`   | `GET <DAK_ADDR>/api/v1/keys/pseudonym/hmac_v1` — database `pseudonym`, table `hmac_v1`; team phải được cấp quyền |
+| `dak`   | `GET <DAK_ADDR>/api/v1/keys/deid?database=<DB_NAME>&table=<TABLE_NAME>&requestCode=<REQUEST_CODE>` — khoá HASH của phiếu khai thác (xem 4.6); không đọc Secret |
 
 Giá trị khoá là chuỗi `base64:<...>` hoặc `hex:<...>`; HMAC đúng **32 byte**, AES-SIV đúng **64 byte**; từ chối khoá
 toàn byte 0. Sinh khoá:
@@ -381,6 +381,24 @@ toàn byte 0. Sinh khoá:
 echo "base64:$(openssl rand -base64 32)"                      # pseudonym.hmac_v1
 echo "base64:$(openssl rand -base64 64 | tr -d '\n')"         # pseudonym.aes_siv_v1
 ```
+
+### 4.6. Nguồn `dak`: lấy khoá khử định danh qua API, không đọc Secret
+
+Theo `docs/key-access/YEU-CAU-TU-DAK-BO-K8S-SECRET.md`: DAK không còn tạo Secret `deid-key-<mã>`; job **tự gọi**
+`GET /api/v1/keys/deid?database=&table=&requestCode=` lúc chạy, bằng token `client_credentials` (Keycloak), rồi giữ khoá trong bộ nhớ. `client_id`/`client_secret` do **DAK truyền cho từng lần chạy**: DAK
+đặt `DAK_CLIENT_ID` và `DAK_CLIENT_SECRET` trong `conf.env` khi trigger DAG; DAG đưa chúng vào env của driver (xem `CREDENTIAL_ENV`
+trong DAG). Không còn Secret `spark-dak-client` cố định.
+
+- Cần `CRYPTO_PREFIX_SOURCE=dak`, `DAK_ADDR`, `DAK_TOKEN_URL`, `DAK_CLIENT_ID`, `DAK_CLIENT_SECRET` (qua `conf.env` của DAG,
+  DAG kiểm tra định dạng và không ghi giá trị vào thông báo lỗi), `REQUEST_CODE` (`REQ-<năm>-<6 số>` hoặc `PYC-...`). Không gửi `DAK_TAG` (endpoint này không có tham số `tag`). `DAK_CALLER` tuỳ chọn.
+- Nguồn đọc là **bảng** (`DB_NAME` + `TABLE_NAME`); nguồn `INPUT_PATH` không dùng được với `dak`. Chỉ chế độ `HASH`.
+- `keyPrefix` DAK trả là base64 của đúng 32 byte, giống phần sau `base64:` của file `pseudonym.hmac_v1` trước đây.
+- `requestCode` trong response phải trùng `REQUEST_CODE`, lệch là dừng job. Job ghi `requestCode` và `keyVersion` vào log
+  (dòng `deid key from DAK`), không ghi khoá.
+- Mỗi lượt chạy GET một lần, **không cache giữa các lượt**.
+- `401` đã xin token mới một lần mà vẫn lỗi, `403` (không có phiếu APPROVED, phiếu hết hạn / thu hồi quyền, khoá chưa tạo),
+  `409`, `400`: job **dừng và báo failed**, không thử lại. Gia hạn phiếu ở DAK rồi chạy lại.
+- Driver gọi Keycloak (https) để lấy token nên cần `hostAliases` và truststore CA nội bộ (initContainer dựng truststore, xem `airflow/dags/sample_dag_deid_pseudonymize_table.py`). DAK được gọi qua Service nội bộ http (`DAK_ALLOW_INSECURE_HTTP=true`).
 
 ### 4.5. Ví dụ cấu hình
 
@@ -404,20 +422,26 @@ env:
   - { name: VAULT_KV_PATH, value: pseudonym }
 ```
 
-**DAK:**
+**DAK** (cách job khử định danh chạy khi DAK trigger, xem 4.6):
 
 ```yaml
 env:
   - { name: CRYPTO_PREFIX_SOURCE, value: dak }
+  - { name: REQUEST_CODE, value: "REQ-2026-000011" }
   - { name: DAK_ADDR, value: "https://dak.example.internal" }
   - {
       name: DAK_TOKEN_URL,
       value: "https://sso-lakehouse.cyberspace.vn/realms/<realm>/protocol/openid-connect/token",
     }
-  - { name: DAK_CLIENT_ID, value: team-de-ws8 }
-  - name: DAK_CLIENT_SECRET
-    valueFrom: { secretKeyRef: { name: spark-dak-client, key: clientSecret } }
+  # Chạy tay: tự điền hai giá trị. Qua DAG: lấy từ conf.env do DAK gửi (đừng commit secret thật).
+  - { name: DAK_CLIENT_ID, value: "<client_id>" }
+  - { name: DAK_CLIENT_SECRET, value: "<client_secret>" }
 ```
+
+Che giá trị: trên **UI Airflow**, DAG đăng ký `DAK_CLIENT_ID`/`DAK_CLIENT_SECRET` với secrets masker (macro `mask_credential`) nên tab
+Rendered Template và log task hiện `***`. Trên **Spark UI** (tab Environment) và event log, `spark.redaction.regex` có thêm `DAK_CLIENT`.
+Chưa che được: màn hình "Run config" của dag run (conf do DAK gửi) và `kubectl get sparkapplication` / env của pod, vì secret nằm trong
+spec. Nên dùng client có quyền hẹp, secret xoay vòng và hạn chế quyền xem các nơi này.
 
 **Chế độ MAPPING (không cần khoá, cần đường dẫn bảng ánh xạ):**
 

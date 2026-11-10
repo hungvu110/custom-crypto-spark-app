@@ -231,4 +231,17 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
       include("OUTPUT_SKIP_EXISTING: requires")
     JobConfig.fromEnv(ranged ++ Map("OUTPUT_MODE" -> "append", "OUTPUT_SKIP_EXISTING" -> "true")).isRight shouldBe true
   }
+
+  it should "nhận REQUEST_CODE (mã phiếu khai thác) và không bắt buộc" in {
+    JobConfig.fromEnv(base).toOption.get.requestCode shouldBe None
+    JobConfig.fromEnv(base + ("REQUEST_CODE" -> "REQ-2026-000011")).toOption.get.requestCode shouldBe Some("REQ-2026-000011")
+    JobConfig.fromEnv(base + ("REQUEST_CODE" -> "PYC-2026-000007")).toOption.get.requestCode shouldBe Some("PYC-2026-000007")
+  }
+
+  it should "từ chối REQUEST_CODE sai định dạng mà không in lại giá trị" in {
+    val errors = JobConfig.fromEnv(base + ("REQUEST_CODE" -> "../etc/passwd")).left.toOption.get
+
+    errors.exists(_.startsWith("REQUEST_CODE")) shouldBe true
+    errors.exists(_.contains("etc/passwd")) shouldBe false
+  }
 }

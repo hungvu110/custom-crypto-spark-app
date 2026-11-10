@@ -7,17 +7,22 @@ like the vailakehouse DAG that is running) adjust the constants in the "ENVIRONM
 
 DAK calls POST /api/v1/dags/<dagId>/dagRuns with:
   dag_run_id = deid-<year>-<6 digits>[-r<n>]       (job name, also the SparkApplication name; -r2, -r3 for a re-run of the same request)
-  conf = {requestCode, database, table, pseudoColumns, keySecretName, env}
+  conf = {requestCode, database, table, pseudoColumns, env}
 `env` is the FINAL env of the job (the env typed by the requester plus the default values filled in by DAK), made of OUTPUT_DB,
 OUTPUT_TABLE, OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT and (when the requester enters them) the date-hour range INPUT_FROM,
-INPUT_TO, INPUT_HOURS. Only the env listed in the JOB_ENV table below are accepted, and that table MUST match `dak.deid.job-env` of
-dak-mock (a test guards against drift). `keySecretName` is the NAME of a Secret (same namespace as the SparkApplication) holding the file
-pseudonym.hmac_v1 = "base64:<table key>". The key is NOT in conf. This DAG must be listed in dak.deid.airflow.allowed-dag-ids of dak-mock.
+INPUT_TO, INPUT_HOURS. Only the env listed in the JOB_ENV table below (plus DAK_CLIENT_ID and DAK_CLIENT_SECRET, see CREDENTIAL_ENV) are accepted, and that table MUST match `dak.deid.job-env` of
+dak-mock (a test guards against drift). The key is NOT in conf and NOT in a Kubernetes Secret (docs/key-access/YEU-CAU-TU-DAK-BO-K8S-SECRET.md):
+the job calls GET /api/v1/keys/deid?database=&table=&requestCode= of DAK itself when it runs, with the access token of the client whose
+DAK_CLIENT_ID/DAK_CLIENT_SECRET DAK sends in conf.env (Keycloak client_credentials), and keeps the key in memory only. The two values are
+hidden on the Airflow UI (mask_credential registers them with the secrets masker) and on the Spark UI (spark.redaction.regex). A 403 (no APPROVED request, request expired, grant revoked) stops the job: extend the
+request in DAK and run it again. conf.keySecretName is ignored if DAK still sends it. This DAG must be listed in
+dak.deid.airflow.allowed-dag-ids of dak-mock.
 
 MANUAL TRIGGER FOR TESTING (no DAK needed): press Trigger DAG with an empty conf. DEFAULTS and MANUAL_OUTPUT below are then used: the column
-`name` of demo_db.users_cdr_2 is de-identified into the table demo_db.users_cdr_2_deid_manual, reading the key from the existing Secret
-`pseudonym-keys` (pseudonymize-table-app/k8s/pseudonym-keys-secret.yaml). Only part of the conf can be set, e.g. conf = {"env":
-{"OUTPUT_MODE": "append"}}.
+`name` of demo_db.users_cdr_2 is de-identified into the table demo_db.users_cdr_2_deid_manual. The key is fetched from DAK like for a DAK
+run, so DAK must have an APPROVED request (DEFAULTS["requestCode"]) for that table, or conf.requestCode must be set. The client
+credentials have no default, so give them: conf = {"env": {"DAK_CLIENT_ID": "...", "DAK_CLIENT_SECRET": "..."}} (plus any other env,
+e.g. "OUTPUT_MODE": "append").
 A run created by DAK (dag_run_id starting with `deid-`) MUST carry the full conf, including OUTPUT_DB and OUTPUT_TABLE in `env`, and never
 falls back to the test values.
 
@@ -39,7 +44,7 @@ from airflow import DAG
 DAG_ID = "deid_pseudonymize_table"  # DEID: must match allowed-dag-ids of dak-mock
 
 # ---------------------------------------------------------------- ENVIRONMENT (adjust to your cluster)
-NAMESPACE = "vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy"  # DEID: namespace that holds the key Secret (dak.deid.kubernetes.namespace)
+NAMESPACE = "vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy"  # DEID: namespace of the SparkApplication (dak.deid.kubernetes.namespace)
 IMAGE = "hub.vtcc.vn:8989/hungvt0110/pseudonymize-table-app:v0.1"
 HADOOP_CONFIG_MAP = "teamtscauiy-hadoop-conf"
 SERVICE_ACCOUNT = "spark-application-sa"
@@ -48,7 +53,35 @@ WAREHOUSE_PATH = f"{HDFS}/prod8/warehouse"
 EVENT_LOG_DIR = f"{HDFS}/prod8/spark_history"
 KERBEROS_PRINCIPAL = "presto@VAILAKEHOUSE.VIETTEL.COM"
 KERBEROS_KEYTAB = "/etc/security/keytabs/presto.keytab"
-KEY_MOUNT = "/etc/pseudonym-keys"
+
+# Key of the request, from DAK (GET /api/v1/keys/deid). The token is the one of the client whose client_id/client_secret DAK sends in
+# conf.env for each run (CREDENTIAL_ENV below). Unlike by-column, keys/deid takes no tag, so DAK_TAG is not set.
+# ASSUMPTION: adjust to the real environment, like DAK_* of silver_ingest_vtnet.py. Currently points to dak-mock-like HTTP in the cluster;
+# with the real DAK: https://<dak> and REMOVE DAK_ALLOW_INSECURE_HTTP.
+DAK_ADDR = "http://dak-api.lakehouse-database.svc.cluster.local:8080"
+DAK_ALLOW_INSECURE_HTTP = "true"
+DAK_TOKEN_URL = "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token"
+DAK_CALLER = "pseudonymize-table"  # header X-Dak-Caller: the job name, only for the audit of DAK
+
+# DAK itself is called over plain HTTP (internal Service), but the driver calls Keycloak (https) to get the token: it needs hostAliases and a
+# truststore with the internal CA (ConfigMap keycloak-ca, key ca.pem, in the same namespace). Same configuration as
+# silver_ingest_common.keycloak_trust().
+KEYCLOAK_HOST = "sso-lakehouse.cyberspace.vn"
+KEYCLOAK_IP = "10.221.148.42"
+KEYCLOAK_CA_CONFIGMAP = "keycloak-ca"
+TRUSTSTORE_DIR = "/opt/truststore"
+TRUSTSTORE_FILE = f"{TRUSTSTORE_DIR}/truststore.p12"
+TRUSTSTORE_PASSWORD = "changeit"  # temporary truststore in the pod's emptyDir (public CAs + the internal CA), not a secret
+SPARK_UID = 185  # user of the apache/spark image
+
+# Client credentials that DAK passes in conf.env on every run (they are NOT in JOB_ENV: that table is the env the requester may type and
+# is guarded against dak-mock). Both are required, also for a manual trigger (there is no default). The value never appears in an error.
+CREDENTIAL_ENV = {
+    "DAK_CLIENT_ID": re.compile(r"[A-Za-z0-9._-]{1,128}"),
+    "DAK_CLIENT_SECRET": re.compile(r"[A-Za-z0-9._~+/=-]{8,512}"),
+}
+
+SPARK_REDACTION_REGEX = "(?i)secret|password|token|access[.]?key|DAK_CLIENT"
 
 # Spark resources. ONE DAG serves every table, so the executors scale between a small floor and a ceiling (dynamic allocation with
 # shuffle tracking, no external shuffle service needed on Kubernetes): a small table keeps ~EXECUTORS_MIN, a big hour such as EBS
@@ -70,7 +103,6 @@ DEFAULTS = {
     "database": "demo_db",
     "table": "users_cdr_2",
     "pseudoColumns": "name:HASH",
-    "keySecretName": "pseudonym-keys",
 }
 
 # Job env that the requester may enter. MUST match dak.deid.job-env of dak-mock (the Java drift test reads exactly this block, so keep the
@@ -101,11 +133,9 @@ MANUAL_OUTPUT = {"OUTPUT_DB": "demo_db", "OUTPUT_TABLE": "users_cdr_2_deid_manua
 
 NAME = re.compile(r"[A-Za-z0-9_]{1,128}")
 PSEUDO_COLUMNS = re.compile(r"[A-Za-z0-9_]{1,128}:HASH(,[A-Za-z0-9_]{1,128}:HASH)*")
-# The ticket code and the key Secret name are DAK's naming, not ours: no fixed prefix or digit count (PYC-2026-000007, REQ-2026-000011, deid-key-5,
-# deid-key-2026-000007 are all accepted). Only what Kubernetes needs is kept: the code ends up in a label value (<= 63 chars, alphanumeric at both
-# ends) and the Secret name in a volume (DNS-1123). The `deid-key-` prefix stays so that this DAG can never mount a Secret that is not a request key.
-SECRET_NAME = re.compile(r"deid-key-[a-z0-9]([-a-z0-9]{0,200}[a-z0-9])?|pseudonym-keys")
-REQUEST_CODE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?")
+# The request code is DAK's naming: REQ-<year>-<6 digits> (or PYC- for a request of the old kind), the form that the API keys/deid and the job
+# (REQUEST_CODE) accept. It ends up in a label value and in a query string of DAK, so nothing else is let through.
+REQUEST_CODE = re.compile(r"(REQ|PYC)-[0-9]{4}-[0-9]{6}")
 # A re-run of the same request (extension after the zone was deleted) adds -r2, -r3, ... to the run id (and so to the SparkApplication name).
 DAK_RUN_ID = re.compile(r"deid-\d{4}-\d{6}(-r[0-9]{1,3})?")
 
@@ -114,7 +144,6 @@ CONF_RULES = {
     "database": NAME,
     "table": NAME,
     "pseudoColumns": PSEUDO_COLUMNS,
-    "keySecretName": SECRET_NAME,
 }
 
 
@@ -138,10 +167,14 @@ def check_conf(run_id, conf):
     if not isinstance(env, dict):
         raise ValueError("conf.env must be an object")
     for name, value in env.items():
-        if name not in JOB_ENV:
+        if name not in JOB_ENV and name not in CREDENTIAL_ENV:
             raise ValueError("conf.env has an env that is not allowed")
-        if not isinstance(value, str) or not re.fullmatch(JOB_ENV[name][1], value):
+        rule = CREDENTIAL_ENV[name] if name in CREDENTIAL_ENV else re.compile(JOB_ENV[name][1])
+        if not isinstance(value, str) or not rule.fullmatch(value):
             raise ValueError(f"conf.env.{name} is malformed")
+    for name in CREDENTIAL_ENV:
+        if name not in env:
+            raise ValueError(f"conf.env.{name} is missing (DAK sends the client credentials)")
     if from_dak:
         for name in MANUAL_OUTPUT:
             if name not in env:
@@ -182,6 +215,8 @@ def validate_conf(**context):
     """First task of the DAG: stop the DAG before any job is created when the conf is invalid (guards against injection into the env/volumes
     of the SparkApplication)."""
     dag_run = context["dag_run"]
+    for name in CREDENTIAL_ENV:  # hide them in the log of this task too
+        mask_credential(((dag_run.conf or {}).get("env") or {}).get(name))
     try:
         check_conf(dag_run.run_id, dag_run.conf)
     except ValueError as error:
@@ -207,9 +242,100 @@ def env_value(name):
     return "{{ " + env + ".get('" + name + "', '" + default + "') }}"
 
 
+def mask_credential(value):
+    """Register `value` with the Airflow secrets masker and return it unchanged. Used as a Jinja macro while the SparkApplication spec is
+    rendered, so the value is already known to the masker when Airflow redacts the rendered template (UI tab Rendered Template, task logs).
+    Airflow only masks by key name (e.g. `secret`), and here the env is {"name": "DAK_CLIENT_SECRET", "value": ...}, so key-based masking
+    would not hide it."""
+    if not value:
+        return value
+    try:
+        from airflow.sdk.execution_time.secrets_masker import mask_secret  # Airflow 3
+    except ImportError:
+        try:
+            from airflow.utils.log.secrets_masker import mask_secret  # Airflow 2
+        except ImportError:
+            return value  # no masker available (unit tests without Airflow)
+    mask_secret(value)
+    return value
+
+
+def credential_value(name):
+    """Jinja expression that reads the client credential conf.env.<name> (check_conf guarantees it is there) and masks it."""
+    return "{{ mask_credential(((dag_run.conf or {}).get('env') or {}).get('" + name + "', '')) }}"
+
+
 def job_env_entries():
     """Every env of JOB_ENV always has exactly one line in driver.env: a fixed list, only the values change."""
     return [{"name": name, "value": env_value(name)} for name in JOB_ENV]
+
+
+def keycloak_trust():
+    """Driver part that calls Keycloak: hostAliases, an initContainer that builds the truststore (JDK cacerts + internal CA), the mounts, the
+    volumes and the JVM options. The Spark Operator webhook only injects into the pod the volumes that are mounted in the MAIN container
+    (driver.volumeMounts), so keycloak-ca must be mounted in both places."""
+    build = f"""cp "$JAVA_HOME/lib/security/cacerts" {TRUSTSTORE_FILE}
+awk '/BEGIN CERTIFICATE/ {{ n++ }} n > 0 {{ print > ("{TRUSTSTORE_DIR}/ca-" n ".pem") }}' /ca/ca.pem
+ls {TRUSTSTORE_DIR}/ca-*.pem > /dev/null
+for f in {TRUSTSTORE_DIR}/ca-*.pem; do
+  keytool -importcert -noprompt -alias "internal-$(basename "$f" .pem)" -file "$f" \\
+    -keystore {TRUSTSTORE_FILE} -storetype PKCS12 -storepass {TRUSTSTORE_PASSWORD}
+done
+rm -f {TRUSTSTORE_DIR}/ca-*.pem
+"""
+    return {
+        "hostAliases": [{"ip": KEYCLOAK_IP, "hostnames": [KEYCLOAK_HOST]}],
+        "initContainers": [
+            {
+                "name": "build-truststore",
+                "image": IMAGE,
+                "command": ["bash", "-ec"],
+                "args": [build],
+                "env": [{"name": "JAVA_TOOL_OPTIONS", "value": ""}],
+                # The ResourceQuota of the namespace rejects containers without limits.
+                "resources": {
+                    "requests": {"cpu": "50m", "memory": "64Mi"},
+                    "limits": {"cpu": "500m", "memory": "256Mi"},
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                    "runAsNonRoot": True,
+                    "runAsUser": SPARK_UID,
+                },
+                "volumeMounts": [
+                    {"name": "keycloak-ca", "mountPath": "/ca", "readOnly": True},
+                    {"name": "truststore", "mountPath": TRUSTSTORE_DIR},
+                ],
+            }
+        ],
+        "volumeMounts": [
+            {"name": "truststore", "mountPath": TRUSTSTORE_DIR, "readOnly": True},
+            {"name": "keycloak-ca", "mountPath": "/opt/keycloak-ca", "readOnly": True},
+        ],
+        "javaOptions": f"-Djavax.net.ssl.trustStore={TRUSTSTORE_FILE} -Djavax.net.ssl.trustStoreType=PKCS12 "
+        f"-Djavax.net.ssl.trustStorePassword={TRUSTSTORE_PASSWORD}",
+        "volumes": [
+            {"name": "keycloak-ca", "configMap": {"name": KEYCLOAK_CA_CONFIGMAP}},
+            {"name": "truststore", "emptyDir": {"sizeLimit": "16Mi"}},
+        ],
+    }
+
+
+def dak_env():
+    """Driver env of the key source: DAK (GET /api/v1/keys/deid). Only the driver needs it: the key travels to the executors inside the
+    closure of the UDF. The client_id/client_secret are the ones DAK sends in conf.env for this run."""
+    return [
+        {"name": "CRYPTO_PREFIX_SOURCE", "value": "dak"},
+        {"name": "DAK_ADDR", "value": DAK_ADDR},
+        {"name": "DAK_ALLOW_INSECURE_HTTP", "value": DAK_ALLOW_INSECURE_HTTP},
+        {"name": "DAK_TOKEN_URL", "value": DAK_TOKEN_URL},
+        {"name": "DAK_CLIENT_ID", "value": credential_value("DAK_CLIENT_ID")},
+        {"name": "DAK_CLIENT_SECRET", "value": credential_value("DAK_CLIENT_SECRET")},
+        {"name": "DAK_CALLER", "value": DAK_CALLER},
+        # The request whose key the job asks for: DAK checks it and the job compares it with the one in the response.
+        {"name": "REQUEST_CODE", "value": conf_value("requestCode")},
+    ]
 
 
 # SparkApplication name = the DAK dag_run_id; for a manual trigger a valid DNS-1123 name is built from ts_nodash.
@@ -218,6 +344,7 @@ APP_NAME = "{{ dag_run.run_id if dag_run.run_id.startswith('deid-') else 'deid-m
 
 # Spark config shared by every job of this image (de-identification, purge, vacuum): Kerberos/HDFS, Delta, log4j, AQE, event log.
 # The jobs add their own `spark.jars`, executor sizing and shuffle partitions on top.
+LOG4J = "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
 SHARED_SPARK_CONF = {
     # Kerberos (HDFS storage zone). keytab/krb5.conf are paths on the Spark Operator pod.
     "spark.kerberos.access.hadoopFileSystems": HDFS,
@@ -236,8 +363,8 @@ SHARED_SPARK_CONF = {
     "spark.driver.userClassPathFirst": "false",
     "spark.executor.userClassPathFirst": "false",
     # log4j2.
-    "spark.driver.extraJavaOptions": "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties",
-    "spark.executor.extraJavaOptions": "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties",
+    "spark.driver.extraJavaOptions": LOG4J,
+    "spark.executor.extraJavaOptions": LOG4J,
     # Spark.
     "spark.jars.ivy": "/tmp",
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
@@ -259,6 +386,7 @@ def build_spec():
         {"name": "TZ", "value": "Asia/Ho_Chi_Minh"},
         {"name": "MALLOC_ARENA_MAX", "value": "2"},
     ]
+    trust = keycloak_trust()
     return {
         "apiVersion": "sparkoperator.k8s.io/v1beta2",
         "kind": "SparkApplication",
@@ -306,17 +434,10 @@ def build_spec():
                     # Compare source and target after writing (row count, nulls, distinct values, no original value left). Fixed.
                     {"name": "VERIFY", "value": "true"},
                     {"name": "WAREHOUSE_PATH", "value": WAREHOUSE_PATH},
-                    # ---- Env of pseudonym-udf: the key is read from a file in the Secret of the request (only the driver needs it) ----
-                    {"name": "CRYPTO_PREFIX_SOURCE", "value": "file"},
-                    {"name": "CRYPTO_KEY_PREFIX_DIR", "value": KEY_MOUNT},
+                    # ---- Env of pseudonym-udf: the key is fetched from DAK when the job runs (only the driver needs it) ----
+                    *dak_env(),
                 ],
-                "volumeMounts": [
-                    {
-                        "name": "pseudonym-keys",
-                        "mountPath": KEY_MOUNT,
-                        "readOnly": True,
-                    }
-                ],
+                **{k: copy.deepcopy(trust[k]) for k in ("hostAliases", "initContainers", "volumeMounts")},
             },
             "executor": {
                 "instances": EXECUTORS_MIN,  # starting number; dynamic allocation (sparkConf) moves it between MIN and MAX
@@ -329,15 +450,15 @@ def build_spec():
                 # Executors do NOT need the key: it is read on the driver and sits in the closure of the UDF.
                 "env": copy.deepcopy(common_env),
             },
-            # DEID: key Secret of the request, created by DAK (file pseudonym.hmac_v1). Without the Secret the driver pod cannot start.
-            "volumes": [
-                {
-                    "name": "pseudonym-keys",
-                    "secret": {"secretName": conf_value("keySecretName")},
-                }
-            ],
+            # Truststore of the internal CA (the driver calls Keycloak for the token of the internal client).
+            "volumes": copy.deepcopy(trust["volumes"]),
             "sparkConf": {
                 **SHARED_SPARK_CONF,
+                # The truststore is for the driver only (executors do not call Keycloak/DAK).
+                "spark.driver.extraJavaOptions": f"{LOG4J} {trust['javaOptions']}",
+                # Spark UI (Environment tab) and the event log show a property value as *********(redacted) when its NAME matches this
+                # regex. The default is secret|password|token|access.key; DAK_CLIENT also hides DAK_CLIENT_ID (spark.kubernetes.driverEnv.*).
+                "spark.redaction.regex": SPARK_REDACTION_REGEX,
                 # Pseudonymization libs: 2 separate jars in the image, a real UDF so the executors load them too.
                 "spark.jars": "local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/pseudonym-udf-1.0-SNAPSHOT.jar",
                 "spark.dynamicAllocation.enabled": "true",
@@ -362,6 +483,7 @@ with DAG(
     # `value` and sparkConf must be strings, so Kubernetes answers 422 "must be of type string". This DAG only templates into strings, so it
     # does not need native rendering.
     render_template_as_native_obj=False,
+    user_defined_macros={"mask_credential": mask_credential},  # used by credential_value(): hides client_id/secret on the Airflow UI
     # One run at a time: runs for different hours write into the SAME result table (one table per source), and concurrent writes to one
     # Delta table can conflict. Simple and safe; raise it only after the runs are split per result table.
     max_active_runs=1,

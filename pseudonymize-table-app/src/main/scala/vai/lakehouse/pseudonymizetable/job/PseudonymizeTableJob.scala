@@ -10,8 +10,9 @@ import org.apache.spark.sql.{Column, DataFrame, SparkSession}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.StringType
 import vai.lakehouse.pseudonym.{ConfigurationException, PseudonymMode}
+import vai.lakehouse.pseudonym.core.KeyProvider
 import vai.lakehouse.pseudonym.policy.{ColumnRule, TablePolicy}
-import vai.lakehouse.pseudonym.spark.{PseudonymConf, Pseudonymizer}
+import vai.lakehouse.pseudonym.spark.{DeidTarget, PseudonymConf, Pseudonymizer}
 import vai.lakehouse.pseudonymizetable.config.{BadFilePolicy, FileInput, JobConfig, OutputFormat, TableInput}
 import vai.lakehouse.pseudonymizetable.logging.{Log, Timings}
 
@@ -56,7 +57,18 @@ object PseudonymizeTableJob {
       throw new ConfigurationException(
         s"A column uses MAPPING and needs the mapping table path: set MAPPING_TABLE_PATH or ${PseudonymConf.MappingPathKey}")
     }
-    new Pseudonymizer(PseudonymConf.keyProvider(conf), mappingPath)
+    new Pseudonymizer(keyProviderFor(cfg, conf), mappingPath)
+  }
+
+  /**
+   * Nguồn `dak` (CRYPTO_PREFIX_SOURCE=dak): khoá HASH của phiếu `REQUEST_CODE` cho bảng nguồn, một lần GET `/api/v1/keys/deid`
+   * (không còn đọc K8s Secret). Chỉ nguồn BẢNG mới có database/table để xin key. Nguồn `file`/`vault`: như trước.
+   */
+  private[job] def keyProviderFor(cfg: JobConfig, conf: SparkConf): KeyProvider = cfg.input match {
+    case TableInput(database, table, _) =>
+      PseudonymConf.keyProvider(conf, DeidTarget(database, table, cfg.requestCode),
+        key => Log.kv("deid key from DAK", s"requestCode=${key.requestCode}, keyVersion=${key.keyVersion}"))
+    case _: FileInput => PseudonymConf.keyProvider(conf)
   }
 
   /**

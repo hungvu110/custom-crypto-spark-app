@@ -69,15 +69,17 @@ dag = load_dag_module()
 
 DAK_RUN_ID = "deid-2026-000007"
 MANUAL_RUN_ID = "manual__2026-10-26T08:40:32+00:00"
+MANUAL_CREDS = {"DAK_CLIENT_ID": "client-abc", "DAK_CLIENT_SECRET": "s3cr3t-Value_123"}  # no default: a manual trigger must give them
 
 
 def dak_conf(**env):
-    """Conf đúng như dak-mock gửi: các khoá bảng, tên Secret và env cuối cùng (đã điền mặc định)."""
+    """Conf đúng như dak-mock gửi: các khoá bảng và env cuối cùng (đã điền mặc định). Không còn keySecretName (key lấy từ DAK)."""
     final_env = {"OUTPUT_DB": "demo_db", "OUTPUT_TABLE": "users_cdr_2_pseudonymized", "OUTPUT_MODE": "overwrite",
-                 "OUTPUT_FORMAT": "delta", "ENABLE_HIVE_SUPPORT": "true"}
+                 "OUTPUT_FORMAT": "delta", "ENABLE_HIVE_SUPPORT": "true",
+                 "DAK_CLIENT_ID": "client-abc", "DAK_CLIENT_SECRET": "s3cr3t-Value_123"}
     final_env.update(env)
     return {"requestCode": "PYC-2026-000007", "database": "demo_db", "table": "users_cdr_2", "pseudoColumns": "name:HASH",
-            "keySecretName": "deid-key-2026-000007", "env": final_env}
+            "env": final_env}
 
 
 class _DagRun:
@@ -86,10 +88,24 @@ class _DagRun:
         self.conf = conf
 
 
+class _Masked:
+    """Stand-in for the Airflow secrets masker: remembers every value that the DAG's macro was asked to hide."""
+
+    def __init__(self):
+        self.values = []
+
+    def append_and_return(self, value):
+        self.values.append(value)
+        return value
+
+
+MASKED = _Masked()
+
+
 def render(run_id, conf):
     """Render spec bằng Jinja thường, giống DAG đặt render_template_as_native_obj=False."""
     environment = jinja2.Environment()
-    context = {"dag_run": _DagRun(run_id, conf), "ts_nodash": "20261026T084032"}
+    context = {"dag_run": _DagRun(run_id, conf), "ts_nodash": "20261026T084032", "mask_credential": MASKED.append_and_return}
 
     def walk(node):
         if isinstance(node, dict):
@@ -104,7 +120,7 @@ def render(run_id, conf):
 
 
 def driver_env(spec):
-    return {item["name"]: item["value"] for item in spec["spec"]["driver"]["env"]}
+    return {item["name"]: item["value"] for item in spec["spec"]["driver"]["env"] if "value" in item}
 
 
 class JobEnvTableTest(unittest.TestCase):
@@ -189,38 +205,41 @@ class CheckConfTest(unittest.TestCase):
 
     def test_table_conf_values_are_still_checked(self):
         for key, bad in (("database", "demo-db"), ("table", "../t"), ("pseudoColumns", "a:ENCRYPT"),
-                         ("keySecretName", "other-secret"), ("keySecretName", "deid-key-"), ("keySecretName", "deid-key-A"),
-                         ("keySecretName", "deid-key-5/../x"), ("requestCode", "PYC 1"), ("requestCode", "-PYC"),
-                         ("requestCode", "R" * 64), ("requestCode", ""), ("table", None)):
+                         ("requestCode", "PYC 1"), ("requestCode", "-PYC"), ("requestCode", "R" * 64), ("requestCode", ""),
+                         ("requestCode", "PYC-1"), ("requestCode", "REQ-2026-00001"), ("requestCode", "REQ-2026-000011&x=1"),
+                         ("requestCode", "../REQ-2026-000011"), ("table", None)):
             conf = dak_conf()
             conf[key] = bad
             with self.assertRaises(ValueError, msg=f"{key}={bad!r}"):
                 self.check(DAK_RUN_ID, conf)
 
     def test_the_naming_of_the_real_dak_is_accepted(self):
-        for code, secret in (("REQ-2026-000011", "deid-key-5"), ("PYC-2026-000007", "deid-key-2026-000007"),
-                             ("PYC-1", "deid-key-12345678"), ("REQ_7.a", "pseudonym-keys")):
+        for code in ("REQ-2026-000011", "PYC-2026-000007"):
             conf = dak_conf()
-            conf["requestCode"], conf["keySecretName"] = code, secret
+            conf["requestCode"] = code
             self.check(DAK_RUN_ID, conf)
             spec = render(DAK_RUN_ID, conf)
             self.assertEqual(spec["spec"]["driver"]["labels"]["dak.vai/request-code"], code)
-            self.assertEqual(spec["spec"]["volumes"][0]["secret"]["secretName"], secret)
+            self.assertEqual(driver_env(spec)["REQUEST_CODE"], code)
 
     def test_a_dag_run_id_that_looks_like_a_dak_run_but_is_malformed_is_rejected(self):
         with self.assertRaises(ValueError):
             self.check("deid-26-1", dak_conf())
 
     def test_a_manual_run_with_empty_conf_falls_back_to_the_manual_defaults(self):
-        self.check(MANUAL_RUN_ID, None)
-        self.check(MANUAL_RUN_ID, {})
+        # only the client credentials are needed (they have no default); everything else falls back
+        self.check(MANUAL_RUN_ID, {"env": dict(MANUAL_CREDS)})
+        with self.assertRaises(ValueError):
+            self.check(MANUAL_RUN_ID, None)
+        with self.assertRaises(ValueError):
+            self.check(MANUAL_RUN_ID, {})
 
     def test_a_manual_run_may_set_part_of_the_env_but_it_is_still_checked(self):
-        self.check(MANUAL_RUN_ID, {"env": {"OUTPUT_MODE": "append"}})
+        self.check(MANUAL_RUN_ID, {"env": {**MANUAL_CREDS, "OUTPUT_MODE": "append"}})
         with self.assertRaises(ValueError):
-            self.check(MANUAL_RUN_ID, {"env": {"OUTPUT_MODE": "nope"}})
+            self.check(MANUAL_RUN_ID, {"env": {**MANUAL_CREDS, "OUTPUT_MODE": "nope"}})
         with self.assertRaises(ValueError):
-            self.check(MANUAL_RUN_ID, {"env": {"DB_NAME": "x"}})
+            self.check(MANUAL_RUN_ID, {"env": {**MANUAL_CREDS, "DB_NAME": "x"}})
 
     def test_the_manual_default_output_must_also_differ_from_the_source_table(self):
         with self.assertRaises(ValueError):
@@ -281,9 +300,9 @@ class DateHourRangeCheckTest(unittest.TestCase):
             self.rejected(**{name: "x"})
 
     def test_a_manual_run_may_use_a_range(self):
-        dag.check_conf(MANUAL_RUN_ID, {"env": {"INPUT_FROM": "20261012", "INPUT_HOURS": "5-6"}})
+        dag.check_conf(MANUAL_RUN_ID, {"env": {**MANUAL_CREDS, "INPUT_FROM": "20261012", "INPUT_HOURS": "5-6"}})
         with self.assertRaises(ValueError):
-            dag.check_conf(MANUAL_RUN_ID, {"env": {"OUTPUT_MODE": "overwrite-partitions"}})
+            dag.check_conf(MANUAL_RUN_ID, {"env": {**MANUAL_CREDS, "OUTPUT_MODE": "overwrite-partitions"}})
 
 
 class SpecTest(unittest.TestCase):
@@ -366,13 +385,12 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(spec["metadata"]["name"], "deid-manual-20261026t084032")
         self.assertEqual((env["DB_NAME"], env["TABLE_NAME"], env["PSEUDO_COLUMNS"]), ("demo_db", "users_cdr_2", "name:HASH"))
         self.assertEqual((env["OUTPUT_DB"], env["OUTPUT_TABLE"]), ("demo_db", "users_cdr_2_deid_manual"))
-        self.assertEqual(spec["spec"]["volumes"][0]["secret"]["secretName"], "pseudonym-keys")
+        self.assertEqual(env["REQUEST_CODE"], dag.DEFAULTS["requestCode"])
 
-    def test_a_dak_run_is_named_after_the_dag_run_id_and_mounts_its_own_secret(self):
+    def test_a_dak_run_is_named_after_the_dag_run_id(self):
         spec = render(DAK_RUN_ID, dak_conf())
 
         self.assertEqual(spec["metadata"]["name"], DAK_RUN_ID)
-        self.assertEqual(spec["spec"]["volumes"][0]["secret"]["secretName"], "deid-key-2026-000007")
 
     def test_every_job_env_appears_exactly_once_and_the_fixed_env_stay_fixed(self):
         spec = render(DAK_RUN_ID, dak_conf())
@@ -384,8 +402,80 @@ class SpecTest(unittest.TestCase):
             self.assertEqual(names.count(name), 1, name)
         self.assertEqual(env["PSEUDO_MODE"], "HASH")
         self.assertEqual(env["VERIFY"], "true")
-        self.assertEqual(env["CRYPTO_PREFIX_SOURCE"], "file")
-        self.assertEqual(env["CRYPTO_KEY_PREFIX_DIR"], "/etc/pseudonym-keys")
+        self.assertEqual(env["CRYPTO_PREFIX_SOURCE"], "dak")
+        self.assertNotIn("CRYPTO_KEY_PREFIX_DIR", env)
+
+    def test_the_key_comes_from_dak_with_the_credentials_in_conf_and_not_from_a_secret_volume(self):
+        spec = render(DAK_RUN_ID, dak_conf())["spec"]
+        env = driver_env(render(DAK_RUN_ID, dak_conf()))
+
+        self.assertEqual(env["CRYPTO_PREFIX_SOURCE"], "dak")
+        self.assertEqual(env["REQUEST_CODE"], "PYC-2026-000007")
+        for name in ("DAK_ADDR", "DAK_TOKEN_URL", "DAK_CALLER"):
+            self.assertTrue(env[name], name)
+        self.assertNotIn("DAK_TAG", env)  # keys/deid takes no tag (unlike by-column)
+        self.assertEqual(env["DAK_CLIENT_ID"], "client-abc")
+        self.assertEqual(env["DAK_CLIENT_SECRET"], "s3cr3t-Value_123")
+        self.assertFalse([i for i in spec["driver"]["env"] if "valueFrom" in i])
+        # no Secret of keys: only the volumes of the truststore of the internal CA
+        self.assertEqual({v["name"] for v in spec["volumes"]}, {"keycloak-ca", "truststore"})
+        self.assertFalse([v for v in spec["volumes"] if "secret" in v])
+        self.assertFalse([m for m in spec["driver"]["volumeMounts"] if m["mountPath"] == "/etc/pseudonym-keys"])
+
+    def test_the_driver_trusts_the_internal_ca_of_keycloak_and_the_executors_do_not(self):
+        spec = render(DAK_RUN_ID, dak_conf())["spec"]
+
+        self.assertIn("trustStore", spec["sparkConf"]["spark.driver.extraJavaOptions"])
+        self.assertIn("log4j", spec["sparkConf"]["spark.driver.extraJavaOptions"])
+        self.assertNotIn("trustStore", spec["sparkConf"]["spark.executor.extraJavaOptions"])
+        self.assertEqual(spec["driver"]["hostAliases"][0]["hostnames"], [dag.KEYCLOAK_HOST])
+        self.assertEqual(spec["driver"]["initContainers"][0]["name"], "build-truststore")
+        self.assertNotIn("DAK_CLIENT_SECRET", {i["name"] for i in spec["executor"]["env"]})
+
+    def test_the_client_credentials_are_required_and_checked_and_never_echoed(self):
+        for name in dag.CREDENTIAL_ENV:
+            conf = dak_conf()
+            del conf["env"][name]
+            with self.assertRaises(ValueError):
+                dag.check_conf(DAK_RUN_ID, conf)
+            with self.assertRaises(ValueError):
+                dag.check_conf(MANUAL_RUN_ID, conf)
+        bad = dak_conf(DAK_CLIENT_SECRET="bad secret;rm -rf")
+        with self.assertRaises(ValueError) as caught:
+            dag.check_conf(DAK_RUN_ID, bad)
+        self.assertNotIn("bad secret", str(caught.exception))
+
+    def test_the_credentials_go_through_the_masking_macro_and_the_dag_registers_it(self):
+        MASKED.values.clear()
+        render(DAK_RUN_ID, dak_conf())
+
+        self.assertEqual(sorted(MASKED.values), ["client-abc", "s3cr3t-Value_123"])
+        self.assertIn("mask_credential", dag.recorded[0].kwargs["user_defined_macros"])
+        self.assertIs(dag.recorded[0].kwargs["user_defined_macros"]["mask_credential"], dag.mask_credential)
+        self.assertEqual(dag.mask_credential("abc"), "abc")  # returns the value unchanged (no Airflow here: no-op)
+
+    def test_the_spark_ui_hides_the_client_credentials(self):
+        import re as regex
+
+        spec = render(DAK_RUN_ID, dak_conf())["spec"]
+        pattern = spec["sparkConf"]["spark.redaction.regex"]
+
+        for key in ("spark.kubernetes.driverEnv.DAK_CLIENT_SECRET", "spark.kubernetes.driverEnv.DAK_CLIENT_ID"):
+            self.assertTrue(regex.search(pattern, key), key)
+        self.assertIn("secret", pattern)  # the Spark default is kept
+
+    def test_the_credentials_are_not_in_the_executors_nor_in_job_env(self):
+        spec = render(DAK_RUN_ID, dak_conf())["spec"]
+
+        self.assertFalse(set(dag.CREDENTIAL_ENV) & set(dag.JOB_ENV))
+        self.assertFalse(set(dag.CREDENTIAL_ENV) & {i["name"] for i in spec["executor"]["env"]})
+
+    def test_a_keySecretName_that_dak_still_sends_is_ignored(self):
+        conf = dak_conf()
+        conf["keySecretName"] = "deid-key-2026-000007"
+
+        dag.check_conf(DAK_RUN_ID, conf)
+        self.assertNotIn("deid-key-2026-000007", str(render(DAK_RUN_ID, conf)))
 
     def test_only_the_driver_gets_the_job_env(self):
         spec = render(DAK_RUN_ID, dak_conf())
@@ -398,7 +488,8 @@ class SpecTest(unittest.TestCase):
         spec = render(DAK_RUN_ID, dak_conf())["spec"]
         for role in ("driver", "executor"):
             for item in spec[role]["env"]:
-                self.assertIsInstance(item["value"], str, item["name"])
+                if "value" in item:
+                    self.assertIsInstance(item["value"], str, item["name"])
             for key, value in spec[role]["labels"].items():
                 self.assertIsInstance(value, str, key)
         for key, value in spec["sparkConf"].items():
