@@ -125,18 +125,54 @@ class DakDeidKeySourceSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
 
   it should "refuse a keyPrefix that is not the base64 of 32 bytes, and a bad keyVersion" in {
     val short = Base64.getEncoder.encodeToString(Array.fill[Byte](16)(7))
-    Seq(ok(key = short), ok(key = "base64:" + Key), ok(version = "0"), ok(version = "\"3\"")).foreach { response =>
+    Seq(ok(key = short), ok(key = "base64:" + Key), ok(version = "0"), ok(version = "\"v3\""), ok(version = "null"),
+      ok(version = "3.5"), ok(version = "-1")).foreach { response =>
       val local = new StubHttpServer
       try {
         local.stub("POST", TokenPath, tokenResponse("tok-1"))
         local.stub("GET", KeyPath, response)
         val c = cfg().copy(addr = local.url, tokenUrl = local.url + TokenPath)
         val s = new DakDeidKeySource(c, new KeycloakTokenProvider(c.tokenUrl, c.clientId, c.clientSecret, "TEST_hint"))
-        val e = the[IllegalStateException] thrownBy s.fetch(Ref, Some(Code))
+        val e = withClue(response.body.replace(Key, "<key>")) { the[IllegalStateException] thrownBy s.fetch(Ref, Some(Code)) }
         e.getMessage should include("invalid deid key response")
         e.getMessage should not include Key
       } finally local.close()
     }
+  }
+
+  it should "accept a keyVersion sent as a numeric string or as 3.0, and name the JSON type when it refuses one" in {
+    Seq("\"3\"", "3.0").foreach { version =>
+      val local = new StubHttpServer
+      try {
+        local.stub("POST", TokenPath, tokenResponse("tok-1"))
+        local.stub("GET", KeyPath, ok(version = version))
+        val c = cfg().copy(addr = local.url, tokenUrl = local.url + TokenPath)
+        new DakDeidKeySource(c, new KeycloakTokenProvider(c.tokenUrl, c.clientId, c.clientSecret, "TEST_hint"))
+          .fetch(Ref, Some(Code)).keyVersion shouldBe 3
+      } finally local.close()
+    }
+    server.stub("POST", TokenPath, tokenResponse("tok-1"))
+    server.stub("GET", KeyPath, ok(version = "null"))
+    the[IllegalStateException] thrownBy source().fetch(Ref, Some(Code)) should have message
+      s"DAK returned an invalid deid key response for 'demo_db.users_cdr_2' ('keyVersion' is not a positive integer, got JSON type NULL, requestId=req-200)"
+  }
+
+  it should "describe a response for the DAK team without ever printing keyPrefix or secret-like fields" in {
+    val body = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+      s"""{"requestCode":"$Code","keyPrefix":"$Key","keyVersion":"3","clientSecret":"topsecret","items":[1,2]}""")
+
+    val line = source().describe(body)
+
+    line should include("requestCode (STRING) = \"" + Code + "\"")
+    line should include("keyVersion (STRING) = \"3\"")
+    line should include("keyPrefix (STRING) = <hidden, length=44, base64 of 32 bytes=true>")
+    line should include("clientSecret (STRING) = <hidden, length=9>")
+    line should include("items (ARRAY) = <2 item(s)>")
+    source().describe(new com.fasterxml.jackson.databind.ObjectMapper().readTree("""{"keyVersion":3}""")) should
+      include("keyVersion (NUMBER) = 3")
+    line should not include Key
+    line should not include "topsecret"
+    source().describe(null) shouldBe "<empty or not JSON>"
   }
 
   it should "reject a malformed requestCode before calling DAK" in {
