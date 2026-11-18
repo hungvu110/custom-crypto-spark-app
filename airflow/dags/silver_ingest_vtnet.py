@@ -11,6 +11,10 @@ A run ingests the folder of the day BEFORE the run (all its batch subfolders) in
 another day: conf {"date": "yyyyMMdd"}.
 
 passthrough: read the files and write the table as they are (no DAK call).
+A request that picks a global key zone adds globalKey=true and globalZone to the Variable (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md): the
+job then gets GLOBAL_KEY_ZONE and encrypts ALL `encryptColumns` with the ONE global key of that zone (DAK /api/v1/keys/global) instead of a
+by-column key per column, so datasets of the same zone can be joined; there is no PENDING wait for a global key.
+
 decrypt-encrypt (docs/key-access/TRA-LOI-DAK-BY-PATH.md): ask DAK for the key of the dataset (by-path, ONE key per dataset). If DAK has a key,
 the whole file is encrypted and the job decrypts it (FILE_CIPHER); if DAK answers empty, the file is not encrypted and the job reads it as it
 is. Then the `encryptColumns` of the request are encrypted with cdr-crypto (per-column key through DAK by-column, onMissing=request) and the
@@ -59,9 +63,17 @@ BASE_ENV = {
 }
 
 
+def global_key_env(config):
+    """GLOBAL_KEY_ZONE of the job when the approved request uses a global key: every column of encryptColumns is then encrypted with the
+    global key of that zone (DAK /api/v1/keys/global, same client as by-path) instead of one by-column key per column. Nothing for a request
+    without a global key, so its job runs exactly as before."""
+    zone = common.global_zone(config)
+    return [{"name": "GLOBAL_KEY_ZONE", "value": zone}] if zone else []
+
+
 def dak_env(slug, config):
-    """Driver env of the key source: DAK (by-path and by-column), INTERNAL client, only the driver needs it."""
-    return [
+    """Driver env of the key source: DAK (by-path, by-column and the global key), INTERNAL client, only the driver needs it."""
+    return global_key_env(config) + [
         # Columns encrypted with cdr-crypto (one key per column, dataset = OUTPUT_DB.OUTPUT_TABLE) and the plaintext keyField column: from the
         # approved request. An empty list means that no column is encrypted.
         {
@@ -156,7 +168,8 @@ def source_for(dataset, settings, config=None):
         "fixed": config,
     }
     if mode == "decrypt-encrypt":
-        source["schedule_keys"] += ("encryptColumns", "keyField")
+        # globalKey/globalZone: only present when the request uses a global key (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md).
+        source["schedule_keys"] += ("encryptColumns", "keyField", "globalKey", "globalZone")
         source["encrypts_columns"] = True
         # The driver calls Keycloak (https) to get a DAK token: it needs hostAliases and a truststore with the internal CA (ConfigMap keycloak-ca).
         source["calls_keycloak"] = True

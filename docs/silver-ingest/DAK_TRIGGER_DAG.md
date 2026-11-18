@@ -46,6 +46,7 @@ Danh sách dataset là danh sách cố định (khai trong file DAG); thêm data
 | `outputMode` | không | `overwrite-partitions` hoặc `append`; bỏ trống = `overwrite-partitions` |
 | `encryptColumns` | không | Chỉ cho dataset có cột mã hoá (`nims`). Tối đa 100 tên khác nhau (không phân biệt hoa thường), mỗi tên `[A-Za-z_][A-Za-z0-9_]{0,127}`. Thiếu, `null` hoặc `[]` đều hợp lệ (chỉ giải mã file) |
 | `keyField` | bắt buộc nếu có cột | Cùng quy tắc tên cột, **không** nằm trong `encryptColumns` |
+| `globalZone` | không | Chỉ cho dataset có cột mã hoá, và chỉ khi `encryptColumns` **không rỗng**. Vùng của **key global** (`[a-z0-9_]{1,64}`, vd `khach_hang`): mọi cột trong `encryptColumns` mã hoá bằng MỘT key của vùng này (cùng key với mọi dataset chọn vùng đó, để query nối được). Không có = key theo cột như trước. Xem [YEU-CAU-TU-DAK-KEY-GLOBAL.md](../key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md) |
 | `purpose` | có | 1–500 ký tự, không ký tự điều khiển |
 | `batchId` | **cấm** | Mỗi lần chạy tự lấy ngày làm lô |
 
@@ -165,6 +166,11 @@ JSON, **chỉ những khoá dưới đây** (khoá lạ làm DAG bỏ cả cấu
 | `outputMode` | chỉ khi phiếu có | `outputMode` | `overwrite-partitions` hoặc `append` |
 | `encryptColumns` | chỉ dataset có cột mã hoá | `encryptColumns` (có thể `[]`) | danh sách tên cột hợp lệ |
 | `keyField` | chỉ khi có cột mã hoá | `keyField` | tên cột hợp lệ, không nằm trong `encryptColumns` |
+| `globalKey` | **chỉ khi** phiếu chọn key global | — | boolean, luôn là `true`; **không bao giờ** ghi `false` (phiếu không chọn key global thì không có khoá này) |
+| `globalZone` | **chỉ khi** phiếu chọn key global | `globalZone` | `[a-z0-9_]{1,64}`; luôn đi cùng `globalKey` và `encryptColumns` không rỗng, nếu không DAG bỏ cả cấu hình |
+
+`globalKey`/`globalZone` là khoá MỚI: DAG **cũ** coi chúng là khoá lạ và bỏ cả cấu hình (DAG mất lịch, task `validate_conf` báo lỗi), nên chỉ cho người dùng
+chọn key global **sau khi** DAG mới đã lên Airflow ([TRA-LOI-DAK-KEY-GLOBAL.md](../key-access/TRA-LOI-DAK-KEY-GLOBAL.md)).
 
 Với dataset **không** có cột mã hoá (`ebs_3g_4g`, `f001-mpre-call`) **không** ghi `encryptColumns`/`keyField`.
 Với dataset có cột mã hoá mà phiếu không chọn cột nào: ghi `"encryptColumns": []` và **không** ghi `keyField`.
@@ -178,6 +184,13 @@ Ví dụ:
 ```json
 {"ticket": "SLV-2026-000003", "table": "vtnet_nims_infra_cell_4g_enc", "cron": "15 4 * * *", "outputMode": "append",
  "encryptColumns": ["lng", "lat"], "keyField": "eci"}
+```
+
+Phiếu chọn key global (vùng `khach_hang`): thêm đúng hai khoá, `globalKey` luôn `true`.
+
+```json
+{"ticket": "SLV-2026-000042", "table": "vtnet_nims_infra_cell_4g_global", "cron": "0 2 * * *",
+ "encryptColumns": ["lng", "lat"], "keyField": "eci", "globalKey": true, "globalZone": "khach_hang"}
 ```
 
 ```json

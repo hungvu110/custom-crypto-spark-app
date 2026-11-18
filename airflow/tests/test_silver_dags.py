@@ -294,6 +294,70 @@ class ScheduleConfigTest(unittest.TestCase):
         self.assertNotIn("secret", str(caught.exception))
 
 
+NIMS_GLOBAL_CONFIG = {
+    "ticket": "SLV-2026-000042",
+    "table": "vtnet_nims_infra_cell_4g_global",
+    "cron": "0 2 * * *",
+    "encryptColumns": ["lng", "lat"],
+    "keyField": "eci",
+    "globalKey": True,
+    "globalZone": "khach_hang",
+}
+global_module = load("silver_ingest_vtnet", variables({NIMS_ID: NIMS_GLOBAL_CONFIG, EBS_ID: EBS_CONFIG}))
+NIMS_GLOBAL = _dags_of(global_module)[NIMS_ID]
+
+
+class GlobalKeyTest(unittest.TestCase):
+    """globalKey / globalZone of the Airflow Variable (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md): present only for a request that picks a
+    global key zone; the job then gets GLOBAL_KEY_ZONE."""
+
+    def test_a_request_with_a_global_key_is_accepted_and_the_dag_is_scheduled(self):
+        common.check_schedule_config(NIMS.SOURCE, dict(NIMS_GLOBAL_CONFIG))
+        self.assertEqual(NIMS_GLOBAL.SOURCE["fixed"], NIMS_GLOBAL_CONFIG)
+        self.assertEqual(NIMS_GLOBAL.kwargs["schedule"], "0 2 * * *")
+        self.assertIsNone(global_module.CONFIG_PROBLEMS[NIMS_ID])
+
+    def test_the_job_gets_the_zone_and_the_dag_without_a_global_key_is_unchanged(self):
+        env = driver_env(render(NIMS_GLOBAL))
+        self.assertEqual(env["GLOBAL_KEY_ZONE"], "khach_hang")
+        self.assertEqual(env["CDR_ENCRYPT_COLUMNS"], "lng,lat")
+        self.assertEqual(env["CDR_KEY_FIELD"], "eci")
+        for dag in (NIMS, NIMS_ENC):
+            self.assertNotIn("GLOBAL_KEY_ZONE", driver_env(render(dag)))
+
+    def test_the_old_variable_without_the_two_keys_still_works(self):
+        common.check_schedule_config(NIMS.SOURCE, dict(NIMS_ENCRYPTING_CONFIG))
+        self.assertIsNone(common.global_zone(NIMS_ENCRYPTING_CONFIG))
+        self.assertEqual(common.global_zone(NIMS_GLOBAL_CONFIG), "khach_hang")
+
+    def test_the_two_keys_go_together_and_are_well_formed(self):
+        without_key = {k: v for k, v in NIMS_GLOBAL_CONFIG.items() if k != "globalKey"}
+        without_zone = {k: v for k, v in NIMS_GLOBAL_CONFIG.items() if k != "globalZone"}
+        for config in (
+            without_key,
+            without_zone,
+            {**NIMS_GLOBAL_CONFIG, "globalKey": False},  # DAK never sends false
+            {**NIMS_GLOBAL_CONFIG, "globalKey": "true"},
+            {**NIMS_GLOBAL_CONFIG, "globalZone": "Khach-Hang"},
+            {**NIMS_GLOBAL_CONFIG, "globalZone": "a" * 65},
+            {**NIMS_GLOBAL_CONFIG, "globalZone": ""},
+            {**NIMS_GLOBAL_CONFIG, "globalZone": None},
+            {**NIMS_GLOBAL_CONFIG, "encryptColumns": []},
+        ):
+            with self.assertRaises(ValueError, msg=repr(config)):
+                common.check_schedule_config(NIMS.SOURCE, config)
+
+    def test_a_dataset_that_encrypts_no_column_does_not_accept_a_global_key(self):
+        for source, config in ((EBS.SOURCE, EBS_CONFIG), (VTT.SOURCE, VTT_CONFIG)):
+            with self.assertRaises(ValueError, msg=source["name"]):
+                common.check_schedule_config(source, {**config, "globalKey": True, "globalZone": "khach_hang"})
+
+    def test_an_invalid_global_key_leaves_the_dag_without_a_schedule(self):
+        bad = load("silver_ingest_vtnet", variables({NIMS_ID: {**NIMS_GLOBAL_CONFIG, "globalZone": "Bad Zone"}, EBS_ID: EBS_CONFIG}))
+        self.assertIn("globalZone", bad.CONFIG_PROBLEMS[NIMS_ID])
+        self.assertNotIn("Bad Zone", bad.CONFIG_PROBLEMS[NIMS_ID])
+
+
 class RunConfTest(unittest.TestCase):
     """A scheduled run has no conf; a manual run may pick the day to ingest."""
 

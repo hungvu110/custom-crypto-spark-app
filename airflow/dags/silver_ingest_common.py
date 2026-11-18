@@ -155,6 +155,8 @@ COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 #   hourly  "<minute> * * * *"       each run ingests the HOUR before (only for a dataset with an `hour_glob`).
 SCHEDULE_CRON = re.compile(r"(?:[0-5]?\d) (?:[01]?\d|2[0-3]|\*) \* \* \*")
 TICKET = re.compile(r"SLV-\d{4}-\d{6}")
+# Zone of a global key (the same rule as DAK): lowercase letters, digits, "_".
+GLOBAL_ZONE = re.compile(r"[a-z0-9_]{1,64}")
 RUN_DATE_VALUE = re.compile(r"\d{8}")
 # Keys of the conf of a manual run of a dataset DAG (check_conf).
 CONF_KEYS = ("date", "fromHour", "toHour")
@@ -198,11 +200,33 @@ def check_columns(conf):
         )
 
 
+def check_global_key(config):
+    """globalKey / globalZone (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md §1): DAK writes them ONLY when the request uses a global key, so
+    the pair is optional but all-or-nothing. globalKey is always the boolean true (DAK never sends false) and globalZone a zone name; the
+    columns to encrypt must not be empty (DAK blocks that when the request is submitted, checked here too)."""
+
+    if "globalKey" not in config and "globalZone" not in config:
+        return
+    if config.get("globalKey") is not True:
+        raise ValueError("schedule config globalKey must be true (omit it to use the per-column keys)")
+    zone = config.get("globalZone")
+    if not isinstance(zone, str) or not GLOBAL_ZONE.fullmatch(zone):
+        raise ValueError("schedule config globalZone is missing or malformed (lowercase letters, digits, '_', up to 64)")
+    if not config.get("encryptColumns"):
+        raise ValueError("schedule config globalKey needs a non-empty encryptColumns (the columns that the global key encrypts)")
+
+
+def global_zone(config):
+    """The zone of the global key of an approved request (see check_global_key), or None for a request with the per-column keys."""
+
+    return config.get("globalZone") if config.get("globalKey") is True else None
+
+
 def check_schedule_config(source, config):
     """Check the settings that DAK wrote into the Airflow Variable of a recurring dataset; raise ValueError when they are invalid.
 
-    `source["schedule_keys"]` lists the accepted keys (ticket, table, cron, outputMode and, for a decrypt-encrypt dataset, encryptColumns and
-    keyField). Messages never repeat the value.
+    `source["schedule_keys"]` lists the accepted keys (ticket, table, cron, outputMode and, for a decrypt-encrypt dataset, encryptColumns,
+    keyField and, only when the request uses a global key, globalKey and globalZone). Messages never repeat the value.
     """
 
     if not isinstance(config, dict):
@@ -229,6 +253,7 @@ def check_schedule_config(source, config):
         raise ValueError(f"schedule config outputMode must be one of {', '.join(OUTPUT_MODES)}")
     if source.get("encrypts_columns"):
         check_columns(config)
+        check_global_key(config)
 
 
 def check_date(value, name):
