@@ -95,6 +95,22 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
       .decryptEncrypt.get.keyPath shouldBe "2026-10-27"
   }
 
+  it should "nhận GLOBAL_KEY_ZONE (key global của vùng) cùng với cột mã hoá" in {
+    val cfg = IngestConfig.fromEnv(Mode.DecryptEncrypt, vtnet + ("GLOBAL_KEY_ZONE" -> "khach_hang")).toOption.get
+
+    cfg.decryptEncrypt.get.globalZone shouldBe Some("khach_hang")
+    IngestConfig.fromEnv(Mode.DecryptEncrypt, vtnet).toOption.get.decryptEncrypt.get.globalZone shouldBe None
+  }
+
+  it should "từ chối GLOBAL_KEY_ZONE sai định dạng, thiếu cột mã hoá, hoặc dùng với passthrough" in {
+    Seq("Khach-Hang", "a" * 65, "kh ach").foreach { zone =>
+      errors(Mode.DecryptEncrypt, vtnet + ("GLOBAL_KEY_ZONE" -> zone)) should include("GLOBAL_KEY_ZONE: must match")
+    }
+    errors(Mode.DecryptEncrypt, vtnet - "CDR_ENCRYPT_COLUMNS" - "CDR_KEY_FIELD" + ("GLOBAL_KEY_ZONE" -> "khach_hang")) should
+      include("GLOBAL_KEY_ZONE: needs CDR_ENCRYPT_COLUMNS")
+    errors(Mode.Passthrough, common + ("GLOBAL_KEY_ZONE" -> "khach_hang")) should include("only valid for the decrypt-encrypt mode")
+  }
+
   it should "nhận CDR_ON_MISSING=none và từ chối giá trị khác none/request" in {
     IngestConfig.fromEnv(Mode.DecryptEncrypt, vtnet + ("CDR_ON_MISSING" -> "NONE")).toOption.get.decryptEncrypt.get.onMissing shouldBe "none"
     errors(Mode.DecryptEncrypt, vtnet + ("CDR_ON_MISSING" -> "always")) should include("CDR_ON_MISSING='always'")

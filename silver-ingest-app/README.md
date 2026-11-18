@@ -25,6 +25,7 @@ Kịch bản test từng bước (key, path Vault, phiếu): [docs/silver-ingest
      đoán là file không mã hoá và không chờ.
    Cả hai trường hợp job chạy tiếp và thành công.
 2. Xin key các cột `CDR_ENCRYPT_COLUMNS` (`by-column`, dataset = `OUTPUT_DB.OUTPUT_TABLE`, `onMissing=request`) **trước** khi giải mã.
+   **Có `GLOBAL_KEY_ZONE`**: bước này lấy MỘT key global của vùng (`GET /api/v1/keys/global`) cho mọi cột, không gọi `by-column`, không có `PENDING` để chờ.
    **Không có cột nào** (`CDR_ENCRYPT_COLUMNS` rỗng hoặc không đặt): bỏ qua cả bước này và bước 4, job chỉ giải mã file rồi ghi bảng, không gọi `by-column`. Lần
    đầu cột chưa có key: DAK mở yêu cầu và trả `PENDING`; job **chờ** và gọi lại theo exponential backoff (`DAK_PENDING_WAIT_*`) cho tới khi
    admin DAK duyệt, rồi chạy tiếp — luồng đã thống nhất với DAK (hợp đồng mục 3.2). Hết thời gian chờ, hoặc yêu cầu bị từ chối/khoá: **exit 5**
@@ -62,6 +63,7 @@ toán: cài `FileCipher` (`crypto/FileCipher.scala`), thêm tên vào `FileCiphe
 | `CDR_ENCRYPT_COLUMNS` | decrypt-encrypt | rỗng (không mã hoá cột nào) | Cột mã hoá bằng cdr-crypto (DAG: từ `conf.encryptColumns` của phiếu, có thể rỗng) |
 | `CDR_KEY_FIELD` | decrypt-encrypt | bắt buộc khi có `CDR_ENCRYPT_COLUMNS` | Cột giữ plaintext, ghép sau key cột thành key của từng dòng (DAG: `conf.keyField`) |
 | `CDR_ON_MISSING` | decrypt-encrypt | `request` | `onMissing` gửi `by-column`. `request`: cột chưa có key thì DAK mở yêu cầu và job chờ duyệt. `none`: không mở yêu cầu (cột thiếu key → exit 5 ngay) |
+| `GLOBAL_KEY_ZONE` | decrypt-encrypt | không (key theo cột) | Vùng của **key global** (`[a-z0-9_]{1,64}`, vd `khach_hang`; DAG: từ `globalZone` của Variable khi có `globalKey`). Có thì MỌI cột `CDR_ENCRYPT_COLUMNS` mã hoá bằng MỘT key lấy từ DAK `GET /api/v1/keys/global?zone=` (cùng client DAK với `by-path`) thay vì `by-column`: **không gọi `by-column`, không chờ `PENDING`**. Bắt buộc kèm `CDR_ENCRYPT_COLUMNS` không rỗng, sai thì exit 2. Giải mã file (`by-path`) không đổi. DAK từ chối (`403 access_denied`: chưa có phiếu hiệu lực của vùng; `key_disabled`: key bị khoá) thì job dừng với exit 1. Xem [YEU-CAU-TU-DAK-KEY-GLOBAL.md](../docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md) |
 | `DAK_PENDING_WAIT_TIMEOUT_SECONDS` | decrypt-encrypt | `0` (không chờ); DAG đặt `7200` | Chờ admin DAK duyệt yêu cầu key cột tối đa bao lâu. Trong lúc chờ, driver và executor vẫn giữ tài nguyên |
 | `DAK_PENDING_WAIT_INITIAL_SECONDS`, `DAK_PENDING_WAIT_MULTIPLIER`, `DAK_PENDING_WAIT_MAX_INTERVAL_SECONDS` | decrypt-encrypt | `30`, `2`, `300` (DAG: `30`, `2`, `600`) | Exponential backoff: lần gọi lại đầu sau 30 s, mỗi lần sau nhân 2, tối đa 600 s một lần |
 | `HOUR_PATH_REGEX` | cả hai mode | — | Bật cột giờ: regex có ĐÚNG MỘT nhóm bắt, áp lên đường dẫn của từng file nguồn để lấy giờ `HH`; không khớp thì `NA`. File được chia theo giờ ở driver, đọc (hoặc giải mã) từng nhóm rồi gắn giờ của nhóm, nên dùng được cả với file mã hoá cả file |
@@ -122,6 +124,7 @@ và xoá Variable. Không có Variable (hoặc Variable sai) thì DAG không có
 | `outputMode` | tuỳ chọn | tuỳ chọn | `overwrite-partitions` (mặc định) hoặc `append`. Không nhận `overwrite` (thay cả bảng) |
 | `encryptColumns` | không nhận | tuỳ chọn | Cột cần mã hoá, **có thể rỗng hoặc không có** = chỉ giải mã file → `CDR_ENCRYPT_COLUMNS` |
 | `keyField` | không nhận | bắt buộc khi có cột mã hoá | Cột giữ plaintext → `CDR_KEY_FIELD` |
+| `globalKey`, `globalZone` | không nhận | chỉ khi phiếu chọn key global | `globalKey` luôn `true`, `globalZone` = vùng → env `GLOBAL_KEY_ZONE`. Cùng có hoặc cùng không có; cần `encryptColumns` không rỗng. DAG cũ coi hai khoá này là khoá lạ và bỏ cả cấu hình |
 
 **Mỗi lần chạy** nạp thư mục `<dataset>/dt=<ngày>` của **ngày hôm trước** (ngày ở đầu khoảng dữ liệu của lần chạy, đổi sang giờ Việt Nam; `ds` của Airflow là ngày
 UTC nên lệch một ngày với lần chạy trước 07:00) vào các dòng `dt = <ngày>` (`yyyyMMdd`) của bảng: chạy lại một ngày chỉ thay ngày đó. Cả cây thư mục của ngày

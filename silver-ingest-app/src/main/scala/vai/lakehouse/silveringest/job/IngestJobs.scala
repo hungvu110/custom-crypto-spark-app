@@ -78,11 +78,13 @@ object DecryptEncryptJob {
       Log.info("no column to encrypt: DAK by-column is not called, columns are written as they are")
       None
     } else {
-      Log.section(s"4. COLUMN KEYS (DAK by-column, onMissing=${v.onMissing}, cdr-crypto)")
+      Log.section(v.globalZone.fold(s"4. COLUMN KEYS (DAK by-column, onMissing=${v.onMissing}, cdr-crypto)") { zone =>
+        s"4. COLUMN KEYS (DAK global key, zone=$zone, one key for every column, cdr-crypto)"
+      })
       val keyField = v.keyField.getOrElse(throw new IllegalArgumentException("CDR_KEY_FIELD is missing"))
       val intent = if (v.onMissing == "request") KeyIntent.Encrypt else KeyIntent.Decrypt
       val loaded = CdrCrypto.loadConfig(cfg.target, keyField, v.encryptColumns, intent, columnKeys)
-      Log.ok(s"keys received for ${v.encryptColumns.mkString(", ")} (keyField=$keyField)")
+      Log.ok(s"${if (v.globalZone.isDefined) "global key received" else "keys received"} for ${v.encryptColumns.mkString(", ")} (keyField=$keyField)")
       Some(loaded)
     }
     def encrypt(df: DataFrame): DataFrame = cdr.fold(df)(config => CdrCrypto.encryptColumns(df, config))

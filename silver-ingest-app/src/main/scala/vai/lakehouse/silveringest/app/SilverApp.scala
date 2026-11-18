@@ -6,12 +6,15 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.SparkSession
 import vai.lakehouse.columncrypto.cdr.CdrCrypto
 import vai.lakehouse.keyprefix.{ChainedConfigSource, ColumnKeySource, ColumnKeySourceFactory, ColumnKeysUnavailableException,
-  EnvConfigSource, PathKeySource, PathKeySourceFactory, SparkConfSource}
+  EnvConfigSource, GlobalColumnKeySource, GlobalKeySourceFactory, PathKeySource, PathKeySourceFactory, SparkConfSource}
 import vai.lakehouse.silveringest.config.{IngestConfig, Mode}
 import vai.lakehouse.silveringest.job.{IngestResult, DecryptEncryptJob, PassthroughJob}
 import vai.lakehouse.silveringest.logging.Log
 
-/** Nguồn key của mode decrypt-encrypt: `by-path` và `by-column` của DAK. */
+/**
+ * Nguồn key của mode decrypt-encrypt: `by-path` (giải mã file) và key mã hoá cột — `by-column` của DAK (mỗi cột một key), hoặc, khi có
+ * `GLOBAL_KEY_ZONE`, nguồn key global của vùng (mọi cột chung một key, không gọi `by-column`).
+ */
 final case class KeySources(pathKeys: PathKeySource, columnKeys: ColumnKeySource)
 
 /**
@@ -66,7 +69,12 @@ object SilverApp {
       try {
         val envSource = new EnvConfigSource(env)
         val columnConfig = new ChainedConfigSource(Seq(new SparkConfSource(new SparkConf(), CdrCrypto.ConfPrefix), envSource))
-        Right(Some(KeySources(PathKeySourceFactory.create(envSource), ColumnKeySourceFactory.create(columnConfig))))
+        // Key global: mọi cột chung key của vùng (cùng client DAK với by-path), không có key theo cột.
+        val columnKeys = cfg.decryptEncrypt.flatMap(_.globalZone) match {
+          case Some(zone) => new GlobalColumnKeySource(GlobalKeySourceFactory.create(envSource), zone)
+          case None => ColumnKeySourceFactory.create(columnConfig)
+        }
+        Right(Some(KeySources(PathKeySourceFactory.create(envSource), columnKeys)))
       } catch {
         case e: IllegalArgumentException => Left(e.getMessage)
       }

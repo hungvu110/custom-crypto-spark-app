@@ -278,6 +278,29 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     spark.table(s"silver.$table").select("msisdn", "imei", "start_time", "amount").orderBy("msisdn").collect()
       .map(r => (r.getString(0), r.getString(1), r.getString(2), r.getInt(3))).toSeq
 
+  it should "có GLOBAL_KEY_ZONE: mọi cột mã hoá bằng cùng một key global, đọc lại được bằng đúng key đó" in {
+    val in = dir("vtnet/global-key")
+    write(in.resolve("a.csv.enc"), encrypted(csv(csvRows)))
+    // GlobalColumnKeySource (nguồn thật khi có GLOBAL_KEY_ZONE) trả cùng một key cho mọi cột; ở đây giả bằng một nguồn như vậy.
+    val global = new StubColumnKeys(Map("msisdn" -> "k-global", "imei" -> "k-global"))
+
+    vtnet(vtnetEnv(in, "vtnet_global", "GLOBAL_KEY_ZONE" -> "khach_hang"), keys = global) shouldBe SilverApp.ExitOk
+
+    global.calls.get() shouldBe 1
+    val cfg = CdrCrypto.loadConfig("silver.vtnet_global", "start_time", Seq("msisdn", "imei"), KeyIntent.Decrypt, global)
+    CdrCrypto.decryptColumns(spark.table("silver.vtnet_global"), cfg)
+      .select("msisdn", "imei", "start_time", "amount").orderBy("msisdn").collect()
+      .map(r => (r.getString(0), r.getString(1), r.getString(2), r.getInt(3))).toSeq shouldBe expected
+    storedRows("vtnet_global") should not be expected
+  }
+
+  it should "GLOBAL_KEY_ZONE sai định dạng hoặc không có cột mã hoá: lỗi cấu hình, chưa dựng Spark" in {
+    val in = dir("vtnet/global-key-bad")
+    vtnet(vtnetEnv(in, "vtnet_global_bad", "GLOBAL_KEY_ZONE" -> "Khach-Hang")) shouldBe SilverApp.ExitConfigError
+    vtnet(vtnetEnv(in, "vtnet_global_bad", "GLOBAL_KEY_ZONE" -> "khach_hang", "CDR_ENCRYPT_COLUMNS" -> "", "CDR_KEY_FIELD" -> "")) shouldBe
+      SilverApp.ExitConfigError
+  }
+
   it should "không có cột mã hoá: chỉ giải mã file, ghi nguyên giá trị và không gọi by-column" in {
     val in = dir("vtnet/decrypt-only")
     write(in.resolve("a.csv.enc"), encrypted(csv(csvRows)))

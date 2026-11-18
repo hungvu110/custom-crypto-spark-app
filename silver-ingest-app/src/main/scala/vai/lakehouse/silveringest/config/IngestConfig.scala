@@ -6,7 +6,7 @@ import java.util.regex.{Pattern, PatternSyntaxException}
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Try
 
-import vai.lakehouse.keyprefix.PathKeySource
+import vai.lakehouse.keyprefix.{DakGlobalKeySource, PathKeySource}
 
 /** Ingest mode: one entry point per mode, DAGs pick the mode that fits their dataset. */
 sealed abstract class Mode(val name: String)
@@ -91,9 +91,13 @@ final case class Hours(column: String, pathRegex: String, replace: Seq[String] =
  * @param stagingPath    thư mục tạm cho file giải mã định dạng nhị phân; xoá sau khi chạy
  * @param onMissing      `onMissing` gửi `by-column`: `request` (mặc định: lần đầu cột chưa có key thì DAK mở YC, admin duyệt và sinh key,
  *                       chạy lại là dùng được — như SA đã góp ý DAK) hoặc `none` (không mở YC)
+ * @param globalZone     vùng của key global (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md): có thì MỌI cột trong `encryptColumns` được mã hoá
+ *                       bằng key global của vùng này (DAK `/api/v1/keys/global`), KHÔNG gọi `by-column`; `None` = key theo cột như trước.
+ *                       Việc giải mã file (`by-path`) không đổi
  */
 final case class DecryptEncryptSettings(keyPath: String, cipher: String, encryptColumns: Seq[String], keyField: Option[String],
-                                        stagingPath: Option[String], onMissing: String = IngestConfig.DefaultOnMissing)
+                                        stagingPath: Option[String], onMissing: String = IngestConfig.DefaultOnMissing,
+                                        globalZone: Option[String] = None)
 
 /**
  * Cấu hình của job, đọc từ biến môi trường của driver (`spec.driver.env`). Chung cho hai nguồn: `INPUT_*`, `OUTPUT_*`,
@@ -138,6 +142,7 @@ final case class IngestConfig(
     "CDR_ENCRYPT_COLUMNS"  -> (if (v.encryptColumns.isEmpty) "(none)" else v.encryptColumns.mkString(", ")),
     "CDR_KEY_FIELD"        -> v.keyField.getOrElse("(none)"),
     "CDR_ON_MISSING"       -> v.onMissing,
+    "GLOBAL_KEY_ZONE"      -> v.globalZone.getOrElse("(none: per-column keys)"),
     "DECRYPT_STAGING_PATH" -> v.stagingPath.getOrElse("(in memory)"))
   }
 }
@@ -168,7 +173,7 @@ object IngestConfig {
   private val Identifier = "^[A-Za-z0-9_]{1,128}$"
   private val ColumnName = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
   private val DecryptEncryptOnly = Seq("KEY_PATH_ROOT", "KEY_PATH", "FILE_CIPHER", "CDR_ENCRYPT_COLUMNS", "CDR_KEY_FIELD", "CDR_ON_MISSING",
-    "DECRYPT_STAGING_PATH")
+    "GLOBAL_KEY_ZONE", "DECRYPT_STAGING_PATH")
   private val OptionPrefix = "INPUT_OPTION_"
 
   /** Gom MỌI lỗi cấu hình rồi trả về một lượt, để sửa manifest/DAG một lần là đủ. */
@@ -327,6 +332,12 @@ object IngestConfig {
         }
         None
     }
+    // Key global: DAK luôn gửi kèm encryptColumns không rỗng; thiếu cột thì cấu hình sai (không âm thầm bỏ qua key global).
+    val globalZone = raw("GLOBAL_KEY_ZONE").map { zone =>
+      if (!DakGlobalKeySource.isValidZone(zone)) errors += s"GLOBAL_KEY_ZONE: must match ${DakGlobalKeySource.ZonePattern}"
+      if (encrypt.isEmpty) errors += "GLOBAL_KEY_ZONE: needs CDR_ENCRYPT_COLUMNS (the columns that the global key encrypts)"
+      zone
+    }
     // Giá trị cột partition nằm trong tên thư mục, không mã hoá được.
     partitionBy.filter(c => lowerEncrypt.contains(c.toLowerCase(Locale.ROOT))).foreach { c =>
       errors += s"OUTPUT_PARTITION_BY: partition column '$c' must not be listed in CDR_ENCRYPT_COLUMNS (it would be stored in clear in the path)"
@@ -346,7 +357,7 @@ object IngestConfig {
       case Some(s) if inside(s, input.path) => errors += "DECRYPT_STAGING_PATH: must not be inside INPUT_PATH"
       case Some(_) =>
     }
-    DecryptEncryptSettings(keyPath, cipher, encrypt, keyField, staging, onMissing)
+    DecryptEncryptSettings(keyPath, cipher, encrypt, keyField, staging, onMissing, globalZone)
   }
 
   /**
