@@ -80,6 +80,8 @@ Bật khi có Secret `dak-mock-admin-token`; mọi request phải có header `X-
 | `POST /mock-admin/path-keys`                                   | Body `{"path":"...","keyValue":"..."}` (`keyValue` tuỳ chọn): tạo key theo đường dẫn — vai trò luồng mã hoá file của DAK |
 | `POST /mock-admin/path-keys/disable`, `.../enable`            | Body `{"path":"..."}`: khoá/mở khoá key đã có của đường dẫn → `by-path` trả `403 key_disabled` / trả lại key |
 | `POST /mock-admin/column-keys`                                 | Body `{"database","table","column","keyValue"}`: tạo key cột trực tiếp, không qua YC |
+| `POST /mock-admin/global-keys`                                 | Body `{"zone":"khach_hang","keyValue":"..."}` (`keyValue` tuỳ chọn): tạo key global của vùng — vai trò "admin DAK tạo key global". Đã có thì giữ key cũ (không xoay) |
+| `POST /mock-admin/global-keys/disable`, `.../enable`          | Body `{"zone":"..."}`: khoá/mở khoá key global → `GET /api/v1/keys/global` trả `403 key_disabled` / trả lại key |
 
 YC và danh sách khoá nằm trong bộ nhớ: **pod restart là mất** (YC mở lại với mã mới, cột hết bị khoá). Key cột trong Vault không mất.
 
@@ -109,6 +111,34 @@ vậy (không chuẩn hoá, kể cả hoa thường), nên `path` khi tạo key 
 dataset, mọi lô dùng chung. Một đường dẫn một key, kể cả khi đó là thư mục. Key lưu ở `kv/data/hla-datalake/datalake/path-keys/{pathHash}` (`pathHash` = SHA-256 hex của đường dẫn, đổi bằng
 `dak.vault.path-key-template`), chỉ được tạo bằng `cas=0`. Token Vault của mock cần quyền `read` và `create` trên path này.
 
+### 2.3a. `GET /api/v1/keys/global`
+
+Theo [YEU-CAU-TU-DAK-KEY-GLOBAL.md](../docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md) mục 2: **key global** của một **vùng** dữ liệu, để nhiều dataset
+silver mã hoá cột bằng CÙNG một key (query nối được giữa các dataset). DAK thật **chưa code** endpoint này; mock có để test cả luồng trước đó. Dùng bởi job mode
+`decrypt-encrypt` của [silver-ingest-app](../silver-ingest-app/README.md) khi Variable có `globalKey`/`globalZone` (env `GLOBAL_KEY_ZONE`).
+
+```http
+GET /api/v1/keys/global?zone=khach_hang
+Authorization: Bearer <token của client nội bộ hoặc client chính của team gửi phiếu>
+```
+
+| Trường hợp | Kết quả |
+| --- | --- |
+| Có ít nhất một phiếu silver **hiệu lực** (đã duyệt hoặc đang chạy lịch, `SCHEDULED`) chọn đúng vùng, và token được phép, và key đã được tạo | `200 {"zone": "khach_hang", "keyPrefix": "...", "keyVersion": 1}`, `Cache-Control: no-store` |
+| `zone` thiếu hoặc không đúng `[a-z0-9_]{1,64}` | `400 invalid_zone` (kiểm trước khi xác thực) |
+| Token sai hoặc hết hạn | `401` |
+| Không có phiếu hiệu lực nào của vùng mà token được phép, vùng không tồn tại, hoặc chưa ai tạo key của vùng | `403 access_denied` — **cùng một câu trả lời** cho cả ba (không dò được vùng nào có) |
+| Key đang bị khoá | `403 key_disabled` |
+
+Bên được phép: client **nội bộ** (cùng client của `by-path`/`by-column`) với mọi phiếu của vùng, hoặc client **của team** với phiếu của team mình. Endpoint **không có
+tham số `tag`**. Mock không giới hạn tốc độ (`429` chỉ có ở DAK thật). Mọi lần lấy key ghi audit `KEY_FETCH_GLOBAL` (không ghi `keyPrefix`).
+
+Key global do admin tạo bằng `POST /mock-admin/global-keys` (mục 2.2), lưu ở `kv/data/hla-datalake/datalake/global-keys/{zone}` (đổi bằng
+`dak.vault.global-key-template`), chỉ được tạo bằng `cas=0` và **không bao giờ đổi** sau khi tạo: token Vault của mock cần quyền `read` và `create` trên path này.
+
+Luồng thử đầu-cuối: (1) `POST /mock-admin/global-keys` tạo key vùng `khach_hang`; (2) gửi phiếu `nims` có `"globalZone": "khach_hang"` (mẫu
+`valid-vtnet-global-key-request.json`); (3) admin duyệt → Variable của DAG có thêm `"globalKey": true, "globalZone": "khach_hang"`; (4) job lấy key qua endpoint này.
+
 ### 2.4. Phiếu chuẩn hoá silver `/mock-portal/silver-requests`
 
 Mọi phiếu (VTT lẫn VTNET) là **phiếu định kỳ cho cả một dataset**: `path` là **tên dataset** (`f001-mpre-call` của VTT; `ebs_3g_4g`, `nims` của VTNET), phiếu có
@@ -131,6 +161,7 @@ Thân JSON (`POST /mock-portal/silver-requests`, header `X-Mock-Portal-Token`):
 | `outputMode` | không | `overwrite-partitions` (mặc định của DAG) hoặc `append` |
 | `encryptColumns` | không | Chỉ dataset `decrypt-encrypt` (`nims`): danh sách 0–100 tên cột, không trùng; job mã hoá bằng cdr-crypto. **Rỗng hoặc không gửi = chỉ giải mã file**. Dataset `passthrough` (`f001-mpre-call`, `ebs_3g_4g`) không được có |
 | `keyField` | khi có cột mã hoá | Cột giữ plaintext làm nguyên liệu key, không nằm trong `encryptColumns`; không có cột thì bỏ trống |
+| `globalZone` | không | "Vùng dữ liệu Global" đã tick: tên vùng `[a-z0-9_]{1,64}` của key global (mục 2.3a). Chỉ dataset `decrypt-encrypt` và chỉ khi `encryptColumns` không rỗng; mọi cột đó mã hoá bằng MỘT key của vùng. Khi duyệt, Variable có thêm `"globalKey": true` và `"globalZone"`; không có trường này thì Variable **không** có hai khoá đó (không bao giờ `"globalKey": false`) |
 | `purpose` | có | Tối đa 500 ký tự |
 
 Sai thì `400 invalid_request` kèm `problems[]` (mọi lỗi một lượt, trường lạ bị từ chối). Chống trùng: **cả dataset chỉ có một phiếu chưa kết thúc (kể cả `SCHEDULED`), của mọi
@@ -153,6 +184,8 @@ team**, vì một dataset chỉ có một lịch và một cấu hình ở Airfl
 | `valid-vtt-request.json` | Dataset `f001-mpre-call` của VTT (passthrough), chạy 01:30 hằng ngày |
 | `valid-vtnet-request.json` | Dataset `nims` (decrypt-encrypt), chạy 03:00 hằng ngày: có `encryptColumns`, `keyField` |
 | `valid-vtnet-no-columns-request.json` | `nims` không mã hoá cột nào (`encryptColumns` rỗng): job chỉ giải mã file |
+| `valid-vtnet-global-key-request.json` | `nims`, 02:00, chọn key global vùng `khach_hang` (`globalZone`): mọi cột `encryptColumns` dùng chung một key |
+| `invalid-vtnet-global-key-without-columns.json` | Có `globalZone` mà không có `encryptColumns` → `400` |
 | `valid-vtnet-passthrough-request.json` | Dataset `ebs_3g_4g` (passthrough), chạy 02:30: không có cột mã hoá |
 | `valid-vtnet-append-request.json` | `nims`, 04:30, `outputMode=append` |
 | `invalid-vtt-with-columns.json` | Dataset passthrough của VTT có `encryptColumns`/`keyField` → `400` |

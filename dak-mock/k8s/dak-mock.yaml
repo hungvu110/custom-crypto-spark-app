@@ -91,6 +91,8 @@ data:
         column-path-template: hla-datalake/datalake/column-keys/{database}/{table}/{column}
         # Key theo đường dẫn của by-path (job VTNET của silver-ingest-app). {pathHash} = SHA-256 hex của đường dẫn; cần quyền read + create.
         path-key-template: hla-datalake/datalake/path-keys/{pathHash}
+        # Key global của GET /api/v1/keys/global (mỗi vùng một key). {zone} = tên vùng; cần quyền read + create.
+        global-key-template: hla-datalake/datalake/global-keys/{zone}
         key-field: keyPrefix
       yc:
         max-open-per-table: 50

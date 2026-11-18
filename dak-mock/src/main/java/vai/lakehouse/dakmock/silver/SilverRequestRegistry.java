@@ -69,6 +69,18 @@ public class SilverRequestRegistry {
     return next;
   }
 
+  /**
+   * {@code true} khi có ít nhất một phiếu silver HIỆU LỰC (đã duyệt hoặc đang chạy lịch) chọn đúng {@code zone} mà bên gọi được dùng: client
+   * nội bộ (cùng client của {@code by-path}/{@code by-column}) với mọi phiếu, client team chỉ với phiếu của team mình
+   * (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md mục 2).
+   */
+  public synchronized boolean hasEffectiveGlobalRequest(String zone, boolean internal, String team) {
+    return byCode.values().stream()
+        .filter(r -> zone.equals(r.globalZone()))
+        .filter(r -> r.state() == SilverState.APPROVED || r.state() == SilverState.SCHEDULED)
+        .anyMatch(r -> internal || (team != null && !team.isBlank() && team.equals(r.team())));
+  }
+
   /** Mới nhất trước; {@code team} null = mọi team (admin). */
   public synchronized List<SilverRequest> list(String team) {
     return byCode.values().stream()

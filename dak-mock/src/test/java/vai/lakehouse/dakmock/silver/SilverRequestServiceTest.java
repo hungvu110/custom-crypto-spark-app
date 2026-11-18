@@ -116,6 +116,57 @@ class SilverRequestServiceTest {
   }
 
   @Test
+  @DisplayName("phiếu chọn key global: Variable có thêm globalKey=true và globalZone; phiếu không chọn thì KHÔNG có hai khoá đó (không bao giờ globalKey=false)")
+  void globalKeyRequestAddsTheTwoKeysToTheVariable() {
+    ObjectNode n = JSON.createObjectNode();
+    n.put("source", "VTNET");
+    n.put("path", "nims");
+    n.put("cron", "0 2 * * *");
+    n.put("table", "vtnet_nims_infra_cell_4g_global");
+    n.putArray("encryptColumns").add("lng").add("lat");
+    n.put("keyField", "eci");
+    n.put("globalZone", "khach_hang");
+    n.put("purpose", "p");
+    SilverRequest created = service.submit(ALICE, SilverRequestParser.parse(n));
+    assertThat(created.globalZone()).isEqualTo("khach_hang");
+
+    assertThat(service.approve(created.code()).state()).isEqualTo(SilverState.SCHEDULED);
+
+    assertThat(SilverDagTrigger.scheduleConfig(trigger.scheduled.get(0))).containsExactly(
+        Map.entry("ticket", created.code()), Map.entry("table", "vtnet_nims_infra_cell_4g_global"), Map.entry("cron", "0 2 * * *"),
+        Map.entry("encryptColumns", List.of("lng", "lat")), Map.entry("keyField", "eci"), Map.entry("globalKey", true),
+        Map.entry("globalZone", "khach_hang"));
+    assertThat(SilverDagTrigger.scheduleConfig(service.submit(ALICE, ebs()))).doesNotContainKeys("globalKey", "globalZone");
+  }
+
+  @Test
+  @DisplayName("hasEffectiveGlobalRequest: chỉ phiếu đã duyệt hoặc đang chạy lịch của đúng vùng; client nội bộ với mọi phiếu, client team với phiếu của team")
+  void globalRequestIsEffectiveOnlyWhileApprovedOrScheduled() {
+    SilverRequestRegistry registry = new SilverRequestRegistry();
+    SilverRequestService local = new SilverRequestService(registry, trigger);
+    ObjectNode n = JSON.createObjectNode();
+    n.put("source", "VTNET");
+    n.put("path", "nims");
+    n.put("cron", "0 2 * * *");
+    n.put("table", "vtnet_nims_infra_cell_4g_global");
+    n.putArray("encryptColumns").add("lng");
+    n.put("keyField", "eci");
+    n.put("globalZone", "khach_hang");
+    n.put("purpose", "p");
+    String code = local.submit(ALICE, SilverRequestParser.parse(n)).code();
+
+    assertThat(registry.hasEffectiveGlobalRequest("khach_hang", true, null)).isFalse(); // chờ duyệt
+    local.approve(code);
+    assertThat(registry.hasEffectiveGlobalRequest("khach_hang", true, null)).isTrue();
+    assertThat(registry.hasEffectiveGlobalRequest("khach_hang", false, ALICE.team())).isTrue();
+    assertThat(registry.hasEffectiveGlobalRequest("khach_hang", false, "another-team")).isFalse();
+    assertThat(registry.hasEffectiveGlobalRequest("khach_hang", false, null)).isFalse();
+    assertThat(registry.hasEffectiveGlobalRequest("vung_khac", true, null)).isFalse();
+    local.stop(code);
+    assertThat(registry.hasEffectiveGlobalRequest("khach_hang", true, null)).isFalse();
+  }
+
+  @Test
   @DisplayName("phiếu VTT cũng là phiếu định kỳ: DAG của dataset VTT, cấu hình lịch không có cột mã hoá")
   void vttRequestIsAlsoScheduled() {
     SilverRequest created = service.submit(ALICE, vtt());

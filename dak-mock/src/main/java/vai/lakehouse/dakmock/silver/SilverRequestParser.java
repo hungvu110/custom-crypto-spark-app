@@ -38,13 +38,15 @@ public final class SilverRequestParser {
 
   /** A validated request; {@code dagId} is the DAG of its dataset. */
   public record Parsed(SilverSource source, String path, String cron, String table, String outputMode, List<String> encryptColumns,
-                       String keyField, String purpose, String dagId) {}
+                       String keyField, String globalZone, String purpose, String dagId) {}
 
   public static final String CODE = "invalid_field";
   static final Set<String> OUTPUT_MODES = Set.of("overwrite-partitions", "append");
 
   private static final Set<String> FIELDS = Set.of("source", "path", "batchId", "cron", "table", "outputMode", "encryptColumns",
-      "keyField", "purpose");
+      "keyField", "globalZone", "purpose");
+  /** Zone of a global key (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md): the same rule as the DAG (airflow/dags/silver_ingest_common.py, GLOBAL_ZONE). */
+  public static final Pattern ZONE = Pattern.compile("[a-z0-9_]{1,64}");
   /** {@code <minute> <hour> * * *} or {@code <minute> * * * *}: the only forms the DAG accepts (airflow/dags/silver_ingest_common.py, SCHEDULE_CRON). */
   private static final Pattern CRON = Pattern.compile("[0-5]?\\d ([01]?\\d|2[0-3]|\\*) \\* \\* \\*");
   private static final Pattern PATH = Pattern.compile("[A-Za-z0-9_.=+-]+(/[A-Za-z0-9_.=+-]+)*");
@@ -106,11 +108,13 @@ public final class SilverRequestParser {
     }
     List<String> columns = List.of();
     String keyField = null;
+    String globalZone = null;
     if (dataset != null && dataset.encryptsColumns()) {
       columns = columns(body, problems);
       keyField = keyField(body, columns, problems);
+      globalZone = globalZone(body, columns, problems);
     } else if (dataset != null) {
-      for (String field : List.of("encryptColumns", "keyField")) {
+      for (String field : List.of("encryptColumns", "keyField", "globalZone")) {
         if (body.has(field)) {
           problems.add(new Problem(field, CODE, field + " is only allowed for a dataset in decrypt-encrypt mode"));
         }
@@ -124,7 +128,26 @@ public final class SilverRequestParser {
       throw DakApiException.invalidRequest("the request has " + problems.size() + " problem(s)", problems);
     }
     String dagId = dataset.dagId();
-    return new Parsed(source, path, cron, table, outputMode, columns, keyField, purpose, dagId);
+    return new Parsed(source, path, cron, table, outputMode, columns, keyField, globalZone, purpose, dagId);
+  }
+
+  /**
+   * Optional: the zone of the global key ("Vùng dữ liệu Global?" ticked), then ALL {@code encryptColumns} are encrypted with that one key.
+   * Missing or null means per-column keys. DAK blocks a global key without columns to encrypt when the request is submitted.
+   */
+  private static String globalZone(JsonNode body, List<String> columns, List<Problem> problems) {
+    JsonNode node = body.path("globalZone");
+    if (node.isMissingNode() || node.isNull()) {
+      return null;
+    }
+    if (!node.isTextual() || !ZONE.matcher(node.asText()).matches()) {
+      problems.add(new Problem("globalZone", CODE, "globalZone must be a zone name [a-z0-9_]{1,64}"));
+      return null;
+    }
+    if (columns.isEmpty()) {
+      problems.add(new Problem("globalZone", CODE, "globalZone needs a non-empty encryptColumns (the columns that the global key encrypts)"));
+    }
+    return node.asText();
   }
 
   /** {@code true} for the hourly form {@code <minute> * * * *} (a valid cron: the hour field is {@code *}). */

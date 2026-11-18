@@ -1,0 +1,8 @@
+{
+  "source": "VTNET",
+  "path": "nims",
+  "cron": "0 2 * * *",
+  "table": "vtnet_nims_infra_cell_4g_global",
+  "globalZone": "khach_hang",
+  "purpose": "A global key needs at least one column to encrypt: encryptColumns is missing"
+}

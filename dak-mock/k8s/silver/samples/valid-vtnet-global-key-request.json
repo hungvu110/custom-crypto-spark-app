@@ -1,0 +1,13 @@
+{
+  "source": "VTNET",
+  "path": "nims",
+  "cron": "0 2 * * *",
+  "table": "vtnet_nims_infra_cell_4g_global",
+  "encryptColumns": [
+    "lng",
+    "lat"
+  ],
+  "keyField": "eci",
+  "globalZone": "khach_hang",
+  "purpose": "Approve once the daily load of the NIMS dataset at 02:00 and encrypt lng and lat with the global key of the zone khach_hang, so that this table can be joined with the other datasets of the zone"
+}

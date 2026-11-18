@@ -97,6 +97,34 @@ class SilverSampleFilesTest {
   }
 
   @Test
+  @DisplayName("the global key sample is valid: the zone is kept and the columns to encrypt are required")
+  void globalKey() throws IOException {
+    SilverRequestParser.Parsed p = parse("valid-vtnet-global-key-request.json");
+
+    assertThat(p.globalZone()).isEqualTo("khach_hang");
+    assertThat(p.encryptColumns()).containsExactly("lng", "lat");
+    assertThat(p.dagId()).isEqualTo("silver_ingest_vtnet_nims");
+    assertThat(parse("valid-vtnet-request.json").globalZone()).isNull(); // a request without the field keeps the per-column keys
+    assertThat(rejectedFields("invalid-vtnet-global-key-without-columns.json")).containsExactly("globalZone");
+  }
+
+  @Test
+  @DisplayName("globalZone must be a zone name and only a dataset that encrypts columns takes it")
+  void globalKeyIsChecked() throws IOException {
+    String request = Files.readString(SAMPLES.resolve("valid-vtnet-global-key-request.json"));
+    for (String zone : List.of("Khach-Hang", "kh ach", "a".repeat(65), "")) {
+      String body = request.replace("\"khach_hang\"", "\"" + zone + "\"");
+      DakApiException e = catchThrowableOfType(() -> SilverRequestParser.parse(JSON.readTree(body)), DakApiException.class);
+      assertThat(e).as(zone).isNotNull();
+      assertThat(e.problems().stream().map(Problem::field)).containsExactly("globalZone");
+    }
+    String passthrough = Files.readString(SAMPLES.resolve("valid-vtnet-passthrough-request.json")).replace("{", "{\"globalZone\":\"khach_hang\",");
+    DakApiException e = catchThrowableOfType(() -> SilverRequestParser.parse(JSON.readTree(passthrough)), DakApiException.class);
+    assertThat(e).isNotNull();
+    assertThat(e.problems().stream().map(Problem::field)).containsExactly("globalZone");
+  }
+
+  @Test
   @DisplayName("the invalid samples report the expected fields")
   void invalid() {
     assertThat(rejectedFields("invalid-vtt-with-columns.json")).containsExactlyInAnyOrder("encryptColumns", "keyField");

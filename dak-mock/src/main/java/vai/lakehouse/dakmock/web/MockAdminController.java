@@ -18,6 +18,8 @@ import vai.lakehouse.dakmock.column.ColumnId;
 import vai.lakehouse.dakmock.column.ColumnKeyRequest;
 import vai.lakehouse.dakmock.column.ColumnKeyStore;
 import vai.lakehouse.dakmock.column.YcRegistry;
+import vai.lakehouse.dakmock.global.GlobalKeyService;
+import vai.lakehouse.dakmock.global.GlobalKeyStore;
 import vai.lakehouse.dakmock.path.PathKeyRequest;
 import vai.lakehouse.dakmock.path.PathKeyStore;
 import vai.lakehouse.dakmock.key.VaultKeyReader.KeyMaterial;
@@ -67,14 +69,68 @@ public class MockAdminController {
   @JsonInclude(JsonInclude.Include.NON_NULL)
   public record KeyCreated(String path, String database, String table, String column, long keyVersion) {}
 
+  /** Tạo key global cho một vùng ({@code zone} = {@code [a-z0-9_]{1,64}}). */
+  public record GlobalKeyCreate(String zone, String keyValue) {}
+
+  /** Key global đang lưu sau khi tạo (đã có thì là key cũ, không ghi đè, không xoay). Không có giá trị key. */
+  public record GlobalKeyCreated(String zone, long keyVersion) {}
+
   private final ColumnKeyStore store;
   private final PathKeyStore pathStore;
+  private final GlobalKeyStore globalStore;
 
-  public MockAdminController(MockAdminAuth auth, YcRegistry registry, ColumnKeyStore store, PathKeyStore pathStore) {
+  public MockAdminController(MockAdminAuth auth, YcRegistry registry, ColumnKeyStore store, PathKeyStore pathStore,
+                             GlobalKeyStore globalStore) {
     this.auth = auth;
     this.registry = registry;
     this.store = store;
     this.pathStore = pathStore;
+    this.globalStore = globalStore;
+  }
+
+  /**
+   * Tạo key global cho vùng (sinh ngẫu nhiên 32 byte, hoặc lấy {@code keyValue}), vai trò "admin DAK tạo key global". Đã có key thì giữ key
+   * cũ (DAK chặn xoay key). Phiếu silver chọn vùng này (trường {@code globalZone}) mới lấy được key qua {@code GET /api/v1/keys/global}.
+   */
+  @PostMapping("/global-keys")
+  public GlobalKeyCreated createGlobalKey(@RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                          @RequestBody(required = false) GlobalKeyCreate body) {
+    authorize(token);
+    String zone = zoneOf(body);
+    KeyMaterial key = globalStore.create(zone, keyValue(body.keyValue()));
+    log.info("MOCK_ADMIN action=create-global-key zone={} keyVersion={}", zone, key.version());
+    return new GlobalKeyCreated(zone, key.version());
+  }
+
+  /** Khoá key global của vùng: {@code GET /api/v1/keys/global} trả {@code 403 key_disabled}. Body {@code {"zone": ...}}. */
+  @PostMapping("/global-keys/disable")
+  public ResponseEntity<Void> disableGlobalKey(@RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                               @RequestBody(required = false) GlobalKeyCreate body) {
+    authorize(token);
+    String zone = zoneOf(body);
+    if (globalStore.read(zone).isEmpty()) {
+      throw DakApiException.notFound("Zone " + zone + " has no global key");
+    }
+    globalStore.disable(zone);
+    log.info("MOCK_ADMIN action=disable-global-key zone={}", zone);
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/global-keys/enable")
+  public ResponseEntity<Void> enableGlobalKey(@RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                              @RequestBody(required = false) GlobalKeyCreate body) {
+    authorize(token);
+    String zone = zoneOf(body);
+    globalStore.enable(zone);
+    log.info("MOCK_ADMIN action=enable-global-key zone={}", zone);
+    return ResponseEntity.noContent().build();
+  }
+
+  private static String zoneOf(GlobalKeyCreate body) {
+    if (body == null) {
+      throw DakApiException.invalidRequest("body must be {\"zone\": ..., \"keyValue\": ... (optional)}");
+    }
+    return GlobalKeyService.requireZone(body.zone());
   }
 
   /**

@@ -31,7 +31,8 @@ public interface SilverDagTrigger {
   /**
    * Nội dung Airflow Variable của dataset, đúng khoá DAG factory đọc (airflow/dags/silver_ingest_factory.py): {@code ticket}, {@code table},
    * {@code cron} (đúng như trên phiếu), {@code outputMode} nếu người gửi chọn, và với dataset decrypt-encrypt {@code encryptColumns} (có thể rỗng) cùng
-   * {@code keyField} (chỉ khi có cột mã hoá). Không có key hay bí mật nào.
+   * {@code keyField} (chỉ khi có cột mã hoá), và {@code globalKey: true} cùng {@code globalZone} (chỉ khi phiếu chọn key global). Không có
+   * key hay bí mật nào.
    */
   static Map<String, Object> scheduleConfig(SilverRequest r) {
     Map<String, Object> config = new LinkedHashMap<>();
@@ -45,6 +46,11 @@ public interface SilverDagTrigger {
       config.put("encryptColumns", new ArrayList<>(r.encryptColumns()));
       if (r.keyField() != null) {
         config.put("keyField", r.keyField());
+      }
+      // Chỉ khi phiếu chọn key global (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md mục 1); không bao giờ gửi "globalKey": false.
+      if (r.globalZone() != null) {
+        config.put("globalKey", true);
+        config.put("globalZone", r.globalZone());
       }
     }
     return config;

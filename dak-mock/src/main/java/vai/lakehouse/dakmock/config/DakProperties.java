@@ -103,25 +103,36 @@ public record DakProperties(
       @DefaultValue("keyPrefix") String keyField,
       @DefaultValue("2s") Duration connectTimeout,
       @DefaultValue("5s") Duration readTimeout,
-      @DefaultValue(DEFAULT_PATH_KEY_TEMPLATE) String pathKeyTemplate) {
+      @DefaultValue(DEFAULT_PATH_KEY_TEMPLATE) String pathKeyTemplate,
+      @DefaultValue(DEFAULT_GLOBAL_KEY_TEMPLATE) String globalKeyTemplate) {
 
     public static final String DEFAULT_PATH_KEY_TEMPLATE = "hla-datalake/datalake/path-keys/{pathHash}";
+    /** Key global của một vùng ({@code GET /api/v1/keys/global}); {@code {zone}} = tên vùng, đã kiểm {@code [a-z0-9_]{1,64}}. */
+    public static final String DEFAULT_GLOBAL_KEY_TEMPLATE = "hla-datalake/datalake/global-keys/{zone}";
 
     @ConstructorBinding
     public Vault {
       pathKeyTemplate = pathKeyTemplate == null ? DEFAULT_PATH_KEY_TEMPLATE : pathKeyTemplate;
+      globalKeyTemplate = globalKeyTemplate == null ? DEFAULT_GLOBAL_KEY_TEMPLATE : globalKeyTemplate;
     }
 
-    /** Cấu hình không khai {@code path-key-template}: dùng mặc định. */
+    /** Cấu hình không khai {@code global-key-template}: dùng mặc định. */
+    public Vault(String addr, String token, String kvMount, String pathTemplate, String columnPathTemplate, String keyField,
+                 Duration connectTimeout, Duration readTimeout, String pathKeyTemplate) {
+      this(addr, token, kvMount, pathTemplate, columnPathTemplate, keyField, connectTimeout, readTimeout, pathKeyTemplate, null);
+    }
+
+    /** Cấu hình không khai {@code path-key-template} và {@code global-key-template}: dùng mặc định. */
     public Vault(String addr, String token, String kvMount, String pathTemplate, String columnPathTemplate, String keyField,
                  Duration connectTimeout, Duration readTimeout) {
-      this(addr, token, kvMount, pathTemplate, columnPathTemplate, keyField, connectTimeout, readTimeout, null);
+      this(addr, token, kvMount, pathTemplate, columnPathTemplate, keyField, connectTimeout, readTimeout, null, null);
     }
 
     @Override
     public String toString() {
       return "Vault[addr=" + addr + ", kvMount=" + kvMount + ", pathTemplate=" + pathTemplate
-          + ", columnPathTemplate=" + columnPathTemplate + ", pathKeyTemplate=" + pathKeyTemplate + ", keyField=" + keyField
+          + ", columnPathTemplate=" + columnPathTemplate + ", pathKeyTemplate=" + pathKeyTemplate
+          + ", globalKeyTemplate=" + globalKeyTemplate + ", keyField=" + keyField
           + ", token=" + (isBlank(token) ? "<none>" : "***") + "]";
     }
   }
@@ -157,6 +168,7 @@ public record DakProperties(
             && vault.columnPathTemplate().contains("{column}"),
         "dak.vault.column-path-template must contain {database}, {table} and {column}");
     require(vault.pathKeyTemplate().contains("{pathHash}"), "dak.vault.file-path-template must contain {pathHash}");
+    require(vault.globalKeyTemplate().contains("{zone}"), "dak.vault.global-key-template must contain {zone}");
     require(yc.maxOpenPerTable() > 0, "dak.yc.max-open-per-table must be positive");
 
     Set<String> issuers = new HashSet<>();

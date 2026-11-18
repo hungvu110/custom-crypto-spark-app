@@ -72,6 +72,26 @@ public final class DakApiException extends RuntimeException {
         "team client asked for a path key");
   }
 
+  /** {@code zone} của key global sai định dạng ({@code [a-z0-9_]{1,64}}). */
+  public static DakApiException invalidZone() {
+    return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_zone", "zone must match [a-z0-9_]{1,64}", "invalid zone");
+  }
+
+  /**
+   * Key global: không có phiếu silver hiệu lực nào của vùng mà token được phép dùng. CÙNG một câu trả lời với vùng không tồn tại, để không
+   * dò được vùng nào có (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md mục 2).
+   */
+  public static DakApiException globalKeyAccessDenied() {
+    return new DakApiException(HttpStatus.FORBIDDEN, "access_denied", "No effective silver request for this zone",
+        "no effective silver request for the zone, or the zone does not exist");
+  }
+
+  /** Key global đang bị khoá: lỗi, không phải "không có key". */
+  public static DakApiException globalKeyDisabled() {
+    return new DakApiException(HttpStatus.FORBIDDEN, "key_disabled", "The global key of this zone is disabled",
+        "global key disabled");
+  }
+
   /** Thân request JSON sai: {@code problems} liệt kê từng trường (rỗng nếu cả thân hỏng). */
   public static DakApiException invalidRequest(String publicMessage, List<Problem> problems) {
     return new DakApiException(HttpStatus.BAD_REQUEST, "invalid_request", publicMessage, publicMessage, problems);

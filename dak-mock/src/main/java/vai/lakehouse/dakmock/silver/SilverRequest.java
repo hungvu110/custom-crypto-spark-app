@@ -17,6 +17,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * @param outputMode     {@code null} = mặc định của DAG ({@code overwrite-partitions})
  * @param encryptColumns cột job mã hoá bằng cdr-crypto trước khi ghi; rỗng nếu dataset không mã hoá cột hoặc phiếu không chọn cột nào
  * @param keyField       cột giữ plaintext làm nguyên liệu key của từng dòng; {@code null} khi không có cột mã hoá
+ * @param globalZone     vùng của key global ("Vùng dữ liệu Global?" được tick): mọi cột {@code encryptColumns} mã hoá bằng MỘT key của vùng này
+ *                       ({@code GET /api/v1/keys/global}) thay vì key theo cột; {@code null} = key theo cột như trước
  * @param lastRun        trạng thái dag run gần nhất ({@code SUCCEEDED}, {@code FAILED}, {@code RUNNING}), {@code null} nếu chưa chạy
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -31,6 +33,7 @@ public record SilverRequest(
     String outputMode,
     List<String> encryptColumns,
     String keyField,
+    String globalZone,
     String purpose,
     SilverState state,
     Instant createdAt,
@@ -48,7 +51,7 @@ public record SilverRequest(
   /** Phiếu mới, chờ duyệt. */
   static SilverRequest pending(String code, String team, String user, SilverRequestParser.Parsed p, Instant now) {
     return new SilverRequest(code, team, user, p.source(), p.path(), p.cron(), p.table(), p.outputMode(), p.encryptColumns(),
-        p.keyField(), p.purpose(), SilverState.PENDING_APPROVAL, now, now, null, null, p.dagId(), null, null);
+        p.keyField(), p.globalZone(), p.purpose(), SilverState.PENDING_APPROVAL, now, now, null, null, p.dagId(), null, null);
   }
 
   /** The dataset of the request. */
@@ -95,7 +98,7 @@ public record SilverRequest(
 
   private SilverRequest copy(SilverState nextState, Instant nextUpdatedAt, String nextDecidedBy, String nextRejectReason,
                              String nextSubmitError, String nextLastRun) {
-    return new SilverRequest(code, team, submittedBy, source, path, cron, table, outputMode, encryptColumns, keyField, purpose,
+    return new SilverRequest(code, team, submittedBy, source, path, cron, table, outputMode, encryptColumns, keyField, globalZone, purpose,
         nextState, createdAt, nextUpdatedAt, nextDecidedBy, nextRejectReason, dagId, nextSubmitError, nextLastRun);
   }
 }
