@@ -6,7 +6,9 @@ the per-request values come from `conf`. If your environment differs (e.g. HDFS 
 like the vailakehouse DAG that is running) adjust the constants in the "ENVIRONMENT" block below.
 
 DAK calls POST /api/v1/dags/<dagId>/dagRuns with:
-  dag_run_id = deid-<year>-<6 digits>[-r<n>]       (job name, also the SparkApplication name; -r2, -r3 for a re-run of the same request)
+  dag_run_id = deid-<year>-<6 digits>[-r<n>][-t<n>] (job name, also the SparkApplication name; -r2, -r3 for a re-run of the same request;
+               -t1, -t2 ... the table of a request with SEVERAL tables: one run per source table, all runs of the request write into the
+               SAME OUTPUT_DB, one result table (OUTPUT_TABLE) each, and run in parallel, see MAX_ACTIVE_RUNS)
   conf = {requestCode, database, table, pseudoColumns, env}
 `env` is the FINAL env of the job (the env typed by the requester plus the default values filled in by DAK), made of OUTPUT_DB,
 OUTPUT_TABLE, OUTPUT_MODE, OUTPUT_FORMAT, ENABLE_HIVE_SUPPORT and (when the requester enters them) the date-hour range INPUT_FROM,
@@ -137,7 +139,15 @@ PSEUDO_COLUMNS = re.compile(r"[A-Za-z0-9_]{1,128}:HASH(,[A-Za-z0-9_]{1,128}:HASH
 # (REQUEST_CODE) accept. It ends up in a label value and in a query string of DAK, so nothing else is let through.
 REQUEST_CODE = re.compile(r"(REQ|PYC)-[0-9]{4}-[0-9]{6}")
 # A re-run of the same request (extension after the zone was deleted) adds -r2, -r3, ... to the run id (and so to the SparkApplication name).
-DAK_RUN_ID = re.compile(r"deid-\d{4}-\d{6}(-r[0-9]{1,3})?")
+# deid-<year>-<6 digits>[-r<n>][-t<n>]: -r<n> = re-run of the request, -t<n> = the n-th table of a request with SEVERAL tables (docs/key-access/
+# YEU-CAU-TU-DAK-DEID-NHIEU-BANG.md). The run id is also the SparkApplication name (DNS-1123, <= 63 characters with the "-driver" suffix of the pod):
+# the longest form, deid-2026-000123-r999-t999, is 28 characters.
+DAK_RUN_ID = re.compile(r"deid-\d{4}-\d{6}(-r[0-9]{1,3})?(-t[0-9]{1,3})?")
+
+# Upper bound of dag runs that run at the same time (a request with N tables starts N runs). SA does not limit the number of jobs
+# (agreed with DAK on 2026-11-16), but Airflow needs a number: more than any request is expected to have. The real limit is the quota of the
+# namespace; runs above it wait in "queued" until a run ends.
+MAX_ACTIVE_RUNS = 64
 
 CONF_RULES = {
     "requestCode": REQUEST_CODE,
@@ -155,7 +165,7 @@ def check_conf(run_id, conf):
     conf = conf or {}
     from_dak = run_id.startswith("deid-")
     if from_dak and not DAK_RUN_ID.fullmatch(run_id):
-        raise ValueError("dag_run_id must have the form deid-<year>-<6 digits>[-r<n>] (set by DAK)")
+        raise ValueError("dag_run_id must have the form deid-<year>-<6 digits>[-r<n>][-t<n>] (set by DAK)")
     values = {}
     for key, rule in CONF_RULES.items():
         value = DEFAULTS[key] if (key not in conf and not from_dak) else conf.get(key)
@@ -484,9 +494,12 @@ with DAG(
     # does not need native rendering.
     render_template_as_native_obj=False,
     user_defined_macros={"mask_credential": mask_credential},  # used by credential_value(): hides client_id/secret on the Airflow UI
-    # One run at a time: runs for different hours write into the SAME result table (one table per source), and concurrent writes to one
-    # Delta table can conflict. Simple and safe; raise it only after the runs are split per result table.
-    max_active_runs=1,
+    # Runs in parallel since a request may have several tables (docs/key-access/YEU-CAU-TU-DAK-DEID-NHIEU-BANG.md): DAK triggers one run per
+    # source table, each with its OWN result table (OUTPUT_TABLE, DAK guarantees that no two runs of a request write the same one), all in the
+    # same OUTPUT_DB (the job creates it with CREATE DATABASE IF NOT EXISTS, so concurrent creation is fine). DAK also reruns only a table
+    # whose run has ended, and every request has its own OUTPUT_DB. Airflow only counts runs of the DAG, it cannot serialise runs of the SAME
+    # result table: keep that guarantee on the DAK side.
+    max_active_runs=MAX_ACTIVE_RUNS,
     tags=["deid", "dak"],
 ) as dag:
     validate = PythonOperator(task_id="validate_conf", python_callable=validate_conf)

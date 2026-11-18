@@ -338,10 +338,40 @@ class SpecTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 dag.check_conf(bad, dak_conf())
 
-    def test_only_one_run_at_a_time_because_runs_share_the_result_table(self):
+    def test_a_request_with_several_tables_has_one_run_per_table_with_a_t_suffix(self):
+        # docs/key-access/YEU-CAU-TU-DAK-DEID-NHIEU-BANG.md: deid-2026-000123-t1, ...-t2, and for a re-run ...-r2-t2.
+        for run_id in ("deid-2026-000123-t1", "deid-2026-000123-t50", "deid-2026-000123-r2-t2", "deid-2026-000123-r9-t50", "deid-2026-000123-r999-t999"):
+            dag.check_conf(run_id, dak_conf())
+            name = render(run_id, dak_conf())["metadata"]["name"]
+            self.assertEqual(name, run_id)
+            self.assertLessEqual(len(name) + len("-driver"), 63)  # the driver pod is named <SparkApplication>-driver
+            self.assertRegex(name, r"[a-z0-9]([-a-z0-9]*[a-z0-9])?")  # DNS-1123 label
+        for bad in ("deid-2026-000123-t", "deid-2026-000123-t1-r2", "deid-2026-000123-T1", "deid-2026-000123-t1-t2", "deid-2026-000123-t1000"):
+            with self.assertRaises(ValueError, msg=bad):
+                dag.check_conf(bad, dak_conf())
+
+    def test_the_runs_of_a_request_with_several_tables_write_one_database_and_one_table_each(self):
+        def table_conf(database, table, output_table):
+            conf = dak_conf(OUTPUT_DB="vtnet_team01_req_2026_000123", OUTPUT_TABLE=output_table)
+            conf.update(requestCode="REQ-2026-000123", database=database, table=table)
+            return conf
+
+        runs = [
+            ("deid-2026-000123-t1", table_conf("db_a", "t1", "db_a_t1")),
+            ("deid-2026-000123-t2", table_conf("db_b", "t1", "db_b_t1")),
+        ]
+        targets = set()
+        for run_id, conf in runs:
+            dag.check_conf(run_id, conf)
+            env = driver_env(render(run_id, conf))
+            targets.add((env["OUTPUT_DB"], env["OUTPUT_TABLE"]))
+        self.assertEqual(targets, {("vtnet_team01_req_2026_000123", "db_a_t1"), ("vtnet_team01_req_2026_000123", "db_b_t1")})
+
+    def test_runs_of_a_request_run_in_parallel_up_to_the_limit_of_the_dag(self):
         dag_kwargs = [r.kwargs for r in dag.recorded if "max_active_runs" in r.kwargs]
 
-        self.assertEqual(dag_kwargs[0]["max_active_runs"], 1)
+        self.assertEqual(dag_kwargs[0]["max_active_runs"], dag.MAX_ACTIVE_RUNS)
+        self.assertGreaterEqual(dag.MAX_ACTIVE_RUNS, 50)  # a request with 50 tables starts 50 runs: deid-<year>-<6 digits>-t50
 
     def test_an_env_missing_from_conf_gets_its_default(self):
         conf = dak_conf()

@@ -91,7 +91,7 @@ DAG kiểm đúng bảng này (tên, quy tắc khớp toàn bộ giá trị) và
 Điểm DAG cần DAK gửi đúng:
 
 - `conf` gồm `requestCode`, `database`, `table`, `pseudoColumns`, `keySecretName` và `env` (env **cuối cùng**, đã điền mặc định). Không có `outputDb`/`outputTable` riêng, DAG đọc `env.OUTPUT_DB` và `env.OUTPUT_TABLE`.
-- `dag_run_id` dạng `deid-<năm>-<6 số>`; run do DAK tạo **bắt buộc** có đủ `conf`, kể cả `OUTPUT_DB` và `OUTPUT_TABLE` trong `env`.
+- `dag_run_id` dạng `deid-<năm>-<6 số>[-r<n>][-t<n>]` (`-r<n>` chạy lại, `-t<n>` bảng thứ n của phiếu nhiều bảng); run do DAK tạo **bắt buộc** có đủ `conf`, kể cả `OUTPUT_DB` và `OUTPUT_TABLE` trong `env`.
 - DAG kiểm lại mọi giá trị ở task đầu `validate_conf` (cùng luật khoảng ngày/giờ ở hợp đồng 2.2). Sai thì dag run **failed ngay**, chưa tạo job.
 - Mọi giá trị trong `env` phải là **chuỗi** (số bị Kubernetes từ chối).
 
