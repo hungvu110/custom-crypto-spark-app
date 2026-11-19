@@ -26,7 +26,14 @@ public enum SilverDataset {
   EBS_3G_4G(SilverSource.VTNET, "ebs_3g_4g", false, true),
 
   /** Decrypt-encrypt: the whole file is decrypted when DAK has a key for the dataset; the request may list no column to encrypt. */
-  NIMS(SilverSource.VTNET, "nims", true, true);
+  NIMS(SilverSource.VTNET, "nims", true, true),
+
+  /**
+   * Decrypt-encrypt, whole days only: two datasets that share the sensitive columns {@code msisdn} and {@code imsi}, to test the global key
+   * (docs/silver-ingest/KICH-BAN-TEST-KEY-GLOBAL.md).
+   */
+  SUB_PROFILE(SilverSource.VTNET, "sub_profile", true, false),
+  SUB_USAGE(SilverSource.VTNET, "sub_usage", true, false);
 
   private final SilverSource source;
   private final String id;

@@ -278,6 +278,66 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     spark.table(s"silver.$table").select("msisdn", "imei", "start_time", "amount").orderBy("msisdn").collect()
       .map(r => (r.getString(0), r.getString(1), r.getString(2), r.getInt(3))).toSeq
 
+  it should "key global + file plain + DAK không có key by-path: hai dataset join được trên cột đã mã hoá khi keyField trùng" in {
+    val profile = dir("vtnet/gk-profile")
+    val usage = dir("vtnet/gk-usage")
+    write(profile.resolve("p.csv"), ("msisdn,imsi,region_code,full_name\n" +
+      "84961000001,452040000000001,HN,An\n" +
+      "84961000002,452040000000002,HCM,Binh\n" +
+      "84961000003,452040000000003,CT,Cuong\n" + // region_code khác bên usage: keyField khác thì cùng số cho ciphertext khác
+      "84961000004,452040000000004,HP,Dung\n").getBytes(UTF_8))
+    write(usage.resolve("u.csv"), ("msisdn,imsi,region_code,data_mb\n" +
+      "84961000001,452040000000001,HN,100\n" +
+      "84961000001,452040000000001,HN,50\n" +
+      "84961000002,452040000000002,HCM,200\n" +
+      "84961000003,452040000000003,HCM,300\n" +
+      "84961000009,452040000000009,DN,10\n").getBytes(UTF_8))
+    val noPathKey = new StubPathKeys(_ => PathKeyResult.NotAvailable) // DAK không có key by-path: file plain, đọc nguyên trạng
+    val global = new StubColumnKeys(Map("msisdn" -> "k-global", "imsi" -> "k-global", "full_name" -> "k-global"))
+    def env(in: Path, table: String, columns: String) =
+      vtnetEnv(in, table, "CDR_ENCRYPT_COLUMNS" -> columns, "CDR_KEY_FIELD" -> "region_code", "GLOBAL_KEY_ZONE" -> "khach_hang") - "INPUT_SCHEMA"
+
+    vtnet(env(profile, "gk_profile", "msisdn,imsi,full_name"), noPathKey, global) shouldBe SilverApp.ExitOk
+    vtnet(env(usage, "gk_usage", "msisdn,imsi"), noPathKey, global) shouldBe SilverApp.ExitOk
+
+    noPathKey.calls.get() shouldBe 2 // mỗi dataset hỏi by-path một lần, không có key thì không giải mã cả file
+    val p = spark.table("silver.gk_profile")
+    val u = spark.table("silver.gk_usage")
+    p.select("msisdn").collect().map(_.getString(0)) should not contain "84961000001" // cột đã mã hoá, không còn plaintext
+    // Đọc lại được bằng đúng key global + keyField.
+    val cfg = CdrCrypto.loadConfig("silver.gk_profile", "region_code", Seq("msisdn", "imsi", "full_name"), KeyIntent.Decrypt, global)
+    CdrCrypto.decryptColumns(p, cfg).select("msisdn").collect().map(_.getString(0)).sorted shouldBe
+      Array("84961000001", "84961000002", "84961000003", "84961000004")
+    // Join trên cột ĐÃ mã hoá: 84961000001 (2 dòng usage) + 84961000002; 84961000003 KHÔNG khớp vì region_code (keyField) khác nhau.
+    p.join(u, Seq("msisdn")).count() shouldBe 3
+    p.join(u, Seq("imsi")).count() shouldBe 3
+    // Khoá global khác (hoặc không dùng chung) thì không join được dòng nào.
+    val other = new StubColumnKeys(Map("msisdn" -> "k-other", "imsi" -> "k-other"))
+    vtnet(env(usage, "gk_usage_other", "msisdn,imsi"), noPathKey, other) shouldBe SilverApp.ExitOk
+    p.join(spark.table("silver.gk_usage_other"), Seq("msisdn")).count() shouldBe 0
+  }
+
+  it should "dữ liệu mẫu của docs/silver-ingest/KICH-BAN-TEST-KEY-GLOBAL.md: join trên cột mã hoá cho 5 dòng, anti join 3 dòng" in {
+    val sample = Path.of("../docs/silver-ingest/sample-data/global-key").toAbsolutePath.normalize()
+    val noPathKey = new StubPathKeys(_ => PathKeyResult.NotAvailable)
+    val global = new StubColumnKeys(Map("msisdn" -> "k-global", "imsi" -> "k-global", "full_name" -> "k-global", "id_number" -> "k-global"))
+    def run(dataset: String, table: String, columns: String): Int =
+      vtnet(vtnetEnv(sample.resolve(s"$dataset/dt=20261020"), table, "CDR_ENCRYPT_COLUMNS" -> columns, "CDR_KEY_FIELD" -> "region_code",
+        "GLOBAL_KEY_ZONE" -> "key_hla", "KEY_PATH" -> dataset) - "INPUT_SCHEMA", noPathKey, global)
+
+    run("sub_profile", "doc_sub_profile", "msisdn,imsi,full_name,id_number") shouldBe SilverApp.ExitOk
+    run("sub_usage", "doc_sub_usage", "msisdn,imsi") shouldBe SilverApp.ExitOk
+
+    val p = spark.table("silver.doc_sub_profile")
+    val u = spark.table("silver.doc_sub_usage")
+    p.count() shouldBe 7
+    u.count() shouldBe 8
+    p.filter("msisdn LIKE '8496%'").count() shouldBe 0
+    p.join(u, Seq("msisdn")).count() shouldBe 5
+    p.join(u, Seq("imsi")).count() shouldBe 5
+    p.join(u, Seq("msisdn"), "left_anti").count() shouldBe 3
+  }
+
   it should "có GLOBAL_KEY_ZONE: mọi cột mã hoá bằng cùng một key global, đọc lại được bằng đúng key đó" in {
     val in = dir("vtnet/global-key")
     write(in.resolve("a.csv.enc"), encrypted(csv(csvRows)))

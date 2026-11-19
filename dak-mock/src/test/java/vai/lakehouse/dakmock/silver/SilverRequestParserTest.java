@@ -183,8 +183,11 @@ class SilverRequestParserTest {
     assertThat(SilverRequestParser.isHourly("5 * * * *")).isTrue();
     assertThat(SilverRequestParser.isHourly("5 3 * * *")).isFalse();
     for (SilverDataset dataset : SilverDataset.values()) {
-      // Only the datasets with an hour_glob in their DAG file can run hourly; VTT's hour is a column of the data (hour_column), not a path.
-      assertThat(dataset.supportsHours()).as(dataset.id()).isEqualTo(dataset != SilverDataset.F001_MPRE_CALL);
+      // Only the datasets with an hour_glob in their DAG file can run hourly; VTT's hour is a column of the data (hour_column), not a path, and
+      // the global key test datasets (sub_profile, sub_usage) have only the day folder.
+      boolean daysOnly = dataset == SilverDataset.F001_MPRE_CALL || dataset == SilverDataset.SUB_PROFILE
+          || dataset == SilverDataset.SUB_USAGE;
+      assertThat(dataset.supportsHours()).as(dataset.id()).isEqualTo(!daysOnly);
     }
     for (ObjectNode request : List.of(nims(), ebs())) {
       assertThat(SilverRequestParser.parse(request.deepCopy().put("cron", "5 * * * *")).cron()).isEqualTo("5 * * * *");

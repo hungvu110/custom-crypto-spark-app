@@ -50,6 +50,10 @@ PENDING_WAIT = {"timeout": 7200, "initial": 30, "max_interval": 600, "multiplier
 DATASETS = {
     "ebs_3g_4g": {"mode": "passthrough", "hour_glob": "batch=%H%*", "partition_by_hour": True},
     "nims": {"mode": "decrypt-encrypt", "hour_glob": "batch=*/infra_cell_4g-%H%*"},
+    # Two datasets that share sensitive columns (msisdn, imsi) to test the GLOBAL key (docs/silver-ingest/KICH-BAN-TEST-KEY-GLOBAL.md): whole
+    # days only, plain CSV files, DAK has no by-path key for them (the files are read as they are) and the requests choose the same zone.
+    "sub_profile": {"mode": "decrypt-encrypt"},
+    "sub_usage": {"mode": "decrypt-encrypt"},
 }
 
 # Settings shared by every dataset. ASSUMPTION: adjust to the real VTNET data (format, schema, target database).
