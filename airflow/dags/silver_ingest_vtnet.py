@@ -35,10 +35,8 @@ import silver_ingest_factory as factory  # noqa: E402
 # Landing root shared by every VTNET dataset (ASSUMPTION, adjust to the cluster). INPUT_PATH = INPUT_ROOT + <dataset>/dt=<day>.
 INPUT_ROOT = f"{common.HDFS}/prod8/landing/vtnet/"
 
-# Wait for the DAK admin to approve the column key request (by-column answers PENDING): first poll after `initial` seconds, each next one
-# multiplied by `multiplier`, at most `max_interval` seconds apart, give up after `timeout` seconds (job exits with 5). While waiting, the
-# driver and the executors keep their resources.
-PENDING_WAIT = {"timeout": 7200, "initial": 30, "max_interval": 600, "multiplier": 2}
+# Wait for the DAK admin to approve the column key request: the same for every source, see common.PENDING_WAIT.
+PENDING_WAIT = common.PENDING_WAIT
 
 # The datasets of VTNET, one DAG each. Everything that is specific to a dataset is in ITS entry below, nowhere else: the keys (mode, hour_glob,
 # partition_by_hour, key_path, resources) are described, and checked when this file is parsed, in common.DATASET_KEYS. ASSUMPTION: adjust to
@@ -85,68 +83,12 @@ def dak_env(slug, config):
             "value": ",".join(config.get("encryptColumns") or []),
         },
         {"name": "CDR_KEY_FIELD", "value": config.get("keyField") or ""},
-        {"name": "CRYPTO_PREFIX_SOURCE", "value": "dak"},
-        # Currently points to dak-mock (HTTP, same namespace). With the real DAK: https://<dak> and REMOVE DAK_ALLOW_INSECURE_HTTP.
-        {
-            "name": "DAK_ADDR",
-            "value": "http://dak-api.lakehouse-database.svc.cluster.local:8080",
-        },
-        {"name": "DAK_ALLOW_INSECURE_HTTP", "value": "true"},
-        {
-            "name": "DAK_TOKEN_URL",
-            "value": "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token",
-        },
-        # ASSUMPTION - the real internal client id (dak-mock: "kind: internal").
-        {"name": "DAK_CLIENT_ID", "value": "sa-vlp-datalake-test"},
-        {
-            "name": "DAK_CLIENT_SECRET",
-            "valueFrom": {
-                "secretKeyRef": {
-                    "name": "spark-dak-client",
-                    "key": "clientSecret",
-                }
-            },
-        },
-        # An internal client MUST send tag=internal.
-        {"name": "DAK_TAG", "value": "internal"},
-        {"name": "DAK_CALLER", "value": f"silver-ingest-vtnet-{slug}"},
-        {
-            "name": "DAK_PENDING_WAIT_TIMEOUT_SECONDS",
-            "value": str(PENDING_WAIT["timeout"]),
-        },
-        {
-            "name": "DAK_PENDING_WAIT_INITIAL_SECONDS",
-            "value": str(PENDING_WAIT["initial"]),
-        },
-        {
-            "name": "DAK_PENDING_WAIT_MAX_INTERVAL_SECONDS",
-            "value": str(PENDING_WAIT["max_interval"]),
-        },
-        {
-            "name": "DAK_PENDING_WAIT_MULTIPLIER",
-            "value": str(PENDING_WAIT["multiplier"]),
-        },
-    ]
-
-
-# Identity of the audit log of cdr_encrypt (docs/cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md section 2.2/2.4). tenant/workspace/team are those of
-# the namespace vlp-<tenant>-<workspace>-<team> (the same tenant as DAK_TOKEN_URL). ASSUMPTION: adjust to the real namespace.
-AUDIT_TENANT = "tenantw1xjixm"
-AUDIT_WORKSPACE = "wsw7vtwvi"
-AUDIT_TEAM = "teamtscauiy"
+    ] + common.dak_connection_env(f"silver-ingest-vtnet-{slug}")
 
 
 def audit_conf(slug):
-    """spark.cdrcrypto.audit.* of the driver: one `CDR_AUDIT {json}` line per query that encrypts a column, written to the pod log (logger
-    vai.lakehouse.cdrcrypto.audit in silver-ingest-app/src/main/resources/log4j2.properties). engineId = the job (it has no sql-engine id)."""
-    return {
-        "spark.cdrcrypto.audit.enabled": "true",
-        "spark.cdrcrypto.audit.sinks": "log",
-        "spark.cdrcrypto.audit.tenant": AUDIT_TENANT,
-        "spark.cdrcrypto.audit.workspace": AUDIT_WORKSPACE,
-        "spark.cdrcrypto.audit.team": AUDIT_TEAM,
-        "spark.cdrcrypto.audit.engineId": f"silver-ingest-vtnet-{slug}",
-    }
+    """spark.cdrcrypto.audit.* of the driver (see common.audit_conf): the engine is the job of this dataset."""
+    return common.audit_conf(f"silver-ingest-vtnet-{slug}")
 
 
 def source_for(dataset, settings, config=None):

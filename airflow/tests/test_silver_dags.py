@@ -69,7 +69,8 @@ def load(name, variables=None):
     sys.modules["airflow.models"].Variable = _Variable
     sys.modules["airflow.operators.python"].PythonOperator = _Recorder
     sys.modules["airflow.providers.cncf.kubernetes.operators.spark_kubernetes"].SparkKubernetesOperator = _Recorder
-    sys.modules["pendulum"].datetime = lambda *args, **kwargs: None
+    # The DAG gets what pendulum.datetime was called with, so a test can see the start_date.
+    sys.modules["pendulum"].datetime = lambda *args, **kwargs: ("pendulum.datetime", args, kwargs)
     sys.path.insert(0, str(DAGS))
     try:
         _Recorder.instances = []
@@ -106,6 +107,7 @@ def _dags_of(module):
 NIMS_ID = "silver_ingest_vtnet_nims"
 EBS_ID = "silver_ingest_vtnet_ebs_3g_4g"
 VTT_ID = "silver_ingest_vtt_f001_mpre_call"
+VTT_PASS_ID = "silver_ingest_vtt_d_os_type"  # a reference table of VTT: nothing to protect, so a passthrough
 
 NIMS_CONFIG = {
     "ticket": "SLV-2026-000001",
@@ -122,7 +124,9 @@ NIMS_ENCRYPTING_CONFIG = {
     "keyField": "eci",
 }
 EBS_CONFIG = {"ticket": "SLV-2026-000002", "table": "vtnet_ebs_3g_4g", "cron": "30 2 * * *"}
-VTT_CONFIG = {"ticket": "SLV-2026-000004", "table": "vtt_f001_mpre_call", "cron": "30 1 * * *"}
+# f001 encrypts calling_number with the global key of a zone: its request carries globalKey/globalZone.
+VTT_CONFIG = {"ticket": "SLV-2026-000004", "table": "vtt_f001_mpre_call", "cron": "30 1 * * *", "globalKey": True, "globalZone": "vtt"}
+VTT_PASS_CONFIG = {"ticket": "SLV-2026-000005", "table": "vtt_d_os_type", "cron": "40 1 * * *"}
 
 
 def variables(configs):
@@ -130,7 +134,7 @@ def variables(configs):
     return {name: config if isinstance(config, str) else json.dumps(config) for name, config in configs.items()}
 
 
-vtt_module = load("silver_ingest_vtt", variables({VTT_ID: VTT_CONFIG}))
+vtt_module = load("silver_ingest_vtt", variables({VTT_ID: VTT_CONFIG, VTT_PASS_ID: VTT_PASS_CONFIG}))
 vtnet_module = load("silver_ingest_vtnet", variables({NIMS_ID: NIMS_CONFIG, EBS_ID: EBS_CONFIG}))
 encrypting_module = load("silver_ingest_vtnet", variables({NIMS_ID: NIMS_ENCRYPTING_CONFIG, EBS_ID: EBS_CONFIG}))
 unscheduled_vtnet = load("silver_ingest_vtnet", {})
@@ -141,6 +145,7 @@ common = vtt_module.common
 _VTT = _dags_of(vtt_module)
 _VTNET = _dags_of(vtnet_module)
 VTT = _VTT[VTT_ID]
+VTT_PASS = _VTT[VTT_PASS_ID]
 EBS = _VTNET[EBS_ID]
 NIMS = _VTNET[NIMS_ID]
 NIMS_ENC = _dags_of(encrypting_module)[NIMS_ID]
@@ -178,6 +183,10 @@ def render(dag, conf=None, run_id="scheduled__2026-10-27T03:00:00", interval_sta
         "input_path": common.input_path,
         "run_date": common.run_date,
         "batch_hours": common.batch_hours,
+        "batch_value": common.batch_value,
+        "bulk_from": common.bulk_from,
+        "bulk_to": common.bulk_to,
+        "bulk_missing_days": common.bulk_missing_days,
         "data_interval_start": interval_start,
     }
 
@@ -348,7 +357,7 @@ class GlobalKeyTest(unittest.TestCase):
                 common.check_schedule_config(NIMS.SOURCE, config)
 
     def test_a_dataset_that_encrypts_no_column_does_not_accept_a_global_key(self):
-        for source, config in ((EBS.SOURCE, EBS_CONFIG), (VTT.SOURCE, VTT_CONFIG)):
+        for source, config in ((EBS.SOURCE, EBS_CONFIG), (VTT_PASS.SOURCE, VTT_PASS_CONFIG)):
             with self.assertRaises(ValueError, msg=source["name"]):
                 common.check_schedule_config(source, {**config, "globalKey": True, "globalZone": "khach_hang"})
 
@@ -439,6 +448,7 @@ class ScheduleTest(unittest.TestCase):
     def test_one_run_at_a_time_no_backfill_and_plain_rendering(self):
         for dag in ALL_DAGS:
             self.assertEqual(dag.kwargs["max_active_runs"], 1)
+            # No backfill when a request is approved: a range of days is a bulk load that is asked for (conf fromDate/toDate, test_silver_vtt.py).
             self.assertIs(dag.kwargs["catchup"], False)
             self.assertIs(dag.kwargs["is_paused_upon_creation"], False)
             self.assertIs(dag.kwargs["render_template_as_native_obj"], False)
@@ -449,9 +459,11 @@ class ScheduleTest(unittest.TestCase):
 class SpecTest(unittest.TestCase):
     def test_each_mode_runs_its_own_main_class(self):
         passthrough = "vai.lakehouse.silveringest.app.PassthroughSilverApp"
-        self.assertEqual(render(VTT)["spec"]["mainClass"], passthrough)
+        decrypt_encrypt = "vai.lakehouse.silveringest.app.DecryptEncryptSilverApp"
+        self.assertEqual(render(VTT_PASS)["spec"]["mainClass"], passthrough)
         self.assertEqual(render(EBS)["spec"]["mainClass"], passthrough)
-        self.assertEqual(render(NIMS)["spec"]["mainClass"], "vai.lakehouse.silveringest.app.DecryptEncryptSilverApp")
+        self.assertEqual(render(NIMS)["spec"]["mainClass"], decrypt_encrypt)
+        self.assertEqual(render(VTT)["spec"]["mainClass"], decrypt_encrypt)  # f001 encrypts calling_number (docs/silver-ingest/TRANSFORM-...)
 
     def test_a_run_ingests_the_folder_of_its_day_into_the_partition_of_that_day(self):
         for dag, root, folder, table in (
@@ -492,7 +504,7 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(env["CRYPTO_PREFIX_SOURCE"], "dak")  # DAK is still needed for by-path
 
     def test_passthrough_dags_have_no_dak_or_decrypt_env(self):
-        for dag in (VTT, EBS):
+        for dag in (VTT_PASS, EBS):
             names = set(driver_env(render(dag)))
             self.assertFalse({n for n in names if n.startswith(("DAK_", "CDR_", "FILE_", "KEY_", "CRYPTO_"))}, dag.DAG_ID)
 
@@ -553,7 +565,7 @@ class SpecTest(unittest.TestCase):
         self.assertNotIn("initContainers", spec["executor"])
 
     def test_passthrough_dags_do_not_call_keycloak_so_they_have_no_hostalias_truststore_or_volumes(self):
-        for dag in (VTT, EBS):
+        for dag in (VTT_PASS, EBS):
             spec = render(dag)["spec"]
 
             self.assertNotIn("hostAliases", spec["driver"], dag.DAG_ID)
@@ -596,7 +608,8 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(conf["spark.cdrcrypto.audit.team"], "teamtscauiy")
         self.assertEqual(conf["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
         self.assertEqual(render(NIMS)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
-        for dag in (VTT, EBS):  # no cdr_encrypt here: nothing to audit
+        self.assertEqual(render(VTT)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtt-f001-mpre-call")
+        for dag in (VTT_PASS, EBS):  # no cdr_encrypt here: nothing to audit
             keys = render(dag)["spec"]["sparkConf"].keys()
             self.assertFalse([k for k in keys if k.startswith("spark.cdrcrypto.audit")])
 
@@ -727,7 +740,8 @@ class HourColumnTest(unittest.TestCase):
 
     def test_the_table_is_partitioned_by_day_only_when_partition_by_hour_is_off(self):
         source = {**VTT.SOURCE, "partition_by_hour": False}
-        env = {item["name"]: item["value"] for item in common.build_spec(source)["spec"]["driver"]["env"]}
+        # f001 now calls DAK: its client secret is a reference (valueFrom), not a value.
+        env = {item["name"]: item.get("value") for item in common.build_spec(source)["spec"]["driver"]["env"]}
         self.assertEqual(env["HOUR_FROM_COLUMN"], "hour_id")
         self.assertNotIn("OUTPUT_PARTITION_BY", env)
 

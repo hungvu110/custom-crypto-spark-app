@@ -76,9 +76,25 @@ def make_validator(source, problem):
     return validate_conf
 
 
+def schedule_of(source):
+    """The schedule of the DAG of a dataset: the cron of its approved request, or None (no request, or a dataset that is not `periodic`: it then has
+    no schedule at all, whatever the request says, and only runs by hand)."""
+
+    config = source["fixed"]
+    if not config or not source.get("periodic", True):
+        return None
+    return config["cron"]
+
+
 def build_dag(dag_id, source, prefix, mode, problem):
     config = source["fixed"]
-    if config:
+    schedule = schedule_of(source)
+    if config and schedule is None:
+        doc = (
+            f"Approved request {config['ticket']}: table {config['table']}. This dataset is not loaded on a schedule: it only runs by hand "
+            "(conf date, a bulk load fromDate/toDate, or silver_ingest_backfill)."
+        )
+    elif config:
         doc = f"Approved request {config['ticket']}: table {config['table']}, cron `{config['cron']}` ({common.RUN_TIMEZONE}), each run ingests the {common.schedule_unit(config['cron'])} before."
     elif problem:
         doc = f"The settings in the Airflow Variable are not used ({problem}); this DAG has no schedule."
@@ -88,9 +104,11 @@ def build_dag(dag_id, source, prefix, mode, problem):
         dag_id,
         description=f"Daily load of the files of one {prefix.upper()} dataset ({mode}) into the demo database",
         doc_md=doc,
-        schedule=config["cron"] if config else None,  # the cron of the approved request
+        schedule=schedule,  # the cron of the approved request (None: no request, or a dataset that is not periodic)
         start_date=pendulum.datetime(2026, 1, 1, tz=common.RUN_TIMEZONE),
-        catchup=False,  # no backfill when a request is approved; silver_ingest_backfill.py runs a range of days or hours
+        # No catch-up when a request is approved or a DAG is switched on, so what was already run (or tested) is never run again by surprise. A
+        # range of days is asked for: a bulk load (conf fromDate/toDate), or silver_ingest_backfill.py for one run per day.
+        catchup=False,
         # MUST be False: native rendering turns "2" into 2 and Kubernetes answers 422 (an env value must be a string).
         render_template_as_native_obj=False,
         user_defined_macros={
@@ -98,6 +116,10 @@ def build_dag(dag_id, source, prefix, mode, problem):
             "input_path": common.input_path,
             "run_date": common.run_date,
             "batch_hours": common.batch_hours,
+            "batch_value": common.batch_value,
+            "bulk_from": common.bulk_from,
+            "bulk_to": common.bulk_to,
+            "bulk_missing_days": common.bulk_missing_days,
         },
         max_active_runs=1,  # a day is ingested once at a time
         is_paused_upon_creation=False,

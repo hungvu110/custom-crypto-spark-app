@@ -47,12 +47,68 @@ JARS = ("local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/cdr-c
 
 # Ingest modes of the Spark app (entry points of silver-ingest-app): the DAG of a dataset picks the one that fits its data.
 #   passthrough:     read the files and write the table as they are, no DAK call.
-#   decrypt-encrypt: DAK by-path key present -> decrypt the whole file (absent -> read as it is), then encrypt the requested columns
-#                    with cdr-crypto (none requested -> columns are written as they are), then write the table.
+#   decrypt-encrypt: decrypt the data of the provider (DECRYPT_MODE: file = the whole file with the DAK by-path key, column = the columns that
+#                    the provider encrypted, with the by-path prefix and cdr-crypto, none = nothing), group some columns (COLUMN_TRANSFORMS),
+#                    then encrypt the requested columns with cdr-crypto (none requested -> written as they are), then write the table.
 MODES = {
     "passthrough": "vai.lakehouse.silveringest.app.PassthroughSilverApp",
     "decrypt-encrypt": "vai.lakehouse.silveringest.app.DecryptEncryptSilverApp",
 }
+
+# Wait for the DAK admin to approve the column key request (by-column answers PENDING): first poll after `initial` seconds, each next one
+# multiplied by `multiplier`, at most `max_interval` seconds apart, give up after `timeout` seconds (job exits with 5). While waiting, the
+# driver and the executors keep their resources.
+PENDING_WAIT = {"timeout": 7200, "initial": 30, "max_interval": 600, "multiplier": 2}
+
+
+def dak_connection_env(caller):
+    """Driver env of the key source: DAK (by-path, by-column and the global key), INTERNAL client; only the driver needs it. `caller` = the
+    DAK_CALLER of the job (the DAG file of a source names it, e.g. silver-ingest-vtt-f014-mpre-tot-charge-d)."""
+
+    return [
+        {"name": "CRYPTO_PREFIX_SOURCE", "value": "dak"},
+        # Currently points to dak-mock (HTTP, same namespace). With the real DAK: https://<dak> and REMOVE DAK_ALLOW_INSECURE_HTTP.
+        {"name": "DAK_ADDR", "value": "http://dak-api.lakehouse-database.svc.cluster.local:8080"},
+        {"name": "DAK_ALLOW_INSECURE_HTTP", "value": "true"},
+        {
+            "name": "DAK_TOKEN_URL",
+            "value": "https://sso-lakehouse.cyberspace.vn/realms/vlp-tenantw1xjixm/protocol/openid-connect/token",
+        },
+        # ASSUMPTION - the real internal client id (dak-mock: "kind: internal").
+        {"name": "DAK_CLIENT_ID", "value": "sa-vlp-datalake-test"},
+        {
+            "name": "DAK_CLIENT_SECRET",
+            "valueFrom": {"secretKeyRef": {"name": "spark-dak-client", "key": "clientSecret"}},
+        },
+        # An internal client MUST send tag=internal.
+        {"name": "DAK_TAG", "value": "internal"},
+        {"name": "DAK_CALLER", "value": caller},
+        {"name": "DAK_PENDING_WAIT_TIMEOUT_SECONDS", "value": str(PENDING_WAIT["timeout"])},
+        {"name": "DAK_PENDING_WAIT_INITIAL_SECONDS", "value": str(PENDING_WAIT["initial"])},
+        {"name": "DAK_PENDING_WAIT_MAX_INTERVAL_SECONDS", "value": str(PENDING_WAIT["max_interval"])},
+        {"name": "DAK_PENDING_WAIT_MULTIPLIER", "value": str(PENDING_WAIT["multiplier"])},
+    ]
+
+
+# Identity of the audit log of cdr_encrypt (docs/cdr-crypto/CDR_CRYPTO_SQL_ENGINE_GUIDE.md section 2.2/2.4). tenant/workspace/team are those of
+# the namespace vlp-<tenant>-<workspace>-<team> (the same tenant as DAK_TOKEN_URL). ASSUMPTION: adjust to the real namespace.
+AUDIT_TENANT = "tenantw1xjixm"
+AUDIT_WORKSPACE = "wsw7vtwvi"
+AUDIT_TEAM = "teamtscauiy"
+
+
+def audit_conf(engine_id):
+    """spark.cdrcrypto.audit.* of the driver: one `CDR_AUDIT {json}` line per query that encrypts a column, written to the pod log (logger
+    vai.lakehouse.cdrcrypto.audit in silver-ingest-app/src/main/resources/log4j2.properties). engineId = the job (it has no sql-engine id)."""
+
+    return {
+        "spark.cdrcrypto.audit.enabled": "true",
+        "spark.cdrcrypto.audit.sinks": "log",
+        "spark.cdrcrypto.audit.tenant": AUDIT_TENANT,
+        "spark.cdrcrypto.audit.workspace": AUDIT_WORKSPACE,
+        "spark.cdrcrypto.audit.team": AUDIT_TEAM,
+        "spark.cdrcrypto.audit.engineId": engine_id,
+    }
 
 # Time zone of the schedule (the daily run time on the request is local time) and of the day that a run ingests.
 RUN_TIMEZONE = "Asia/Ho_Chi_Minh"
@@ -89,6 +145,8 @@ def hours_of(conf, interval_start=None, unit="day"):
     """
 
     conf = conf or {}
+    if is_bulk(conf):
+        return []  # a bulk load loads whole days
     if "fromHour" in conf:
         first = int(conf["fromHour"])
         last = int(conf.get("toHour", first))
@@ -108,6 +166,8 @@ def input_path(prefix, hour_glob, unit, conf, interval_start):
     """INPUT_PATH of a run. `prefix` = `<root><dataset>/<day folder>=`; the whole day folder, or only the folders/files of the hours of the
     run (see hours_of; `unit` = schedule_unit of the cron of the dataset)."""
 
+    if is_bulk(conf):
+        return f"{prefix}{BULK_DAY_TOKEN}"  # the job puts each day of the range in the place of the token
     day = run_date(conf, interval_start)
     hours = hours_of(conf, interval_start, unit)
     if not hours:
@@ -123,6 +183,49 @@ def batch_hours(unit, conf, interval_start):
     """
 
     return ",".join(hours_of(conf, interval_start, unit))
+
+
+# ---------------------------------------------------------------- BULK LOAD
+# A BULK LOAD is ONE run of the DAG of a dataset that loads many days (conf {"fromDate": ..., "toDate": ...}): the job (env BULK_FROM, BULK_TO)
+# takes the days one after the other in ONE Spark session, each into the partition dt of that day. A day that is already loaded (a test run, an
+# earlier load) is replaced, never written twice, and the days outside the range are not touched, so it does not matter what was run before.
+# A day that fails stops the load there (the days before it are loaded; run again from that day). conf.missingDays "skip" skips a day without files.
+BULK_DAY_TOKEN = "%DAY%"  # the place of the day in INPUT_PATH: the job replaces it
+MAX_BULK_DAYS = 62  # the same limit as the job (silver-ingest-app BulkLoad.MaxDays)
+MISSING_DAYS = ("fail", "skip")
+BULK_KEYS = ("fromDate", "toDate", "missingDays")
+
+
+def is_bulk(conf):
+    """True when the run is a bulk load: conf.fromDate (check_conf makes sure that toDate and missingDays come with it)."""
+
+    return "fromDate" in (conf or {})
+
+
+def bulk_from(conf):
+    """Value of BULK_FROM: the first day, "" when the run is not a bulk load."""
+
+    return (conf or {}).get("fromDate", "")
+
+
+def bulk_to(conf):
+    """Value of BULK_TO: the last day (the first one when conf.toDate is missing), "" when the run is not a bulk load."""
+
+    conf = conf or {}
+    return conf.get("toDate", conf["fromDate"]) if is_bulk(conf) else ""
+
+
+def bulk_missing_days(conf):
+    """Value of BULK_MISSING_DAY: what the job does with a day that has no files ("fail" by default), "" when the run is not a bulk load."""
+
+    conf = conf or {}
+    return conf.get("missingDays", "fail") if is_bulk(conf) else ""
+
+
+def batch_value(conf, interval_start):
+    """Value of BATCH_VALUE: the day of the run, "" for a bulk load (the job takes the batch of each day from the day itself)."""
+
+    return "" if is_bulk(conf) else run_date(conf, interval_start)
 
 
 def hour_regex(hour_glob):
@@ -159,7 +262,7 @@ TICKET = re.compile(r"SLV-\d{4}-\d{6}")
 GLOBAL_ZONE = re.compile(r"[a-z0-9_]{1,64}")
 RUN_DATE_VALUE = re.compile(r"\d{8}")
 # Keys of the conf of a manual run of a dataset DAG (check_conf).
-CONF_KEYS = ("date", "fromHour", "toHour")
+CONF_KEYS = ("date", "fromHour", "toHour", "fromDate", "toDate", "missingDays")
 MAX_COLUMNS = 100
 
 
@@ -200,19 +303,24 @@ def check_columns(conf):
         )
 
 
-def check_global_key(config):
+def check_global_key(config, needs_columns=True, required=False):
     """globalKey / globalZone (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md §1): DAK writes them ONLY when the request uses a global key, so
     the pair is optional but all-or-nothing. globalKey is always the boolean true (DAK never sends false) and globalZone a zone name; the
-    columns to encrypt must not be empty (DAK blocks that when the request is submitted, checked here too)."""
+    columns to encrypt must not be empty (DAK blocks that when the request is submitted, checked here too).
+
+    `needs_columns=False`: the columns are fixed by the dataset (`encrypt_columns` in DATASETS), not chosen by the request, so the request does
+    not carry them. `required=True`: the dataset ALWAYS encrypts with the global key of a zone, so the pair must be there."""
 
     if "globalKey" not in config and "globalZone" not in config:
+        if required:
+            raise ValueError("schedule config globalKey and globalZone are required (this dataset encrypts its columns with the global key of a zone)")
         return
     if config.get("globalKey") is not True:
         raise ValueError("schedule config globalKey must be true (omit it to use the per-column keys)")
     zone = config.get("globalZone")
     if not isinstance(zone, str) or not GLOBAL_ZONE.fullmatch(zone):
         raise ValueError("schedule config globalZone is missing or malformed (lowercase letters, digits, '_', up to 64)")
-    if not config.get("encryptColumns"):
+    if needs_columns and not config.get("encryptColumns"):
         raise ValueError("schedule config globalKey needs a non-empty encryptColumns (the columns that the global key encrypts)")
 
 
@@ -254,6 +362,8 @@ def check_schedule_config(source, config):
     if source.get("encrypts_columns"):
         check_columns(config)
         check_global_key(config)
+    elif source.get("requires_global_key"):
+        check_global_key(config, needs_columns=False, required=True)
 
 
 def check_date(value, name):
@@ -295,6 +405,30 @@ def check_hours(conf):
     return bounds[0], bounds[1]
 
 
+def check_bulk(source, conf):
+    """conf of a bulk load: fromDate (a real date yyyyMMdd), optional toDate (default fromDate, not before it, at most MAX_BULK_DAYS days in all)
+    and missingDays ("fail" or "skip"). Not together with `date` or the hours (a bulk load loads whole days), and the request must write with
+    overwrite-partitions so that a day that is already loaded is replaced. Messages never repeat the received value."""
+
+    if "fromDate" not in conf:
+        raise ValueError("conf.toDate and conf.missingDays need conf.fromDate (the first day of the bulk load)")
+    for key in ("date", "fromHour", "toHour"):
+        if key in conf:
+            raise ValueError(f"a bulk load loads whole days: conf.{key} cannot be used with conf.fromDate")
+    check_date(conf["fromDate"], "conf.fromDate")
+    check_date(conf.get("toDate", conf["fromDate"]), "conf.toDate")
+    first = datetime.datetime.strptime(conf["fromDate"], "%Y%m%d").date()
+    last = datetime.datetime.strptime(conf.get("toDate", conf["fromDate"]), "%Y%m%d").date()
+    if first > last:
+        raise ValueError("conf.fromDate must not be after conf.toDate")
+    if (last - first).days + 1 > MAX_BULK_DAYS:
+        raise ValueError(f"a bulk load covers at most {MAX_BULK_DAYS} days: split it into several runs")
+    if conf.get("missingDays", "fail") not in MISSING_DAYS:
+        raise ValueError(f"conf.missingDays must be one of {', '.join(MISSING_DAYS)}")
+    if (source.get("fixed") or {}).get("outputMode") == "append":
+        raise ValueError("a bulk load needs the output mode overwrite-partitions: a day that is already loaded must be replaced, not appended")
+
+
 def check_conf(source, conf):
     """Run conf of a DAG, for a manual run: an optional `date` (yyyyMMdd, a real date) to ingest another day, and `fromHour`/`toHour` to
     ingest only some hours of that day (needs `date`, and a dataset with an `hour_glob`); raise ValueError when it is invalid.
@@ -308,6 +442,9 @@ def check_conf(source, conf):
     unknown = set(conf) - set(source["conf_keys"])
     if unknown:
         raise ValueError(f"conf has keys that are not accepted (only {', '.join(source['conf_keys'])} are accepted)")
+    if any(key in conf for key in BULK_KEYS):
+        check_bulk(source, conf)
+        return
     if "date" in conf:
         check_date(conf["date"], "conf.date")
     if check_hours(conf) is not None:
@@ -458,8 +595,30 @@ rm -f {TRUSTSTORE_DIR}/ca-*.pem
 #                                ordinary column (small datasets, no 24 tiny partitions a day). Needs hour_glob or hour_column.
 #   key_path           optional  decrypt-encrypt only: the path asked from DAK by-path, one key for the whole dataset (default: the dataset).
 #   resources          optional  Spark resources of the job of this dataset, any of the keys of RESOURCE_DEFAULTS (the rest keep the default).
-DATASET_KEYS = ("mode", "hour_glob", "hour_column", "partition_by_hour", "key_path", "resources")
+# The settings below are for the decrypt-encrypt mode only and fix, per dataset, what the job does with the data of a provider that encrypts
+# column by column (docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md section 3). They become env of the job (see dataset_job_env):
+#   decrypt_mode       optional  file (default: the whole file, with the by-path key), column (the columns of `provider_decrypt`, with the by-path
+#                                key as the prefix) or none (nothing is decrypted, DAK by-path is never called).
+#   provider_decrypt   column    {"columns": [...], "key_field": "..."}: the columns that the provider encrypted and the plaintext column of the
+#                                provider that completes the key of each row. Required with decrypt_mode column, not allowed otherwise.
+#   encrypt_columns    optional  the columns that the job encrypts with cdr-crypto, fixed by the dataset (not by the request). Needs
+#                                key_field_constant; the request then only carries globalKey/globalZone.
+#   key_field_constant optional  {"name": "...", "value": "..."}: a CONSTANT column that the job adds and uses as the key field of the encryption,
+#                                so the same value gives the same ciphertext in every row and every table (needed to join them after hashing).
+#   transforms         optional  {"column": "AGE_BAND" | "HOUR_BAND"}: columns that the job groups (after the decryption, before the encryption).
+# This setting says WHEN a dataset runs:
+#   periodic           optional  false: the DAG has NO schedule even with an approved request (no daily run); it only runs by hand (conf
+#                                {"date": ...}, a bulk load {"fromDate": ..., "toDate": ...} or silver_ingest_backfill.py). For a table that is not
+#                                loaded every day (f016, monthly).
+DATASET_KEYS = (
+    "mode", "hour_glob", "hour_column", "partition_by_hour", "key_path", "resources",
+    "decrypt_mode", "provider_decrypt", "encrypt_columns", "key_field_constant", "transforms",
+    "periodic",
+)
 HOUR_COLUMN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")  # the same rule as a column name of the job
+DECRYPT_MODES = ("file", "column", "none")
+TRANSFORM_KINDS = ("AGE_BAND", "HOUR_BAND")
+KEY_FIELD_VALUE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")  # the value of the constant key field is written in every row
 
 # Resources of the Spark job. These defaults are what every dataset used before `resources` existed; the sizes of a big dataset are set in
 # its own entry of DATASETS. Rule of thumb for `shuffle_partitions`: the data of one run divided by 128-200 MB.
@@ -557,8 +716,109 @@ def check_dataset(dataset, settings):
             raise ValueError(f"{dataset}: key_path is only for the decrypt-encrypt mode")
         if not isinstance(settings["key_path"], str) or not settings["key_path"].strip():
             raise ValueError(f"{dataset}: key_path must be a non-empty text")
+        if settings.get("decrypt_mode") == "none":
+            raise ValueError(f"{dataset}: key_path is not used with decrypt_mode none (DAK by-path is never called)")
     if "resources" in settings:
         check_resources(dataset, settings["resources"])
+    check_decrypt_settings(dataset, settings)
+    if "periodic" in settings and not isinstance(settings["periodic"], bool):
+        raise ValueError(f"{dataset}: periodic must be true or false")
+
+
+def check_column_names(dataset, key, value):
+    """A non-empty list of distinct column names (case-insensitive), for a setting of DATASETS; returns it lower-cased."""
+
+    if (
+        not isinstance(value, list)
+        or not value
+        or len(value) > MAX_COLUMNS
+        or not all(isinstance(c, str) and COLUMN.fullmatch(c) for c in value)
+    ):
+        raise ValueError(f"{dataset}: {key} must be a non-empty list of up to {MAX_COLUMNS} column names [A-Za-z_][A-Za-z0-9_]*")
+    lower = [c.lower() for c in value]
+    if len(set(lower)) != len(lower):
+        raise ValueError(f"{dataset}: {key} has a duplicated column (names are case-insensitive)")
+    return lower
+
+
+def check_decrypt_settings(dataset, settings):
+    """decrypt_mode, provider_decrypt, encrypt_columns, key_field_constant and transforms of an entry of DATASETS (see DATASET_KEYS)."""
+
+    own = ("decrypt_mode", "provider_decrypt", "encrypt_columns", "key_field_constant", "transforms")
+    for key in own:
+        if key in settings and settings["mode"] != "decrypt-encrypt":
+            raise ValueError(f"{dataset}: {key} is only for the decrypt-encrypt mode")
+    decrypt_mode = settings.get("decrypt_mode", "file")
+    if decrypt_mode not in DECRYPT_MODES:
+        raise ValueError(f"{dataset}: decrypt_mode must be one of {', '.join(DECRYPT_MODES)}")
+    if decrypt_mode == "column" and "provider_decrypt" not in settings:
+        raise ValueError(f"{dataset}: decrypt_mode column needs provider_decrypt (the columns that the provider encrypted)")
+    if "provider_decrypt" in settings:
+        if decrypt_mode != "column":
+            raise ValueError(f"{dataset}: provider_decrypt is only for decrypt_mode column")
+        provider = settings["provider_decrypt"]
+        if not isinstance(provider, dict) or set(provider) != {"columns", "key_field"}:
+            raise ValueError(f"{dataset}: provider_decrypt must be an object with exactly columns and key_field")
+        columns = check_column_names(dataset, "provider_decrypt.columns", provider["columns"])
+        key_field = provider["key_field"]
+        if not isinstance(key_field, str) or not COLUMN.fullmatch(key_field):
+            raise ValueError(f"{dataset}: provider_decrypt.key_field must be the name of a column")
+        if key_field.lower() in columns:
+            raise ValueError(f"{dataset}: provider_decrypt.key_field must not be one of the columns (it stays plaintext as key material)")
+    encrypt = []
+    if "encrypt_columns" in settings:
+        encrypt = check_column_names(dataset, "encrypt_columns", settings["encrypt_columns"])
+    if "key_field_constant" in settings:
+        constant = settings["key_field_constant"]
+        if not isinstance(constant, dict) or set(constant) != {"name", "value"}:
+            raise ValueError(f"{dataset}: key_field_constant must be an object with exactly name and value")
+        name, value = constant["name"], constant["value"]
+        if not isinstance(name, str) or not COLUMN.fullmatch(name):
+            raise ValueError(f"{dataset}: key_field_constant.name must be the name of a column")
+        if not isinstance(value, str) or not KEY_FIELD_VALUE.fullmatch(value):
+            raise ValueError(f"{dataset}: key_field_constant.value must be 1 to 64 characters of [A-Za-z0-9_.:-]")
+        if "encrypt_columns" not in settings:
+            raise ValueError(f"{dataset}: key_field_constant needs encrypt_columns (the columns that it encrypts)")
+        if name.lower() in encrypt:
+            raise ValueError(f"{dataset}: key_field_constant.name must not be one of the encrypt_columns (it stays plaintext as key material)")
+    elif "encrypt_columns" in settings:
+        raise ValueError(f"{dataset}: encrypt_columns needs key_field_constant (the constant column that is the key field of the encryption)")
+    if "transforms" in settings:
+        transforms = settings["transforms"]
+        if not isinstance(transforms, dict) or not transforms:
+            raise ValueError(f"{dataset}: transforms must be a non-empty object {{column: kind}}")
+        lower = [c.lower() for c in transforms if isinstance(c, str)]
+        if len(set(lower)) != len(lower):
+            raise ValueError(f"{dataset}: transforms has a duplicated column (names are case-insensitive)")
+        for column, kind in transforms.items():
+            if not isinstance(column, str) or not COLUMN.fullmatch(column):
+                raise ValueError(f"{dataset}: transforms has a column name that is not valid")
+            if kind not in TRANSFORM_KINDS:
+                raise ValueError(f"{dataset}: transforms.{column} must be one of {', '.join(TRANSFORM_KINDS)}")
+            if column.lower() in encrypt:
+                raise ValueError(f"{dataset}: transforms.{column} is an encrypt column (the grouping runs before the encryption)")
+
+
+def dataset_job_env(dataset, settings):
+    """Env of the job that comes from the decrypt/encrypt/group settings of an entry of DATASETS ({} for an entry that sets none of them, so
+    the datasets that exist without them render exactly as before). KEY_PATH only for decrypt_mode column: one by-path key per dataset."""
+
+    env = {}
+    if "decrypt_mode" in settings:
+        env["DECRYPT_MODE"] = settings["decrypt_mode"]
+    if settings.get("decrypt_mode") == "column":
+        env["KEY_PATH"] = settings.get("key_path", dataset)
+    provider = settings.get("provider_decrypt")
+    if provider:
+        env["PROVIDER_DECRYPT_COLUMNS"] = ",".join(provider["columns"])
+        env["PROVIDER_KEY_FIELD"] = provider["key_field"]
+    if settings.get("encrypt_columns"):
+        env["CDR_ENCRYPT_COLUMNS"] = ",".join(settings["encrypt_columns"])
+        env["CDR_KEY_FIELD"] = settings["key_field_constant"]["name"]
+        env["CDR_KEY_FIELD_VALUE"] = settings["key_field_constant"]["value"]
+    if settings.get("transforms"):
+        env["COLUMN_TRANSFORMS"] = ",".join(f"{column}:{kind}" for column, kind in settings["transforms"].items())
+    return env
 
 
 def dataset_fields(settings):
@@ -568,6 +828,7 @@ def dataset_fields(settings):
         "hour_glob": settings.get("hour_glob", ""),
         "hour_column": settings.get("hour_column", ""),
         "partition_by_hour": settings.get("partition_by_hour", False),
+        "periodic": settings.get("periodic", True),
         "resources": resources_of(settings),
     }
 
@@ -603,7 +864,11 @@ def build_spec(source):
         },
         {"name": "OUTPUT_MODE", "value": str(fixed.get("outputMode", DEFAULT_OUTPUT_MODE))},
         {"name": "BATCH_COLUMN", "value": BATCH_COLUMN},
-        {"name": "BATCH_VALUE", "value": "{{ run_date(dag_run.conf, data_interval_start) }}"},
+        {"name": "BATCH_VALUE", "value": "{{ batch_value(dag_run.conf, data_interval_start) }}"},
+        # A bulk load (conf fromDate/toDate): the job loads every day of the range in this one run. Empty for any other run.
+        {"name": "BULK_FROM", "value": "{{ bulk_from(dag_run.conf) }}"},
+        {"name": "BULK_TO", "value": "{{ bulk_to(dag_run.conf) }}"},
+        {"name": "BULK_MISSING_DAY", "value": "{{ bulk_missing_days(dag_run.conf) }}"},
         {"name": "OUTPUT_TABLE", "value": str(fixed.get("table", ""))},
         {"name": "WAREHOUSE_PATH", "value": WAREHOUSE_PATH},
         {"name": "ENABLE_HIVE_SUPPORT", "value": "true"},

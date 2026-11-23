@@ -1,14 +1,34 @@
-"""RECURRING DAGs that load the files of the VTT datasets into the demo database (docs/silver-ingest/PLAN.md). There is ONE DAG PER DATASET
-(DATASETS below), built by silver_ingest_factory.py, and each runs once a day at the time of its approved request. VTT files are already
-encrypted column by column: the job only reads them and writes the table (passthrough mode), it never calls DAK.
+"""RECURRING DAGs that load the files of the VTT tables into the demo database (docs/silver-ingest/PLAN.md and
+docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md). There is ONE DAG PER TABLE (DATASETS below), built by silver_ingest_factory.py, and each
+runs once a day at the time of its approved request.
 
-  dataset         DAG                               mode         folder of a day
-  f001-mpre-call  silver_ingest_vtt_f001_mpre_call  passthrough  f001-mpre-call/date=YYYYMMDD/   (the hour is the column hour_id)
+VTT writes parquet files and encrypts SOME COLUMNS itself (cdr-crypto: `keyInput = prefix || value of the key field of the row`). What a DAG does:
+
+  decrypt_mode column  the columns that VTT encrypted are decrypted with the by-path prefix of DAK (the path is the name of the table) and
+                       the key field of VTT, then grouped (age, hour), then encrypted AGAIN with ONE global key and a constant key field.
+  decrypt_mode none    the table has nothing that VTT encrypted (f001 calling_number, f-customer cust_id): the columns are only encrypted
+                       with the same global key and constant key field, so one number gives the same ciphertext in every table.
+  passthrough          the reference tables d-*: nothing to protect, written as they are.
+
+The step after the silver table (pseudonymize-table-app) hashes those ciphertexts, so the tables of one request can be joined.
+
+  dataset (folder of the table)  columns VTT encrypted -> key field of VTT        encrypted with the global key          grouped
+  f001-mpre-call                 (none)                                           calling_number                         hour_id
+  f002-mpre-sms                  calling_number, called_number, called_number_cl -> sta_datetime     the same three columns                hour_id
+  f003-mpre-data                 calling_number -> sta_datetime                   calling_number                         hour_id
+  f014-mpre-tot-charge-d         isdn -> sta_date                                 isdn, customer_id                      customer_age
+  f015-mpre-tot-charge-d-acc     isdn -> customer_id                              isdn, customer_id                      customer_age
+  f016-mpre-tot-charge-m         isdn -> customer_id                              isdn, customer_id                      customer_age
+  f022-register                  isdn -> sta_date                                 isdn                                   hour_id
+  f-home-bts-daily-area          isdn -> station_code                             isdn                                   (none)
+  f-customer                     (none)                                           cust_id                                customer_age
+  d-*  (9 tables)                (none)                                           (none)                                 (none)
 
 How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
 A run ingests the folder of the day BEFORE the run (all its files) into the partitions dt = <day>, hour = <hour of each row, from the
 column hour_id>; a manual run can take another day: conf {"date": "yyyyMMdd"}. The folder has no hour layout, so only whole days run
-(a daily cron; no hourly cron, no fromHour/toHour).
+(a daily cron; no hourly cron, no fromHour/toHour). The tables that encrypt need `globalKey` and `globalZone` in their approved request: the
+columns are fixed by the dataset below, the request only picks the zone of the global key.
 """
 
 import os
@@ -23,24 +43,99 @@ import silver_ingest_factory as factory  # noqa: E402
 # Landing root of VTT (ASSUMPTION, adjust to the cluster). INPUT_PATH = INPUT_ROOT + <dataset>/date=<day>.
 INPUT_ROOT = f"{common.HDFS}/landing/vtt/lakehouse/vtt-core/"
 
-# The datasets (tables of the landing root) of VTT, one DAG each. Everything that is specific to a dataset is in ITS entry below, nowhere else: the
-# keys (mode, hour_glob, partition_by_hour, key_path, resources) are described, and checked when this file is parsed, in common.DATASET_KEYS.
-# ASSUMPTION: add the real tables. VTT writes ONE folder per day, date=YYYYMMDD, and every row carries its hour in the column `hour_id` (not
-# encrypted), so the hour comes from `hour_column` and not from a path (`hour_glob`): the silver table gets the partitions (dt, hour).
+# The constant column that the job adds and uses as the key field of the encryption: the same value in every row of every table, so the same
+# number gives the same ciphertext everywhere (the key field of VTT changes per row and per table, so it cannot be used for this).
+KEY_SCOPE = {"name": "key_scope", "value": "vtt"}
+HOUR_BAND = {"hour_id": "HOUR_BAND"}
+AGE_BAND = {"customer_age": "AGE_BAND"}
+# VTT writes ONE folder per day, date=YYYYMMDD, and every row carries its hour in the column `hour_id` (not encrypted), so the hour comes from
+# `hour_column` and not from a path (`hour_glob`): the silver table gets the partitions (dt, hour).
+HOUR_FROM_COLUMN = {"hour_column": "hour_id", "partition_by_hour": True}
+# The FIRST LOAD is asked for, not automatic: trigger the DAG of a table with conf {"fromDate": "20261104", "toDate": "20261122"} (a BULK LOAD, one run
+# that loads every day of the range, replacing the days that are already there) and from then on the DAG runs daily. docs/silver-ingest/BACKFILL.md.
+
+# The tables of VTT, one DAG each. Everything that is specific to a table is in ITS entry below, nowhere else: the keys (mode, decrypt_mode,
+# provider_decrypt, encrypt_columns, key_field_constant, transforms, hour_column, partition_by_hour, key_path, resources) are described, and checked
+# when this file is parsed, in common.DATASET_KEYS. The name of an entry is the name of the landing folder of the table AND the path of its
+# by-path key on DAK (decrypt_mode column): write it exactly like that on DAK, case and hyphens included.
+# ASSUMPTION: only f001-mpre-call and f014-mpre-tot-charge-d are confirmed folder names; check the others with `hdfs dfs -ls <INPUT_ROOT>`.
 # A VTT day is about 165 GB: set `resources` for it (common.RESOURCE_DEFAULTS are small) once its run time has been measured.
 DATASETS = {
-    "f001-mpre-call": {"mode": "passthrough", "hour_column": "hour_id", "partition_by_hour": True},
+    "f001-mpre-call": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "none",
+        "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
+    },
+    "f002-mpre-sms": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "column",
+        "provider_decrypt": {"columns": ["calling_number", "called_number", "called_number_cl"], "key_field": "sta_datetime"},
+        "encrypt_columns": ["calling_number", "called_number", "called_number_cl"], "key_field_constant": KEY_SCOPE,
+        "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
+    },
+    "f003-mpre-data": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "column",
+        "provider_decrypt": {"columns": ["calling_number"], "key_field": "sta_datetime"},
+        "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
+    },
+    "f014-mpre-tot-charge-d": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "column",
+        "provider_decrypt": {"columns": ["isdn"], "key_field": "sta_date"},
+        "encrypt_columns": ["isdn", "customer_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
+    },
+    "f015-mpre-tot-charge-d-acc": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "column",
+        # customer_id is the key field of VTT AND a column that is encrypted: decryption runs first, so it is still plaintext when it is needed.
+        "provider_decrypt": {"columns": ["isdn"], "key_field": "customer_id"},
+        "encrypt_columns": ["isdn", "customer_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
+    },
+    # f016 is a MONTHLY table: it has no daily schedule; it only runs by hand (conf {"date": ...}, a bulk load or silver_ingest_backfill.py), once its
+    # folder layout is known.
+    "f016-mpre-tot-charge-m": {
+        "mode": "decrypt-encrypt", "periodic": False, "decrypt_mode": "column",
+        "provider_decrypt": {"columns": ["isdn"], "key_field": "customer_id"},
+        "encrypt_columns": ["isdn", "customer_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
+    },
+    "f022-register": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "column",
+        "provider_decrypt": {"columns": ["isdn"], "key_field": "sta_date"},
+        "encrypt_columns": ["isdn"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
+    },
+    "f-home-bts-daily-area": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "column",
+        "provider_decrypt": {"columns": ["isdn"], "key_field": "station_code"},
+        "encrypt_columns": ["isdn"], "key_field_constant": KEY_SCOPE,
+    },
+    "f-customer": {
+        "mode": "decrypt-encrypt", "decrypt_mode": "none",
+        "encrypt_columns": ["cust_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
+    },
+    # Reference tables: nothing to protect, written as they are.
+    "d-cust-type": {"mode": "passthrough"},
+    "d-khdn": {"mode": "passthrough"},
+    "d-mpre-data-package": {"mode": "passthrough"},
+    "d-addon-data-package": {"mode": "passthrough"},
+    "d-device-ttvas": {"mode": "passthrough"},
+    "d-os-type": {"mode": "passthrough"},
+    "d-sub-type-gb": {"mode": "passthrough"},
+    "d-telecom-service": {"mode": "passthrough"},
+    "d-vas-direction": {"mode": "passthrough"},
 }
 
-# Settings shared by every dataset. ASSUMPTION: adjust to the real VTT data (format, schema, target database).
+# Settings shared by every table. The landing files are parquet: they are read as they are (the columns that VTT encrypted are decrypted by the
+# job afterwards), so no schema and no header. ASSUMPTION: adjust the target database.
 BASE_ENV = {
-    "INPUT_FORMAT": "csv",
-    "INPUT_OPTION_header": "true",
+    "INPUT_FORMAT": "parquet",
     # Read the whole folder of a day, including any subfolder, and do not turn a folder name such as `hour=12` into a partition column.
     "INPUT_OPTION_recursiveFileLookup": "true",
     "OUTPUT_DB": "demo_db",
     "OUTPUT_FORMAT": "delta",
 }
+
+
+def global_key_env(config):
+    """GLOBAL_KEY_ZONE of the job: the zone of the global key that the approved request picked (every table of VTT uses the same zone, so that
+    one number gives one ciphertext in every table). Nothing for a table that does not encrypt."""
+    zone = common.global_zone(config)
+    return [{"name": "GLOBAL_KEY_ZONE", "value": zone}] if zone else []
 
 
 def source_for(dataset, settings, config=None):
@@ -49,20 +144,33 @@ def source_for(dataset, settings, config=None):
     `config` = the approved settings read from the Airflow Variable (already validated), or None when the dataset has none: then `fixed` is
     empty and the DAG has no schedule.
     """
+    mode = settings["mode"]
     slug = dataset.replace("_", "-")  # SparkApplication names and label values do not accept "_"
-    return {
+    config = config or {}
+    source = {
         "name": f"vtt-{slug}",
         "dataset": dataset,
         "day_dir": "date",
-        "main_class": common.MODES[settings["mode"]],
+        "main_class": common.MODES[mode],
         "input_root": INPUT_ROOT,
         "conf_keys": common.CONF_KEYS,
-        **common.dataset_fields(settings),  # hour_glob, partition_by_hour, resources
+        **common.dataset_fields(settings),  # hour_glob, hour_column, partition_by_hour, resources
         "schedule_keys": ("ticket", "table", "cron", "outputMode"),
         "table_prefix": "vtt_",
         "env": dict(BASE_ENV),
-        "fixed": config or {},
+        "fixed": config,
     }
+    if mode == "decrypt-encrypt":
+        if settings.get("encrypt_columns"):
+            # The columns are fixed by the dataset; the request only says which global key zone encrypts them.
+            source["schedule_keys"] += ("globalKey", "globalZone")
+            source["requires_global_key"] = True
+        # The driver calls Keycloak (https) to get a DAK token: it needs hostAliases and a truststore with the internal CA (ConfigMap keycloak-ca).
+        source["calls_keycloak"] = True
+        source["env"].update(common.dataset_job_env(dataset, settings))
+        source["driver_extra_env"] = global_key_env(config) + common.dak_connection_env(f"silver-ingest-vtt-{slug}")
+        source["extra_spark_conf"] = common.audit_conf(f"silver-ingest-vtt-{slug}")
+    return source
 
 
 # Airflow finds the DAGs among the module globals: one per dataset.
