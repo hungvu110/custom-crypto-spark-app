@@ -213,6 +213,28 @@ class CheckConfTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=f"{key}={bad!r}"):
                 self.check(DAK_RUN_ID, conf)
 
+    def test_a_table_without_a_column_to_pseudonymize_sends_none_and_the_job_gets_it(self):
+        # docs/key-access/YEU-CAU-GUI-DAK-PSEUDOCOLUMNS-NONE.md: the table is copied as it is.
+        conf = dak_conf()
+        conf["pseudoColumns"] = "none"
+        self.check(DAK_RUN_ID, conf)
+        self.assertEqual(driver_env(render(DAK_RUN_ID, conf))["PSEUDO_COLUMNS"], "none")
+
+    def test_none_is_exact_and_never_mixed_with_columns_and_an_empty_value_is_still_refused(self):
+        # A forgotten column list on a sensitive table must not copy the source out unprotected.
+        conf = dak_conf()
+        conf["pseudoColumns"] = "none:HASH"  # a column that is called `none`: it is a column, not the keyword
+        self.check(DAK_RUN_ID, conf)
+        for bad in ("", "NONE", "None", "none,name:HASH", "name:HASH,none", " none", "none ", "nonee", None):
+            conf = dak_conf()
+            conf["pseudoColumns"] = bad
+            with self.assertRaises(ValueError, msg=f"pseudoColumns={bad!r}"):
+                self.check(DAK_RUN_ID, conf)
+        conf = dak_conf()
+        del conf["pseudoColumns"]
+        with self.assertRaises(ValueError):
+            self.check(DAK_RUN_ID, conf)
+
     def test_the_naming_of_the_real_dak_is_accepted(self):
         for code in ("REQ-2026-000011", "PYC-2026-000007"):
             conf = dak_conf()

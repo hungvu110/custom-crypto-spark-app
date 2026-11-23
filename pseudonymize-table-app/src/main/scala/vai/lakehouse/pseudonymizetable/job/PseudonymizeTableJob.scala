@@ -233,7 +233,10 @@ object PseudonymizeTableJob {
     Log.section("4. WRITE TARGET")
     Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
     Log.kv("partition by", if (cfg.outputPartitionBy.isEmpty) "(none)" else cfg.outputPartitionBy.mkString(", "))
-    Log.kv("pseudonymized columns", cfg.pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "))
+    if (cfg.pseudoColumns.isEmpty) {
+      Log.warn("PSEUDO_COLUMNS=none: NO column is pseudonymized, the target is a plain copy of the source (no key is used)")
+      Log.kv("pseudonymized columns", "(none)")
+    } else Log.kv("pseudonymized columns", cfg.pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "))
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
     val statsBefore = stats.settled()
     // Spark runs read + pseudonymize + write fused in the same tasks, so they cannot be timed separately here.

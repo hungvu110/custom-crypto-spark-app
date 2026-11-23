@@ -45,6 +45,46 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors.exists(_.startsWith("OUTPUT_MODE")) shouldBe true
   }
 
+  it should "PSEUDO_COLUMNS=none: danh sách cột rỗng, bảng được chép nguyên trạng, không cần khoá" in {
+    Seq("none", "NONE", " None ").foreach { value =>
+      val cfg = JobConfig.fromEnv(base + ("PSEUDO_COLUMNS" -> value)).toOption.get
+      cfg.pseudoColumns shouldBe Nil
+      cfg.columns shouldBe Nil
+      cfg.modes shouldBe Set.empty
+    }
+    // MAPPING needs a mapping table only when a column uses it: with no column there is nothing to map.
+    JobConfig.fromEnv(base ++ Map("PSEUDO_COLUMNS" -> "none", "PSEUDO_MODE" -> "MAPPING")).isRight shouldBe true
+  }
+
+  it should "PSEUDO_COLUMNS=none: describe nêu rõ là không khử cột nào" in {
+    val described = JobConfig.fromEnv(base + ("PSEUDO_COLUMNS" -> "none")).toOption.get.describe.toMap
+
+    described("PSEUDO_COLUMNS") should include("none")
+  }
+
+  it should "PSEUDO_COLUMNS: thiếu, rỗng hoặc chỉ có dấu phẩy vẫn là lỗi (quên đặt cột không được chép bảng gốc ra)" in {
+    Seq(base - "PSEUDO_COLUMNS", base.updated("PSEUDO_COLUMNS", ""), base.updated("PSEUDO_COLUMNS", " , ")).foreach { env =>
+      JobConfig.fromEnv(env).left.toOption.get.exists(_.startsWith("PSEUDO_COLUMNS: is required")) shouldBe true
+    }
+  }
+
+  it should "PSEUDO_COLUMNS=none không đi cùng cột khác" in {
+    Seq("isdn,none", "none,isdn", "none, imei:HASH").foreach { value =>
+      JobConfig.fromEnv(base + ("PSEUDO_COLUMNS" -> value)).left.toOption.get
+        .exists(_.contains("'none' cannot be combined with columns")) shouldBe true
+    }
+  }
+
+  it should "PSEUDO_COLUMNS=none không dùng với INPUT_BAD_FILES=skip (không có cột để neo việc theo dõi file)" in {
+    val file = Map("INPUT_PATH" -> "/landing/x", "INPUT_FORMAT" -> "parquet", "OUTPUT_DB" -> "out", "OUTPUT_TABLE" -> "t",
+      "PSEUDO_COLUMNS" -> "none")
+
+    JobConfig.fromEnv(file + ("INPUT_BAD_FILES" -> "skip")).left.toOption.get
+      .exists(_.contains("PSEUDO_COLUMNS=none: not supported with INPUT_BAD_FILES=skip")) shouldBe true
+    JobConfig.fromEnv(file + ("INPUT_BAD_FILES" -> "fail")).isRight shouldBe true
+    JobConfig.fromEnv(file + ("INPUT_BAD_FILES" -> "report")).isRight shouldBe true
+  }
+
   it should "nhận WAREHOUSE_PATH là URI đầy đủ và từ chối đường dẫn tương đối" in {
     val ok = JobConfig.fromEnv(base + ("WAREHOUSE_PATH" -> "hdfs://nn:8020/prod8/warehouse")).toOption.get
     ok.warehousePath shouldBe Some("hdfs://nn:8020/prod8/warehouse")

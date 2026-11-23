@@ -8,7 +8,10 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import vai.lakehouse.pseudonym.core.{AesSivPseudonymizer, HmacPseudonymizer, PrefixSourceKeyProvider, PseudonymKey}
+import vai.lakehouse.pseudonym.policy.TablePolicy
 import vai.lakehouse.pseudonym.spark.PseudonymConf
+import vai.lakehouse.pseudonymizetable.config.JobConfig
+import vai.lakehouse.pseudonymizetable.job.PseudonymizeTableJob
 
 /**
  * Chạy app thật (`execute`) trên bảng thật trong catalog của 1 SparkSession local, khoá lấy qua `spark.pseudonym.*`
@@ -74,6 +77,31 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     out.map(_.getAs[String]("province")).toSeq shouldBe Seq("Ha Noi", "Da Nang", "Ha Noi", "Can Tho")
     out.map(_.getAs[Long]("id")).toSeq shouldBe Seq(1L, 2L, 3L, 4L)
     rows("crm.subscriber").map(_.toString).toSeq shouldBe sourceBefore
+  }
+
+  it should "PSEUDO_COLUMNS=none: chép bảng nguồn nguyên trạng (cùng cột, kiểu, dữ liệu), không sửa nguồn" in {
+    val sourceBefore = rows("crm.subscriber").map(_.toString).toSeq
+
+    run("PSEUDO_COLUMNS" -> "none", "OUTPUT_TABLE" -> "subscriber_none") shouldBe PseudonymizeTableApp.ExitOk
+
+    spark.table("crm.subscriber_none").schema.map(f => f.name -> f.dataType) shouldBe
+      spark.table("crm.subscriber").schema.map(f => f.name -> f.dataType) // id stays BIGINT: nothing is turned into a string
+    rows("crm.subscriber_none").map(_.toString).toSeq shouldBe sourceBefore
+    rows("crm.subscriber").map(_.toString).toSeq shouldBe sourceBefore
+  }
+
+  it should "PSEUDO_COLUMNS=none: không cần khoá, nguồn khoá dak không với tới được vẫn chạy" in {
+    val unreachableDak = new org.apache.spark.SparkConf(false)
+      .set("spark.pseudonym.source", "dak").set("spark.pseudonym.dak.addr", "https://dak.invalid")
+      .set("spark.pseudonym.dak.tokenUrl", "https://sso.invalid/token").set("spark.pseudonym.dak.clientId", "team")
+      .set("spark.pseudonym.dak.clientSecret", "s3cret")
+    val cfg = JobConfig.fromEnv(Map("DB_NAME" -> "crm", "TABLE_NAME" -> "subscriber", "PSEUDO_COLUMNS" -> "none",
+      "REQUEST_CODE" -> "REQ-2026-000011")).toOption.get
+
+    val out = PseudonymizeTableJob.pseudonymizerFor(cfg, unreachableDak)
+      .pseudonymize(spark.table("crm.subscriber"), TablePolicy(cfg.source, Nil))
+
+    out.count() shouldBe 4L // any attempt to fetch the key would have thrown
   }
 
   it should "chỉ giả danh các cột được yêu cầu" in {

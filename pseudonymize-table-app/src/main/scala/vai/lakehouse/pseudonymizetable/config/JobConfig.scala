@@ -144,7 +144,8 @@ final case class JobConfig(
   def describe: Seq[(String, String)] = Seq(
     "APP_NAME"            -> appName,
     "INPUT"               -> input.describe,
-    "PSEUDO_COLUMNS"      -> pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "),
+    "PSEUDO_COLUMNS"      -> (if (pseudoColumns.isEmpty) s"${JobConfig.NoColumns} (no column: the table is copied as it is)"
+                              else pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", ")),
     "PSEUDO_MODE (default)" -> mode.name,
     "OUTPUT_DB"           -> outputDb,
     "OUTPUT_TABLE"        -> outputTable,
@@ -300,6 +301,10 @@ object JobConfig {
       4
     }).getOrElse(4)
     val checkFull = bool("INPUT_CHECK_FULL", default = false)
+    // skip theo dõi file qua một cột khử định danh (FileTracker): không có cột thì không có chỗ neo.
+    if (columns.isEmpty && badFiles == BadFilePolicy.Skip) {
+      errors += s"PSEUDO_COLUMNS=$NoColumns: not supported with INPUT_BAD_FILES=skip (nothing to anchor the file tracking on); use fail or report"
+    }
     if (!input.isInstanceOf[FileInput] &&
         (raw("INPUT_BAD_FILES").isDefined || raw("INPUT_CHECK_PARALLELISM").isDefined || raw("INPUT_CHECK_FULL").isDefined)) {
       errors += "INPUT_BAD_FILES/INPUT_CHECK_PARALLELISM/INPUT_CHECK_FULL: only valid together with INPUT_PATH"
@@ -390,10 +395,24 @@ object JobConfig {
     }
   }
 
-  /** `cột` hoặc `cột:MODE`; cột không ghi mode dùng `default` (PSEUDO_MODE). */
+  /**
+   * Từ khoá của `PSEUDO_COLUMNS` cho bảng KHÔNG có cột nào cần khử định danh: bảng được chép nguyên trạng, không lấy khoá. Phải ghi tường minh:
+   * thiếu hoặc rỗng vẫn là lỗi, để quên đặt cột của một bảng nhạy cảm không làm bảng gốc bị chép ra mà không ai biết.
+   */
+  val NoColumns = "none"
+
+  /** `cột` hoặc `cột:MODE`; cột không ghi mode dùng `default` (PSEUDO_MODE). `none` (một mình) = không cột nào. */
   private def pseudoColumns(rawValue: Option[String], default: PseudonymMode, errors: ArrayBuffer[String]): Seq[PseudoColumn] = {
     val tokens = rawValue.map(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq).getOrElse(Nil)
-    if (tokens.isEmpty) errors += "PSEUDO_COLUMNS: is required (columns to pseudonymize, comma-separated; each may carry its own mode: isdn:HASH,imei:ENCRYPT)"
+    if (tokens.isEmpty) errors += "PSEUDO_COLUMNS: is required (columns to pseudonymize, comma-separated; each may carry its own mode: isdn:HASH,imei:ENCRYPT; " +
+      s"or $NoColumns for a table with no column to pseudonymize)"
+    if (tokens.exists(_.equalsIgnoreCase(NoColumns))) {
+      if (tokens.size > 1) errors += s"PSEUDO_COLUMNS: '$NoColumns' cannot be combined with columns (use it alone: the table is copied as it is)"
+      Nil
+    } else parseColumns(tokens, default, errors)
+  }
+
+  private def parseColumns(tokens: Seq[String], default: PseudonymMode, errors: ArrayBuffer[String]): Seq[PseudoColumn] = {
     val parsed = tokens.map { token =>
       val parts = token.split(":", -1).map(_.trim)
       val name = parts(0)

@@ -170,6 +170,12 @@ Lưu ý:
 (mặc định `HASH`). Chỉ khoá của các chế độ **thực sự dùng** mới bị đọc: cả `HASH` và `ENCRYPT` thì cần cả
 `pseudonym.hmac_v<N>` và `pseudonym.aes_siv_v<N>` (mục 4.2); có cột `MAPPING` thì cần `MAPPING_TABLE_PATH`.
 
+**Bảng không có cột nào cần khử: `PSEUDO_COLUMNS=none`.** Từ khoá `none` (một mình, không phân biệt hoa thường ở job; DAG khử định danh chỉ nhận chữ thường) làm bảng đích là **bản chép nguyên trạng** của
+bảng nguồn: cùng cột, **cùng kiểu** (không cột nào thành `STRING`), cùng dữ liệu; **không lấy khoá** (nguồn `dak` không bị gọi), log có dòng WARN. Dùng cho bảng danh mục trong một phiếu nhiều bảng,
+để DS thấy đủ bảng trong cùng database kết quả. Quy tắc cố ý chặt: thiếu hoặc để trống `PSEUDO_COLUMNS` **vẫn là lỗi** (quên đặt cột của bảng nhạy cảm không được chép bảng gốc ra),
+`none` không đi cùng cột khác (`isdn,none` là lỗi), và không dùng với `INPUT_BAD_FILES=skip`. Một cột tên `none` vẫn khai được là `none:HASH`.
+Đề nghị gửi đội dak: [YEU-CAU-GUI-DAK-PSEUDOCOLUMNS-NONE.md](../docs/key-access/YEU-CAU-GUI-DAK-PSEUDOCOLUMNS-NONE.md).
+
 Chọn chế độ theo nhu cầu từng cột: cột chỉ để nối/đếm (`isdn`) → `HASH`; cột cần khôi phục sau này theo quy trình được duyệt
 (`imei`) → `ENCRYPT`. Xem [ALGORITHMS.md](../docs/pseudonymization/ALGORITHMS.md).
 

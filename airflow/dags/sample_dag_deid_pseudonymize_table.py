@@ -134,7 +134,9 @@ SOURCE_PARTITION_ENV = {"INPUT_DATE_KEY": "dt", "INPUT_HOUR_KEY": "hour"}
 MANUAL_OUTPUT = {"OUTPUT_DB": "demo_db", "OUTPUT_TABLE": "users_cdr_2_deid_manual"}
 
 NAME = re.compile(r"[A-Za-z0-9_]{1,128}")
-PSEUDO_COLUMNS = re.compile(r"[A-Za-z0-9_]{1,128}:HASH(,[A-Za-z0-9_]{1,128}:HASH)*")
+# `none` (exactly, lowercase, alone) = a table of the request with no column to pseudonymize: the job copies it as it is
+# (docs/key-access/YEU-CAU-GUI-DAK-PSEUDOCOLUMNS-NONE.md). An empty or missing value is still refused.
+PSEUDO_COLUMNS = re.compile(r"none|[A-Za-z0-9_]{1,128}:HASH(,[A-Za-z0-9_]{1,128}:HASH)*")
 # The request code is DAK's naming: REQ-<year>-<6 digits> (or PYC- for a request of the old kind), the form that the API keys/deid and the job
 # (REQUEST_CODE) accept. It ends up in a label value and in a query string of DAK, so nothing else is let through.
 REQUEST_CODE = re.compile(r"(REQ|PYC)-[0-9]{4}-[0-9]{6}")
