@@ -831,7 +831,8 @@ class DatasetSettingsTest(unittest.TestCase):
         self.assertEqual({k: v for k, v in mine.items() if k != "executors"}, {k: v for k, v in common.RESOURCE_DEFAULTS.items() if k != "executors"})
 
     def test_the_defaults_are_what_every_dataset_used_before_resources_existed(self):
-        for dag in ALL_DAGS:
+        # The datasets of VTNET still use the defaults; every VTT table has the resources of its own size (test_silver_vtt.ResourcesTest).
+        for dag in (EBS, NIMS):
             spec = render(dag)["spec"]
             self.assertEqual(
                 (spec["driver"]["cores"], spec["driver"]["coreLimit"], spec["driver"]["memory"], spec["driver"]["memoryOverhead"]),
@@ -864,7 +865,10 @@ class DatasetSettingsTest(unittest.TestCase):
 
     def test_the_source_of_every_dataset_carries_the_fields_of_its_entry(self):
         for dag in ALL_DAGS:
-            self.assertEqual(dag.SOURCE["resources"], common.RESOURCE_DEFAULTS, dag.DAG_ID)
+            if dag in (EBS, NIMS):
+                self.assertEqual(dag.SOURCE["resources"], common.RESOURCE_DEFAULTS, dag.DAG_ID)
+            else:  # VTT: the resources of its entry over the defaults
+                self.assertGreaterEqual(set(dag.SOURCE["resources"]), set(common.RESOURCE_DEFAULTS), dag.DAG_ID)
             self.assertIn("hour_glob", dag.SOURCE)
             self.assertIn("partition_by_hour", dag.SOURCE)
 

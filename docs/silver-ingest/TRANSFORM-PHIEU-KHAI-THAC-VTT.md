@@ -461,3 +461,37 @@ Chuỗi `path` trên DAK của mỗi bảng chính là tên dataset (`f014-mpre-
 5. **Hiệu năng chưa đo:** `CdrCipherCore.encrypt` tạo `TransformDL` và dùng reflection cho **từng giá trị**; một ngày VTT khoảng 165 GB. Đặt `resources` của từng bảng sau khi đo.
 6. **Bước 2 đã cài đặt** (mục 4.4): `pseudonymize-table-app` nhận `PSEUDO_COLUMNS=none` (96 test qua), DAG `deid_pseudonymize_table` nhận `pseudoColumns=none` (`airflow/tests`: 169 test qua).
    Cần đội dak xác nhận và gửi `none` (xem [YEU-CAU-GUI-DAK-PSEUDOCOLUMNS-NONE.md](../key-access/YEU-CAU-GUI-DAK-PSEUDOCOLUMNS-NONE.md)); `dak-mock` (`ManifestRenderer.pseudoColumns`) chưa theo hợp đồng này. DAG khử định danh đã đặt sẵn `INPUT_DATE_KEY=dt`, `INPUT_HOUR_KEY=hour` cho bảng silver (`SOURCE_PARTITION_ENV`).
+
+## 10. Tài nguyên Spark của từng bảng
+
+Cấu hình nằm ở khóa `resources` của từng entry trong `DATASETS` (`silver_ingest_vtt.py`), kiểm bằng `common.check_resources`.
+
+**Cơ sở:** kích thước một ngày trên HDFS (parquet nén, `date=20261110`, đo bằng `hdfs dfs -du -s -h`). Số ngày nạp lần đầu là 19 (04/11 đến 22/11).
+
+| Bảng | Một ngày | × 19 ngày | Task (128 MB) | `executors` (đầu, min, max) | Cỡ executor | Dynamic allocation |
+| --- | --- | --- | --- | --- | --- | --- |
+| `f003-mpre-data` | 33,1 G | 629 G | 265 | 4, 2, 8 | WIDE | Có |
+| `f015-mpre-tot-charge-d-acc` | 23,7 G | 450 G | 190 | 3, 2, 6 | WIDE | Có |
+| `f014-mpre-tot-charge-d` | 17,7 G | 336 G | 142 | 3, 2, 6 | WIDE | Có |
+| `f016-mpre-tot-charge-m` | 28,5 G mỗi batch | (batch tháng) | 228 | 3, 2, 6 | WIDE | Có |
+| `f-customer` | 12,1 G | 230 G | 97 | 2, 1, 4 | NARROW | Có |
+| `f022-register` | 5,0 G | 95 G | 40 | 2 | NARROW | Không |
+| `f001-mpre-call` | 3,7 G | 70 G | 30 | 2 | NARROW | Không |
+| `f-home-bts-daily-area` | 2,8 G | 53 G | 22 | 2 | NARROW | Không |
+| `f002-mpre-sms` | 1,4 G | 27 G | 11 | 1 | NARROW | Không |
+| 9 bảng `d-*` | 13 K đến 482 M (cả bảng) | không đáng kể | 1 đến 4 | 1 | TINY | Không |
+
+Tám bảng hằng ngày cộng lại khoảng **99,5 G một ngày, 1,85 TB cho 19 ngày** (parquet nén).
+
+**Cỡ executor:** WIDE = 4 core, heap 12 GB, overhead 2 GB (cho bảng 150 đến 450 cột, 3 GB heap mỗi core); NARROW = 4 core, heap 8 GB, overhead 1 GB; TINY = 2 core, heap 2 GB. Driver của WIDE là 4 GB, của TINY là 1 GB.
+
+**Điều đã đo và hệ quả:** một lần mã hóa `cdr-crypto` mất **0,74 µs** (khoảng 1,35 triệu giá trị mỗi giây trên một core, đo bằng chính jar VTT). Nên **mã hóa không phải điểm nghẽn**: job bị giới hạn bởi đọc, giải nén và ghi parquet, nên số core theo số task (kích thước chia 128 MB), và bộ nhớ theo độ rộng của bảng.
+
+**Dynamic allocation** (`min_executors`, `max_executors` trong `resources`): executor tăng từ số ban đầu lên tối đa khi còn task chờ, và giảm về tối thiểu sau 120 giây rảnh, cả giữa các ngày của một bulk load. Bật có shuffle tracking vì Kubernetes không có external shuffle service. Chỉ bật cho bảng từ khoảng 12 G một ngày trở lên; bảng nhỏ chạy vài phút nên để cố định.
+
+**Ước lượng chưa phải số đo:** tốc độ giả định 10 đến 25 MB/s mỗi core cho cả đọc và ghi. Với `f003` ở 16 đến 32 core, mỗi ngày xử lý khoảng 1 đến 4 phút cộng 2 đến 3 phút cố định (liệt kê file, lấy key, ghi Delta), tức khoảng 1 đến 2 giờ cho 19 ngày. **Chạy thử một ngày, xem Spark UI** (thời gian mỗi task, spill, GC) rồi chỉnh.
+
+**Giới hạn tài nguyên:** nếu chạy cả 18 DAG cùng lúc ở mức tối đa thì cần khoảng 530 GB RAM và 185 core. `ResourceQuota` của namespace chưa biết; nếu nhỏ hơn thì giảm `max_executors` (job chỉ chậm hơn) hoặc nạp bulk từng bảng lớn một. Nên bắt đầu bằng `f001` rồi `f014`.
+
+**Điều cần chú ý ở các bảng `d-*`:** ảnh kích thước cho thấy `d-cust-type` có thư mục `date=20261114` còn các bảng khác `date=20261110`, nghĩa là bảng danh mục **không có thư mục cho mọi ngày**. Nạp bulk 04/11 đến 22/11 cho các bảng này cần `"missingDays": "skip"`; còn lịch hằng ngày sẽ lỗi ở ngày không có thư mục (job báo `INPUT_PATH does not exist`). `f016` cũng chỉ có hai batch (`date=20261001`, `date=20261110`).
+

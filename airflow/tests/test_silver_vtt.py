@@ -130,7 +130,7 @@ class DatasetsTest(unittest.TestCase):
 
     def test_the_reference_tables_are_written_as_they_are(self):
         for dataset in D_TABLES:
-            self.assertEqual(vtt_module.DATASETS[dataset], {"mode": "passthrough"}, dataset)
+            self.assertEqual(vtt_module.DATASETS[dataset], {"mode": "passthrough", "resources": vtt_module.TINY}, dataset)
 
 
 class SpecTest(unittest.TestCase):
@@ -442,6 +442,101 @@ class BulkLoadTest(unittest.TestCase):
         # silver_ingest_backfill still starts one run per day (max 31 days); a bulk load is one run of the dataset DAG (max 62 days).
         self.assertEqual(common.MAX_BACKFILL_DAYS, 31)
         self.assertEqual(common.MAX_BULK_DAYS, 62)
+
+
+WIDE = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m", "driver_memory": "4096m",
+        "driver_memory_overhead": "1024m"}
+NARROW = {"executor_cores": 4, "executor_memory": "8192m", "executor_memory_overhead": "1024m"}
+TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m", "driver_memory": "1024m",
+        "shuffle_partitions": 8}
+
+# Sizes of one day on HDFS (parquet, 2026-11-10) -> tasks of 128 MB; docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md section 10.
+EXPECTED_RESOURCES = {
+    F003: {**WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 256},  # 33.1 G
+    F015: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 192},  # 23.7 G
+    F016: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 224},  # 28.5 G per batch
+    F014: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 128},  # 17.7 G
+    FCUST: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 96},  # 12.1 G
+    F022: {**NARROW, "executors": 2, "shuffle_partitions": 48},  # 5.0 G
+    F001: {**NARROW, "executors": 2, "shuffle_partitions": 32},  # 3.7 G
+    FHOME: {**NARROW, "executors": 2, "shuffle_partitions": 24},  # 2.8 G
+    F002: {**NARROW, "executors": 1, "shuffle_partitions": 16},  # 1.4 G
+    **{dataset: TINY for dataset in D_TABLES},  # 13 K to 482 M for the whole table
+}
+
+
+def spark_conf_of(dataset, dynamic_conf=None):
+    source = vtt_module.source_for(dataset, vtt_module.DATASETS[dataset], None)
+    return common.build_spec(source)["spec"]["sparkConf"], common.build_spec(source)["spec"]
+
+
+class ResourcesTest(unittest.TestCase):
+    """Spark resources of every table, from the size of its day on HDFS. The job is limited by reading, decompressing and writing parquet, not by
+    the encryption (cdr-crypto: 0.74 microsecond per value, measured), so the cores follow the number of 128 MB tasks and the memory the width of
+    the table."""
+
+    def test_every_table_has_the_resources_chosen_from_the_size_of_its_day(self):
+        self.assertEqual(set(EXPECTED_RESOURCES), set(ALL_DATASETS))
+        for dataset, expected in EXPECTED_RESOURCES.items():
+            self.assertEqual(vtt_module.DATASETS[dataset]["resources"], expected, dataset)
+
+    def test_every_entry_with_resources_is_valid(self):
+        for dataset, settings in vtt_module.DATASETS.items():
+            common.check_dataset(dataset, settings)
+
+    def test_only_the_big_tables_scale_with_dynamic_allocation_the_rest_stay_static(self):
+        dynamic = {d for d, r in EXPECTED_RESOURCES.items() if "max_executors" in r}
+        self.assertEqual(dynamic, {F003, F015, F016, F014, FCUST})
+        for dataset in dynamic:
+            r = vtt_module.DATASETS[dataset]["resources"]
+            self.assertLessEqual(r["min_executors"], r["executors"], dataset)
+            self.assertLessEqual(r["executors"], r["max_executors"], dataset)
+
+    def test_a_dynamic_table_renders_dynamic_allocation_with_shuffle_tracking_and_no_external_shuffle_service(self):
+        conf, spec = spark_conf_of(F003)
+        self.assertEqual(conf["spark.dynamicAllocation.enabled"], "true")
+        self.assertEqual(conf["spark.dynamicAllocation.shuffleTracking.enabled"], "true")  # kubernetes has no external shuffle service
+        self.assertEqual((conf["spark.dynamicAllocation.minExecutors"], conf["spark.dynamicAllocation.maxExecutors"]), ("2", "8"))
+        self.assertEqual(conf["spark.dynamicAllocation.initialExecutors"], "4")
+        self.assertEqual(conf["spark.dynamicAllocation.executorIdleTimeout"], "120s")
+        self.assertEqual(spec["executor"]["instances"], 4)
+        self.assertEqual(spec["executor"]["cores"], 4)
+        self.assertEqual(spec["executor"]["memory"], "12288m")
+        self.assertEqual(spec["driver"]["memory"], "4096m")
+        self.assertEqual(conf["spark.sql.shuffle.partitions"], "256")
+
+    def test_a_static_table_keeps_dynamic_allocation_off_and_has_no_dynamic_keys(self):
+        for dataset in (F001, F002, F022, FHOME, "d-os-type"):
+            conf, spec = spark_conf_of(dataset)
+            self.assertEqual(conf["spark.dynamicAllocation.enabled"], "false", dataset)
+            self.assertFalse([k for k in conf if k.startswith("spark.dynamicAllocation.") and k != "spark.dynamicAllocation.enabled"], dataset)
+        self.assertEqual(spark_conf_of(F001)[1]["executor"]["instances"], 2)
+
+    def test_the_other_sources_are_unchanged_dynamic_allocation_stays_off(self):
+        for dag in _dags_of(vtt_module).values():
+            if "max_executors" not in dag.SOURCE["resources"]:
+                self.assertEqual(common.build_spec(dag.SOURCE)["spec"]["sparkConf"]["spark.dynamicAllocation.enabled"], "false")
+
+    def test_the_dynamic_keys_are_checked(self):
+        base = {"executors": 3}
+        common.check_resources("d", {**base, "min_executors": 1, "max_executors": 6})
+        common.check_resources("d", {**base, "max_executors": 6})  # the minimum defaults to 1
+        for bad in (
+            {"min_executors": 1},  # a minimum without a maximum: dynamic allocation is on only with max_executors
+            {**base, "min_executors": 4, "max_executors": 6},  # the initial executors are below the minimum
+            {**base, "max_executors": 2},  # ... or above the maximum
+            {**base, "min_executors": 5, "max_executors": 2},
+            {**base, "max_executors": 0}, {**base, "max_executors": 101}, {**base, "max_executors": True}, {**base, "max_executors": "6"},
+            {**base, "min_executors": 0, "max_executors": 6}, {**base, "min_executors": 1.5, "max_executors": 6},
+        ):
+            with self.assertRaises(ValueError, msg=repr(bad)) as raised:
+                common.check_resources("my_dataset", bad)
+            self.assertIn("my_dataset", str(raised.exception), repr(bad))
+
+    def test_the_defaults_without_resources_are_what_every_dataset_used_before(self):
+        self.assertEqual(common.RESOURCE_DEFAULTS["executors"], 2)
+        self.assertNotIn("max_executors", common.RESOURCE_DEFAULTS)
+        self.assertEqual(common.resources_of({}), common.RESOURCE_DEFAULTS)
 
 
 class SharedDakEnvTest(unittest.TestCase):

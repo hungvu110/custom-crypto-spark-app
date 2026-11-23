@@ -638,7 +638,14 @@ RESOURCE_COUNT_LIMITS = {
     "executors": (1, 100),
     "executor_cores": (1, 16),
     "shuffle_partitions": (1, 20000),
+    "min_executors": (1, 100),
+    "max_executors": (1, 100),
 }
+# DYNAMIC ALLOCATION: with `max_executors` the executors grow from `executors` (the initial number) up to `max_executors` while tasks wait and
+# shrink down to `min_executors` (default 1) when they are idle for DYNAMIC_IDLE_TIMEOUT. Without `max_executors` the number is fixed. There is no
+# external shuffle service on Kubernetes, so shuffle tracking is on. Neither key is in RESOURCE_DEFAULTS: no dataset has them unless it says so.
+DYNAMIC_KEYS = ("min_executors", "max_executors")
+DYNAMIC_IDLE_TIMEOUT = "120s"
 RESOURCE_MEMORY_LIMITS_MB = (256, 65536)
 MEMORY_VALUE = re.compile(r"([1-9]\d{0,5})([mg])")
 
@@ -657,9 +664,10 @@ def check_resources(dataset, resources):
 
     if not isinstance(resources, dict):
         raise ValueError(f"{dataset}: resources must be an object")
-    unknown = set(resources) - set(RESOURCE_DEFAULTS)
+    accepted = tuple(RESOURCE_DEFAULTS) + DYNAMIC_KEYS
+    unknown = set(resources) - set(accepted)
     if unknown:
-        raise ValueError(f"{dataset}: resources has keys that are not accepted ({', '.join(sorted(unknown))}); accepted: {', '.join(RESOURCE_DEFAULTS)}")
+        raise ValueError(f"{dataset}: resources has keys that are not accepted ({', '.join(sorted(unknown))}); accepted: {', '.join(accepted)}")
     low, high = RESOURCE_MEMORY_LIMITS_MB
     for key, value in resources.items():
         if key in RESOURCE_COUNT_LIMITS:
@@ -670,6 +678,29 @@ def check_resources(dataset, resources):
             size = memory_mb(value)
             if size is None or not low <= size <= high:
                 raise ValueError(f"{dataset}: resources.{key} must be a memory like '4096m' or '4g', from {low}m to {high // 1024}g")
+    if "max_executors" not in resources:
+        if "min_executors" in resources:
+            raise ValueError(f"{dataset}: resources.min_executors needs resources.max_executors (dynamic allocation is on only with max_executors)")
+        return
+    lowest = resources.get("min_executors", 1)
+    initial = resources.get("executors", RESOURCE_DEFAULTS["executors"])
+    if not lowest <= initial <= resources["max_executors"]:
+        raise ValueError(f"{dataset}: resources must satisfy min_executors <= executors <= max_executors (executors is the initial number)")
+
+
+def dynamic_allocation_conf(res):
+    """The spark.dynamicAllocation.* conf of a dataset: off, or on with the numbers of its `resources` (see DYNAMIC_KEYS)."""
+
+    if not res.get("max_executors"):
+        return {"spark.dynamicAllocation.enabled": "false"}
+    return {
+        "spark.dynamicAllocation.enabled": "true",
+        "spark.dynamicAllocation.shuffleTracking.enabled": "true",
+        "spark.dynamicAllocation.minExecutors": str(res.get("min_executors", 1)),
+        "spark.dynamicAllocation.maxExecutors": str(res["max_executors"]),
+        "spark.dynamicAllocation.initialExecutors": str(res["executors"]),
+        "spark.dynamicAllocation.executorIdleTimeout": DYNAMIC_IDLE_TIMEOUT,
+    }
 
 
 def resources_of(settings):
@@ -969,7 +1000,7 @@ def build_spec(source):
                 "spark.jars.ivy": "/tmp",
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.sql.adaptive.enabled": "true",
-                "spark.dynamicAllocation.enabled": "false",
+                **dynamic_allocation_conf(res),
                 "spark.sql.shuffle.partitions": str(res["shuffle_partitions"]),
                 "spark.eventLog.enabled": "true",
                 "spark.eventLog.dir": EVENT_LOG_DIR,

@@ -54,34 +54,54 @@ HOUR_FROM_COLUMN = {"hour_column": "hour_id", "partition_by_hour": True}
 # The FIRST LOAD is asked for, not automatic: trigger the DAG of a table with conf {"fromDate": "20261104", "toDate": "20261122"} (a BULK LOAD, one run
 # that loads every day of the range, replacing the days that are already there) and from then on the DAG runs daily. docs/silver-ingest/BACKFILL.md.
 
+# Spark RESOURCES, chosen from the size of ONE day on HDFS (parquet, 2026-11-10) and what the job does. The job is limited by reading, decompressing
+# and writing parquet, NOT by the encryption (cdr-crypto measured at 0.74 microsecond per value, ~1.3 million values per second per core), so the
+# cores follow the number of tasks (size / 128 MB) and the memory follows the width of the table (a task of a wide table keeps more column
+# buffers). 3 GB of heap per core for the wide tables (150 to 450 columns), 2 GB for the others; a tiny table needs one small executor. Tables of
+# about 12 GB a day and more scale with dynamic allocation (common.DYNAMIC_KEYS): they grow while tasks wait and give the executors back when idle,
+# also between the days of a bulk load; the small ones are static (a run lasts a few minutes, not worth it). The numbers are an estimate, not a
+# measurement of this cluster: run one day, look at the Spark UI (time per task, spill, GC) and adjust. Limits: the ResourceQuota of the namespace
+# (unknown here): lower max_executors if it is smaller, the run is then only slower. Sizes per day: f003 33.1 G, f016 28.5 G (per batch), f015 23.7 G,
+# f014 17.7 G, f-customer 12.1 G, f022 5.0 G, f001 3.7 G, f-home-bts 2.8 G, f002 1.4 G; the d-* tables 13 K to 482 M in all.
+WIDE = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m", "driver_memory": "4096m",
+        "driver_memory_overhead": "1024m"}
+NARROW = {"executor_cores": 4, "executor_memory": "8192m", "executor_memory_overhead": "1024m"}
+TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m", "driver_memory": "1024m",
+        "shuffle_partitions": 8}
+
 # The tables of VTT, one DAG each. Everything that is specific to a table is in ITS entry below, nowhere else: the keys (mode, decrypt_mode,
 # provider_decrypt, encrypt_columns, key_field_constant, transforms, hour_column, partition_by_hour, key_path, resources) are described, and checked
 # when this file is parsed, in common.DATASET_KEYS. The name of an entry is the name of the landing folder of the table AND the path of its
 # by-path key on DAK (decrypt_mode column): write it exactly like that on DAK, case and hyphens included.
 # ASSUMPTION: only f001-mpre-call and f014-mpre-tot-charge-d are confirmed folder names; check the others with `hdfs dfs -ls <INPUT_ROOT>`.
-# A VTT day is about 165 GB: set `resources` for it (common.RESOURCE_DEFAULTS are small) once its run time has been measured.
+# The `resources` of each table are explained above (WIDE, NARROW, TINY); the defaults of common.RESOURCE_DEFAULTS are for a small dataset.
 DATASETS = {
     "f001-mpre-call": {
+        "resources": {**NARROW, "executors": 2, "shuffle_partitions": 32},
         "mode": "decrypt-encrypt", "decrypt_mode": "none",
         "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f002-mpre-sms": {
+        "resources": {**NARROW, "executors": 1, "shuffle_partitions": 16},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["calling_number", "called_number", "called_number_cl"], "key_field": "sta_datetime"},
         "encrypt_columns": ["calling_number", "called_number", "called_number_cl"], "key_field_constant": KEY_SCOPE,
         "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f003-mpre-data": {
+        "resources": {**WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 256},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["calling_number"], "key_field": "sta_datetime"},
         "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f014-mpre-tot-charge-d": {
+        "resources": {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 128},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn"], "key_field": "sta_date"},
         "encrypt_columns": ["isdn", "customer_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
     },
     "f015-mpre-tot-charge-d-acc": {
+        "resources": {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 192},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         # customer_id is the key field of VTT AND a column that is encrypted: decryption runs first, so it is still plaintext when it is needed.
         "provider_decrypt": {"columns": ["isdn"], "key_field": "customer_id"},
@@ -90,34 +110,38 @@ DATASETS = {
     # f016 is a MONTHLY table: it has no daily schedule; it only runs by hand (conf {"date": ...}, a bulk load or silver_ingest_backfill.py), once its
     # folder layout is known.
     "f016-mpre-tot-charge-m": {
+        "resources": {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 224},
         "mode": "decrypt-encrypt", "periodic": False, "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn"], "key_field": "customer_id"},
         "encrypt_columns": ["isdn", "customer_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
     },
     "f022-register": {
+        "resources": {**NARROW, "executors": 2, "shuffle_partitions": 48},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn"], "key_field": "sta_date"},
         "encrypt_columns": ["isdn"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f-home-bts-daily-area": {
+        "resources": {**NARROW, "executors": 2, "shuffle_partitions": 24},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn"], "key_field": "station_code"},
         "encrypt_columns": ["isdn"], "key_field_constant": KEY_SCOPE,
     },
     "f-customer": {
+        "resources": {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 96},
         "mode": "decrypt-encrypt", "decrypt_mode": "none",
         "encrypt_columns": ["cust_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
     },
     # Reference tables: nothing to protect, written as they are.
-    "d-cust-type": {"mode": "passthrough"},
-    "d-khdn": {"mode": "passthrough"},
-    "d-mpre-data-package": {"mode": "passthrough"},
-    "d-addon-data-package": {"mode": "passthrough"},
-    "d-device-ttvas": {"mode": "passthrough"},
-    "d-os-type": {"mode": "passthrough"},
-    "d-sub-type-gb": {"mode": "passthrough"},
-    "d-telecom-service": {"mode": "passthrough"},
-    "d-vas-direction": {"mode": "passthrough"},
+    "d-cust-type": {"mode": "passthrough", "resources": TINY},
+    "d-khdn": {"mode": "passthrough", "resources": TINY},
+    "d-mpre-data-package": {"mode": "passthrough", "resources": TINY},
+    "d-addon-data-package": {"mode": "passthrough", "resources": TINY},
+    "d-device-ttvas": {"mode": "passthrough", "resources": TINY},
+    "d-os-type": {"mode": "passthrough", "resources": TINY},
+    "d-sub-type-gb": {"mode": "passthrough", "resources": TINY},
+    "d-telecom-service": {"mode": "passthrough", "resources": TINY},
+    "d-vas-direction": {"mode": "passthrough", "resources": TINY},
 }
 
 # Settings shared by every table. The landing files are parquet: they are read as they are (the columns that VTT encrypted are decrypted by the
