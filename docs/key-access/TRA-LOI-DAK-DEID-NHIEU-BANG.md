@@ -25,3 +25,16 @@ Trả lời hai câu cuối [YEU-CAU-TU-DAK-DEID-NHIEU-BANG.md](YEU-CAU-TU-DAK-D
 ## 4. Ngoài phạm vi
 
 DAG xoá vùng khi hết hạn (`deid_maintenance.py`) không đổi: dak yêu cầu xoá từng bảng kết quả như hiện tại (`OUTPUT_DB` + `OUTPUT_TABLE` của từng run). DAG này cũng đang chạy từng run một (`max_active_runs=1`), nên phiếu N bảng hết hạn thì N lần xoá chạy lần lượt. Cần chạy song song thì SA sẽ đổi sau.
+
+## 5. Đính chính: một phiếu nhiều bảng dùng chung MỘT key
+
+Ngày: 2026-11-23. Đính chính một câu dễ gây hiểu nhầm ở [YEU-CAU-TU-DAK-DEID-NHIEU-BANG.md](YEU-CAU-TU-DAK-DEID-NHIEU-BANG.md), dòng "Lấy key" của bảng mục 1, viết *"Mỗi bảng có key riêng"*.
+
+**Đúng là: mọi bảng của cùng một phiếu khai thác được khử định danh bằng cùng MỘT key.**
+
+- Mỗi run vẫn gọi `GET /api/v1/keys/deid?database=&table=&requestCode=` với database và bảng của chính run đó. Điều này không đổi.
+  Nhưng các run của cùng một `requestCode` nhận về **cùng một khoá**, không phải mỗi bảng một khoá.
+- Hệ quả: cùng một giá trị gốc (ví dụ `isdn`) ở các bảng khác nhau của một phiếu cho **cùng một định danh giả**, nên các bảng kết quả **join được với nhau**.
+- Đã kiểm chứng bằng test phiếu nhiều bảng trên dak: các bảng kết quả join được.
+- Chưa kiểm chứng: hai phiếu khác nhau có dùng chung khoá không. Tạm coi là **không**, tức chỉ join được các bảng trong cùng một phiếu.
+- Điều kiện join còn lại không thuộc phạm vi key: giá trị gốc phải có cùng định dạng ở các bảng (job băm nguyên trạng, `0903…` khác `84903…`).

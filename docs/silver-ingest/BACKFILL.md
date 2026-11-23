@@ -3,11 +3,40 @@
 DAG của một dataset (`silver_ingest_<nguồn>_<dataset>`) chạy hằng ngày theo lịch của phiếu và nạp MỘT ngày (ngày hôm trước). Muốn nạp lại,
 hoặc nạp dữ liệu cũ, dùng hai cách dưới đây trên Airflow. Phiếu và lịch không đổi.
 
+## Nạp lần đầu nhiều ngày: bulk load (`fromDate`, `toDate`)
+
+Muốn nạp **nhiều ngày trong MỘT lần chạy** (ví dụ lần đầu từ 04/11 đến 22/11), trigger DAG của dataset với conf `fromDate`, `toDate`. Không có tham số này thì DAG chạy như cũ (một ngày theo lịch,
+hoặc `date`). **Không có nạp bù tự động**: bật DAG hay duyệt phiếu không tự chạy ngày nào cũ.
+
+```bash
+airflow dags trigger silver_ingest_vtt_f001_mpre_call --conf '{"fromDate": "20261104", "toDate": "20261122"}'
+```
+
+| Conf | Ý nghĩa |
+|---|---|
+| `fromDate` | Ngày đầu, `yyyyMMdd`, ngày thật. Bắt buộc khi bulk |
+| `toDate` | Ngày cuối (gồm cả hai đầu); bỏ trống thì bằng `fromDate`. Tối đa 62 ngày một lần |
+| `missingDays` | `fail` (mặc định): ngày không có file thì dừng ở ngày đó. `skip`: bỏ ngày đó, nạp các ngày còn lại; không ngày nào nạp được là lỗi |
+
+**Cách chạy:** một dag run, một Spark app; job nạp **lần lượt từng ngày** trong cùng một Spark session, mỗi ngày một lần chạy bình thường (key lấy lại mỗi ngày), ghi vào partition `dt` của ngày đó.
+Spark app nhận `BULK_FROM`, `BULK_TO`, `BULK_MISSING_DAY` và `INPUT_PATH` có `%DAY%` (DAG tự đặt); xem [README của silver-ingest-app](../../silver-ingest-app/README.md).
+
+**Ngày đã nạp hoặc đã chạy thử trước đó không sao:** bulk load luôn ghi `overwrite-partitions`, nên một ngày đã có trong bảng chỉ bị **thay đúng partition của ngày đó**, không ghi trùng; các ngày ngoài
+khoảng không bị đụng. Chạy lại cùng khoảng cho kết quả như nhau. Vì vậy phiếu có `outputMode: append` thì bulk bị từ chối (append sẽ ghi trùng).
+
+**Một ngày lỗi giữa chừng:** job dừng ở ngày đó (các ngày trước đã nạp xong, các ngày sau chưa nạp) và log ghi `to continue run again with BULK_FROM=<ngày lỗi>`: trigger lại với `fromDate` là ngày đó.
+
+**Bulk khác backfill:** `silver_ingest_backfill` tạo **mỗi ngày một dag run** (tối đa 31 ngày, mỗi ngày một Spark app, theo dõi từng ngày ở tab Grid); bulk là **một** dag run cho cả khoảng (tối đa 62 ngày, một Spark app).
+Chọn bulk khi muốn ít lần khởi động Spark, backfill khi muốn tách từng ngày.
+
+**`periodic: false` (VTT `f016`, bảng tháng):** DAG **không có lịch** dù phiếu có `cron`; chỉ chạy tay bằng `{"date": ...}`, bulk hoặc `silver_ingest_backfill`.
+
 | Muốn | Dùng | Conf |
 |---|---|---|
 | Một ngày | DAG của dataset | `{"date": "20261013"}` |
 | Một khoảng giờ của một ngày | DAG của dataset | `{"date": "20261013", "fromHour": "10", "toHour": "12"}` |
-| Một khoảng ngày | DAG `silver_ingest_backfill` | `{"dag_id": "...", "fromDate": "20261010", "toDate": "20261012"}` |
+| Nhiều ngày trong MỘT lần chạy (bulk load, nạp lần đầu) | DAG của dataset | `{"fromDate": "20261104", "toDate": "20261122"}` |
+| Một khoảng ngày, mỗi ngày một dag run | DAG `silver_ingest_backfill` | `{"dag_id": "...", "fromDate": "20261010", "toDate": "20261012"}` |
 | Cùng một khoảng giờ trên mỗi ngày của một khoảng ngày | DAG `silver_ingest_backfill` | thêm `"fromHour"`, `"toHour"` |
 
 ## Cách trigger trên giao diện Airflow

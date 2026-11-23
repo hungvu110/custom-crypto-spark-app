@@ -45,7 +45,7 @@ chạy song song). Mỗi run khử định danh đúng **một** bảng nguồn.
 | `OUTPUT_DB` | **Giống nhau** cho mọi run của phiếu: `<đơn vị>_<mã team>_<mã phiếu>`, chỉ gồm `[a-z0-9_]`, tối đa 128 ký tự. dak đặt, người dùng không sửa được. |
 | `OUTPUT_TABLE` | Mỗi run một bảng: **tên bảng nguồn**. Hai database nguồn có bảng trùng tên → **mọi** bảng mang tên đó đổi thành `<database>_<bảng>` (vd `db_a_t1`, `db_b_t1`). dak bảo đảm không hai run nào trong một phiếu ghi cùng một bảng kết quả. |
 | `dag_run_id` | Phiếu **một bảng**: không đổi (`deid-2026-000123`, `…-r2` khi chạy lại). Phiếu **nhiều bảng**: thêm hậu tố `-t<n>` theo thứ tự bảng (`deid-2026-000123-t1`, `…-t2`; chạy lại: `…-r2-t2`). |
-| Lấy key | Mỗi run gọi `GET /api/v1/keys/deid?database=&table=&requestCode=` với **database/table của chính run đó** — như hiện tại. Mỗi bảng có key riêng. |
+| Lấy key | Mỗi run gọi `GET /api/v1/keys/deid?database=&table=&requestCode=` với **database/table của chính run đó** — như hiện tại. ~~Mỗi bảng có key riêng.~~ **Đính chính 2026-11-23:** cả phiếu dùng chung **một** key, nên các bảng kết quả join được với nhau (xem [TRA-LOI-DAK-DEID-NHIEU-BANG.md](TRA-LOI-DAK-DEID-NHIEU-BANG.md) mục 5). |
 | Credential | `DAK_CLIENT_ID`/`DAK_CLIENT_SECRET` **dùng chung** cho mọi run cùng một lượt. dak không xoay secret giữa các run của một lượt — run sau không làm credential của run trước hết hiệu lực. |
 | Lỗi | Mỗi run sống chết riêng. dak đọc trạng thái từng `dag_run_id`. Bảng lỗi chạy lại riêng (run mới cho đúng bảng đó); bảng đã xong không chạy lại. |
 | Xoá vùng khi hết hạn | dak yêu cầu xoá **từng bảng kết quả** (`OUTPUT_DB` + `OUTPUT_TABLE` của từng run) như hiện tại. |
