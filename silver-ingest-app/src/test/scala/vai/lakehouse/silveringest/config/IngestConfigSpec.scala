@@ -239,6 +239,137 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     errors(Mode.Passthrough, common ++ Map("HOUR_COLUMN" -> "hour")) should include("HOUR_PATH_REGEX or HOUR_FROM_COLUMN")
   }
 
+  // ---------------------------------------------------------------- VTT: giải mã theo cột (cdr-crypto), mã hoá global, gom nhóm
+
+  private val vttColumn = common ++ Map(
+    "INPUT_PATH" -> "hdfs://nn:8020/landing/vtt/lakehouse/vtt-core/f014-mpre-tot-charge-d/date=20261104",
+    "INPUT_FORMAT" -> "parquet",
+    "OUTPUT_TABLE" -> "vtt_f014",
+    "DECRYPT_MODE" -> "column",
+    "PROVIDER_DECRYPT_COLUMNS" -> "isdn",
+    "PROVIDER_KEY_FIELD" -> "sta_date",
+    "KEY_PATH" -> "f014-mpre-tot-charge-d",
+    "CDR_ENCRYPT_COLUMNS" -> "isdn, customer_id",
+    "CDR_KEY_FIELD" -> "key_scope",
+    "CDR_KEY_FIELD_VALUE" -> "vtt",
+    "GLOBAL_KEY_ZONE" -> "vtt",
+    "COLUMN_TRANSFORMS" -> "customer_age:AGE_BAND")
+
+  private def settings(env: Map[String, String]): DecryptEncryptSettings =
+    IngestConfig.fromEnv(Mode.DecryptEncrypt, env).toOption.get.decryptEncrypt.get
+
+  "DECRYPT_MODE" should "mặc định là file: giữ nguyên hành vi giải mã cả file của VTNET" in {
+    val v = settings(vtnet)
+
+    v.decryptMode shouldBe DecryptMode.File
+    v.providerDecrypt shouldBe None
+    v.keyFieldValue shouldBe None
+    v.transforms shouldBe Nil
+  }
+
+  it should "column: dùng key by-path làm prefix giải mã các cột VTT, không cần thư mục tạm cho parquet" in {
+    val v = settings(vttColumn)
+
+    v.decryptMode shouldBe DecryptMode.Column
+    v.providerDecrypt shouldBe Some(ProviderDecrypt(Seq("isdn"), "sta_date"))
+    v.keyPath shouldBe "f014-mpre-tot-charge-d"
+    v.stagingPath shouldBe None
+    v.encryptColumns shouldBe Seq("isdn", "customer_id")
+    v.keyField shouldBe Some("key_scope")
+    v.keyFieldValue shouldBe Some("vtt")
+    v.globalZone shouldBe Some("vtt")
+    v.transforms shouldBe Seq(ColumnTransform("customer_age", TransformKind.AgeBand))
+  }
+
+  it should "column: lấy đường dẫn key từ KEY_PATH_ROOT khi không đặt KEY_PATH" in {
+    val env = vttColumn - "KEY_PATH" + ("KEY_PATH_ROOT" -> "hdfs://nn:8020/landing/vtt/lakehouse/vtt-core")
+
+    settings(env).keyPath shouldBe "f014-mpre-tot-charge-d/date=20261104"
+  }
+
+  it should "none: không gọi by-path nên không cần và không nhận KEY_PATH, KEY_PATH_ROOT" in {
+    val env = vttColumn - "DECRYPT_MODE" - "PROVIDER_DECRYPT_COLUMNS" - "PROVIDER_KEY_FIELD" - "KEY_PATH" + ("DECRYPT_MODE" -> "none")
+
+    val v = settings(env)
+    v.decryptMode shouldBe DecryptMode.NoDecrypt
+    v.providerDecrypt shouldBe None
+    v.keyPath shouldBe ""
+    errors(Mode.DecryptEncrypt, env + ("KEY_PATH" -> "x")) should include("KEY_PATH: only used with DECRYPT_MODE=file/column")
+    errors(Mode.DecryptEncrypt, env + ("KEY_PATH_ROOT" -> "/x")) should include("KEY_PATH_ROOT: only used with DECRYPT_MODE=file/column")
+  }
+
+  it should "từ chối giá trị khác file, column, none" in {
+    errors(Mode.DecryptEncrypt, vttColumn + ("DECRYPT_MODE" -> "whole")) should include("DECRYPT_MODE='whole'")
+    IngestConfig.fromEnv(Mode.DecryptEncrypt, vttColumn + ("DECRYPT_MODE" -> "COLUMN")).isRight shouldBe true
+  }
+
+  it should "column: bắt buộc cột giải mã và keyField của VTT, keyField không nằm trong cột giải mã" in {
+    errors(Mode.DecryptEncrypt, vttColumn - "PROVIDER_DECRYPT_COLUMNS") should include("PROVIDER_DECRYPT_COLUMNS: is required")
+    errors(Mode.DecryptEncrypt, vttColumn - "PROVIDER_KEY_FIELD") should include("PROVIDER_KEY_FIELD: is required")
+    errors(Mode.DecryptEncrypt, vttColumn + ("PROVIDER_KEY_FIELD" -> "ISDN")) should include("PROVIDER_KEY_FIELD: 'ISDN' must not be listed")
+    errors(Mode.DecryptEncrypt, vttColumn + ("PROVIDER_KEY_FIELD" -> "bad-name")) should include("PROVIDER_KEY_FIELD: invalid column name")
+    errors(Mode.DecryptEncrypt, vttColumn + ("PROVIDER_DECRYPT_COLUMNS" -> "isdn,ISDN")) should include("PROVIDER_DECRYPT_COLUMNS: duplicated")
+  }
+
+  it should "column: bắt buộc KEY_PATH hoặc KEY_PATH_ROOT, không nhận DECRYPT_STAGING_PATH và FILE_CIPHER" in {
+    errors(Mode.DecryptEncrypt, vttColumn - "KEY_PATH") should include("KEY_PATH_ROOT: is required")
+    errors(Mode.DecryptEncrypt, vttColumn + ("DECRYPT_STAGING_PATH" -> "/tmp/s")) should
+      include("DECRYPT_STAGING_PATH: only used with DECRYPT_MODE=file")
+    errors(Mode.DecryptEncrypt, vttColumn + ("FILE_CIPHER" -> "aes-256-gcm")) should include("FILE_CIPHER: only used with DECRYPT_MODE=file")
+  }
+
+  it should "file và none: không nhận PROVIDER_DECRYPT_COLUMNS, PROVIDER_KEY_FIELD" in {
+    errors(Mode.DecryptEncrypt, vtnet + ("PROVIDER_DECRYPT_COLUMNS" -> "msisdn")) should
+      include("PROVIDER_DECRYPT_COLUMNS: only used with DECRYPT_MODE=column")
+    errors(Mode.DecryptEncrypt, vtnet + ("PROVIDER_KEY_FIELD" -> "start_time")) should
+      include("PROVIDER_KEY_FIELD: only used with DECRYPT_MODE=column")
+    errors(Mode.DecryptEncrypt, (vttColumn - "KEY_PATH") + ("DECRYPT_MODE" -> "none")) should
+      include("PROVIDER_DECRYPT_COLUMNS: only used with DECRYPT_MODE=column")
+  }
+
+  it should "file: parquet vẫn bắt buộc DECRYPT_STAGING_PATH (giải mã cả file ra thư mục tạm)" in {
+    errors(Mode.DecryptEncrypt, vtnet + ("INPUT_FORMAT" -> "parquet")) should include("DECRYPT_STAGING_PATH: is required")
+  }
+
+  "CDR_KEY_FIELD_VALUE" should "đặt cột hằng số làm keyField của bước mã hoá, giá trị chỉ gồm ký tự an toàn" in {
+    settings(vttColumn).keyFieldValue shouldBe Some("vtt")
+    Seq("a b", "x" * 65, "a/b").foreach { value =>
+      errors(Mode.DecryptEncrypt, vttColumn + ("CDR_KEY_FIELD_VALUE" -> value)) should include("CDR_KEY_FIELD_VALUE: must be")
+    }
+  }
+
+  it should "cần CDR_KEY_FIELD và cột mã hoá, và không dùng với passthrough" in {
+    errors(Mode.DecryptEncrypt, vttColumn - "CDR_KEY_FIELD") should include("CDR_KEY_FIELD_VALUE: needs CDR_KEY_FIELD")
+    errors(Mode.DecryptEncrypt, vttColumn - "CDR_ENCRYPT_COLUMNS" - "GLOBAL_KEY_ZONE") should include("CDR_KEY_FIELD_VALUE: needs CDR_ENCRYPT_COLUMNS")
+    errors(Mode.Passthrough, common + ("CDR_KEY_FIELD_VALUE" -> "vtt")) should include("only valid for the decrypt-encrypt mode")
+  }
+
+  "COLUMN_TRANSFORMS" should "nhận danh sách cột:KIND, không phân biệt hoa thường ở KIND" in {
+    val v = settings(vttColumn + ("COLUMN_TRANSFORMS" -> "customer_age:AGE_BAND, hour_id:hour_band"))
+
+    v.transforms shouldBe Seq(ColumnTransform("customer_age", TransformKind.AgeBand), ColumnTransform("hour_id", TransformKind.HourBand))
+  }
+
+  it should "từ chối KIND lạ, cú pháp sai, cột trùng, tên cột sai và cột đang được mã hoá" in {
+    errors(Mode.DecryptEncrypt, vttColumn + ("COLUMN_TRANSFORMS" -> "customer_age:MASK")) should include("COLUMN_TRANSFORMS: unknown transform 'MASK'")
+    errors(Mode.DecryptEncrypt, vttColumn + ("COLUMN_TRANSFORMS" -> "customer_age")) should include("COLUMN_TRANSFORMS: 'customer_age' must be column:KIND")
+    errors(Mode.DecryptEncrypt, vttColumn + ("COLUMN_TRANSFORMS" -> "a:AGE_BAND,A:HOUR_BAND")) should include("COLUMN_TRANSFORMS: duplicated column")
+    errors(Mode.DecryptEncrypt, vttColumn + ("COLUMN_TRANSFORMS" -> "bad-name:AGE_BAND")) should include("COLUMN_TRANSFORMS: invalid column name")
+    errors(Mode.DecryptEncrypt, vttColumn + ("COLUMN_TRANSFORMS" -> "isdn:AGE_BAND")) should
+      include("COLUMN_TRANSFORMS: column 'isdn' must not be listed in CDR_ENCRYPT_COLUMNS")
+    errors(Mode.Passthrough, common + ("COLUMN_TRANSFORMS" -> "customer_age:AGE_BAND")) should include("only valid for the decrypt-encrypt mode")
+  }
+
+  "describe (VTT)" should "nêu chế độ giải mã, cột VTT, keyField, giá trị hằng số và transform" in {
+    val described = IngestConfig.fromEnv(Mode.DecryptEncrypt, vttColumn).toOption.get.describe.toMap
+
+    described("DECRYPT_MODE") shouldBe "column"
+    described("PROVIDER_DECRYPT_COLUMNS") shouldBe "isdn"
+    described("PROVIDER_KEY_FIELD") shouldBe "sta_date"
+    described("CDR_KEY_FIELD_VALUE") shouldBe "vtt"
+    described("COLUMN_TRANSFORMS") shouldBe "customer_age:AGE_BAND"
+  }
+
   "describe" should "không chứa giá trị nhạy cảm và nêu rõ nguồn" in {
     val text = IngestConfig.fromEnv(Mode.DecryptEncrypt, vtnet).toOption.get.describe.map { case (k, v) => s"$k=$v" }.mkString(";")
 

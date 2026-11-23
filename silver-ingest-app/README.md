@@ -7,8 +7,8 @@ Thiết kế và quyết định: [docs/silver-ingest/PLAN.md](../docs/silver-in
 
 | Mode | Entry point | Job làm gì | DAG hiện có |
 | --- | --- | --- | --- |
-| `passthrough` | `vai.lakehouse.silveringest.app.PassthroughSilverApp` | Đọc file → ghi bảng, nguyên trạng. Không gọi DAK | `silver_ingest_vtt_f001_mpre_call`, `silver_ingest_vtnet_ebs_3g_4g` |
-| `decrypt-encrypt` | `vai.lakehouse.silveringest.app.DecryptEncryptSilverApp` | DAK `by-path`: có key thì giải mã cả file, không có thì đọc nguyên trạng → mã hoá các cột phiếu chọn bằng cdr-crypto (DAK `by-column`), **không chọn cột nào thì chỉ giải mã** → ghi bảng | `silver_ingest_vtnet_nims` |
+| `passthrough` | `vai.lakehouse.silveringest.app.PassthroughSilverApp` | Đọc file → ghi bảng, nguyên trạng. Không gọi DAK | `silver_ingest_vtt_d_*` (9 bảng danh mục của VTT), `silver_ingest_vtnet_ebs_3g_4g` |
+| `decrypt-encrypt` | `vai.lakehouse.silveringest.app.DecryptEncryptSilverApp` | DAK `by-path`: có key thì giải mã cả file, không có thì đọc nguyên trạng → mã hoá các cột phiếu chọn bằng cdr-crypto (DAK `by-column`), **không chọn cột nào thì chỉ giải mã** → ghi bảng. VTT (mã hoá theo từng cột) dùng `DECRYPT_MODE=column` hoặc `none`, xem mục 1b | `silver_ingest_vtnet_nims`, 9 DAG `silver_ingest_vtt_f*` |
 
 Kịch bản test từng bước (key, path Vault, phiếu): [docs/silver-ingest/TEST_SCENARIO_VTNET_EBS.md](../docs/silver-ingest/TEST_SCENARIO_VTNET_EBS.md).
 
@@ -42,6 +42,23 @@ Dữ liệu đã ghi giải mã được bằng SQL: `cdr_decrypt('<OUTPUT_DB>.<
 `keyPrefix` của `by-path`, base64 chuẩn của đúng 32 byte) và đây là **giả định** cho tới khi VTNET xác nhận định dạng thật. Thêm thuật
 toán: cài `FileCipher` (`crypto/FileCipher.scala`), thêm tên vào `FileCipher.forName` và `IngestConfig.FileCiphers`.
 
+## 1b. Luồng VTT: giải mã theo từng cột, gom nhóm, mã hoá bằng một key global
+
+VTT ghi file parquet và tự mã hoá **một số cột** bằng cdr-crypto (`keyInput = prefix ‖ giá trị cột keyField của dòng`). Thiết kế và quyết định:
+[docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md](../docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md). Job (`DECRYPT_MODE=column`; `none` bỏ bước 1 và 3):
+
+1. **Prefix của VTT** (chỉ `column`): DAK `by-path` với `KEY_PATH`. Key này là PREFIX, không phải khoá giải mã cả file. Chưa có key (`204`) là **lỗi** (nếu cứ chạy tiếp, cột còn là bản mã VTT sẽ bị mã hoá chồng lên).
+2. **Key global** của `GLOBAL_KEY_ZONE`, một lần ở driver, trước khi đọc file.
+3. Đọc file **nguyên trạng** (không giải mã cả file, không thư mục tạm).
+4. Giải mã `PROVIDER_DECRYPT_COLUMNS` bằng `CdrCrypto.decryptColumns` với `PROVIDER_KEY_FIELD` (cột plaintext của VTT). `keyField` null ở dòng có cột cần giải mã thì **job dừng**
+   (cdr-crypto sẽ âm thầm trả NULL); cả hai cùng null thì giữ NULL.
+5. Gom nhóm `COLUMN_TRANSFORMS` (`AGE_BAND`, `HOUR_BAND`, nhãn tiếng Anh) — chạy SAU giải mã vì `keyField` của VTT cần giá trị gốc.
+6. Thêm cột hằng số `CDR_KEY_FIELD` = `CDR_KEY_FIELD_VALUE`.
+7. Mã hoá `CDR_ENCRYPT_COLUMNS` bằng key global với **cột hằng số** làm keyField: cùng một giá trị gốc ra cùng một bản mã ở mọi dòng và mọi bảng (keyField của VTT đổi theo dòng và theo bảng nên không dùng được).
+8. Ghi bảng.
+
+Cột hour (`HOUR_FROM_COLUMN`) lấy từ `hour_id` **gốc**, trước khi gom nhóm. Cột VTT không mã hoá (vd `f001.calling_number`) dùng `DECRYPT_MODE=none`: chỉ mã hoá, không gọi `by-path`.
+
 ## 2. Cấu hình (env của driver)
 
 | Env | Nguồn | Mặc định | Ý nghĩa |
@@ -71,6 +88,14 @@ toán: cài `FileCipher` (`crypto/FileCipher.scala`), thêm tên vào `FileCiphe
 | `HOUR_COLUMN` | cả hai mode | `hour` | Tên cột giờ; chỉ dùng cùng `HOUR_PATH_REGEX` hoặc `HOUR_FROM_COLUMN`; phải khác `BATCH_COLUMN`. Là partition khi được liệt kê trong `OUTPUT_PARTITION_BY` (sau cột lô), không thì là cột thường |
 | `BATCH_HOURS` | cả hai mode | — (cả ngày) | Các giờ `HH` cách nhau dấu phẩy của lô bị thay khi `overwrite-partitions` (Delta: `replaceWhere` `<lô> = ... AND <giờ> IN (...)`); rỗng = thay cả lô. Cần `BATCH_VALUE` và `HOUR_PATH_REGEX` (không dùng với `HOUR_FROM_COLUMN`: file của một ngày chứa mọi giờ nên luôn thay cả lô). Dữ liệu ghi ra phải nằm trong các giờ này, không thì Delta từ chối. Hive: bỏ qua (ghi đè động theo partition) |
 | `DECRYPT_STAGING_PATH` | decrypt-encrypt | bắt buộc với `parquet`/`orc`/`avro` | Thư mục tạm cho file giải mã bằng key `by-path`; không được nằm trong `INPUT_PATH`. Không dùng khi DAK không có key |
+| `BULK_FROM` | cả hai mode | không (một ngày) | **Bulk load**: ngày đầu `yyyyMMdd`. Có thì job nạp **lần lượt từng ngày** `BULK_FROM`..`BULK_TO` trong cùng một Spark session, mỗi ngày một lần chạy bình thường (key lấy lại mỗi ngày), ghi partition `BATCH_COLUMN` = ngày đó. Cần `INPUT_PATH` có `%DAY%` (vd `.../f001-mpre-call/date=%DAY%`); không nhận `BATCH_VALUE`, `BATCH_HOURS`; chỉ `OUTPUT_MODE=overwrite-partitions` (mặc định), nên ngày đã nạp hoặc đã chạy thử chỉ bị thay đúng partition của ngày đó, ngày ngoài khoảng không bị đụng. Dừng ở ngày đầu tiên lỗi (log ghi `BULK_FROM` để nạp tiếp) |
+| `BULK_TO` | cả hai mode | `BULK_FROM` | Ngày cuối (gồm cả hai đầu), tối đa 62 ngày một lần |
+| `BULK_MISSING_DAY` | cả hai mode | `fail` | Ngày không có file: `fail` dừng ở ngày đó; `skip` bỏ ngày đó và nạp các ngày còn lại (không ngày nào nạp được là lỗi) |
+| `DECRYPT_MODE` | decrypt-encrypt | `file` | `file`: giải mã CẢ FILE bằng key `by-path` (VTNET). `column`: đọc file nguyên trạng, giải mã các cột `PROVIDER_DECRYPT_COLUMNS` bằng cdr-crypto, prefix là key `by-path` (VTT); không có key `by-path` là lỗi. `none`: không gọi `by-path`, không giải mã. `column`/`none` không nhận `FILE_CIPHER`, `DECRYPT_STAGING_PATH`; `none` không nhận `KEY_PATH`, `KEY_PATH_ROOT` |
+| `PROVIDER_DECRYPT_COLUMNS` | `DECRYPT_MODE=column` | bắt buộc | Cột mà đối tác đã mã hoá, phân cách bằng dấu phẩy |
+| `PROVIDER_KEY_FIELD` | `DECRYPT_MODE=column` | bắt buộc | Cột plaintext của đối tác ghép sau prefix thành `keyInput`; không được nằm trong `PROVIDER_DECRYPT_COLUMNS` |
+| `CDR_KEY_FIELD_VALUE` | decrypt-encrypt | không (`CDR_KEY_FIELD` là cột có sẵn trong dữ liệu) | Có thì `CDR_KEY_FIELD` là cột **hằng số** do job thêm, mọi dòng bằng giá trị này (`[A-Za-z0-9_.:-]`, 1 đến 64 ký tự); cột trùng tên đã có trong dữ liệu là lỗi. Cần `CDR_KEY_FIELD` và `CDR_ENCRYPT_COLUMNS` |
+| `COLUMN_TRANSFORMS` | decrypt-encrypt | không | `cột:KIND` cách nhau dấu phẩy, KIND là `AGE_BAND` (`Under 18`, `18–24`, `25–34`, `35–44`, `45–54`, `55–64`, `65+`) hoặc `HOUR_BAND` (`0–5h`, `6–8h`, `9–11h`, `12–13h`, `14–16h`, `17–19h`, `20–23h`); giá trị không hợp lệ là `Unknown`. Chạy sau giải mã, trước mã hoá; không nhận cột đang mã hoá |
 | `CRYPTO_PREFIX_SOURCE=dak`, `DAK_ADDR`, `DAK_TOKEN_URL`, `DAK_CLIENT_ID`, `DAK_CLIENT_SECRET`, `DAK_TAG=internal`, `DAK_CALLER` | decrypt-encrypt | | Client **nội bộ** của DAK, dùng cho cả `by-path` và `by-column` (key-prefix-lib) |
 
 Env của decrypt-encrypt đặt cho passthrough là lỗi cấu hình. Giới hạn của decrypt-encrypt (vì file có thể phải giải mã): mỗi file phải nhỏ hơn 2 GB (giải mã nguyên khối); text là UTF-8 và đọc

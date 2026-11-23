@@ -97,7 +97,51 @@ final case class Hours(column: String, pathRegex: String, replace: Seq[String] =
  */
 final case class DecryptEncryptSettings(keyPath: String, cipher: String, encryptColumns: Seq[String], keyField: Option[String],
                                         stagingPath: Option[String], onMissing: String = IngestConfig.DefaultOnMissing,
-                                        globalZone: Option[String] = None)
+                                        globalZone: Option[String] = None, decryptMode: DecryptMode = DecryptMode.File,
+                                        providerDecrypt: Option[ProviderDecrypt] = None, keyFieldValue: Option[String] = None,
+                                        transforms: Seq[ColumnTransform] = Nil)
+
+/**
+ * Cách giải mã dữ liệu của đối tác (`DECRYPT_MODE`):
+ *  - `file` (mặc định): `by-path` có key thì giải mã CẢ FILE (VTNET), không có key thì đọc nguyên trạng;
+ *  - `column`: file đọc nguyên trạng, các cột đối tác đã mã hoá ([[ProviderDecrypt]]) được giải mã bằng cdr-crypto, prefix là key `by-path`
+ *    (VTT mã hoá theo từng cột). `by-path` chưa có key là lỗi: không được mã hoá chồng lên bản mã của đối tác;
+ *  - `none`: không gọi `by-path`, không giải mã gì (cột đối tác không mã hoá, hoặc bảng không có cột nhạy cảm).
+ */
+sealed abstract class DecryptMode(val name: String)
+
+object DecryptMode {
+  case object File extends DecryptMode("file")
+  case object Column extends DecryptMode("column")
+  case object NoDecrypt extends DecryptMode("none")
+
+  val All: Seq[DecryptMode] = Seq(File, Column, NoDecrypt)
+
+  def parse(raw: String): Option[DecryptMode] = All.find(_.name == raw.trim.toLowerCase(Locale.ROOT))
+}
+
+/**
+ * Cột đối tác đã mã hoá theo từng cột và cột `keyField` của đối tác (giữ plaintext, giá trị của từng dòng ghép sau prefix thành `keyInput`).
+ * Chỉ dùng với [[DecryptMode.Column]]; `keyField` không được nằm trong `columns`.
+ */
+final case class ProviderDecrypt(columns: Seq[String], keyField: String)
+
+/** Cách gom nhóm một cột (`COLUMN_TRANSFORMS`, dạng `cột:KIND`): giá trị gốc được thay bằng nhãn khung, kiểu cột thành chuỗi. */
+sealed abstract class TransformKind(val name: String)
+
+object TransformKind {
+  /** Tuổi: `Under 18`, `18–24`, `25–34`, `35–44`, `45–54`, `55–64`, `65+`, ngoài ra `Unknown`. */
+  case object AgeBand extends TransformKind("AGE_BAND")
+
+  /** Giờ 0..23: `0–5h`, `6–8h`, `9–11h`, `12–13h`, `14–16h`, `17–19h`, `20–23h`, ngoài ra `Unknown`. */
+  case object HourBand extends TransformKind("HOUR_BAND")
+
+  val All: Seq[TransformKind] = Seq(AgeBand, HourBand)
+
+  def parse(raw: String): Option[TransformKind] = All.find(_.name == raw.trim.toUpperCase(Locale.ROOT))
+}
+
+final case class ColumnTransform(column: String, kind: TransformKind)
 
 /**
  * Cấu hình của job, đọc từ biến môi trường của driver (`spec.driver.env`). Chung cho hai nguồn: `INPUT_*`, `OUTPUT_*`,
@@ -137,13 +181,18 @@ final case class IngestConfig(
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
-    "KEY_PATH"             -> v.keyPath,
-    "FILE_CIPHER"          -> v.cipher,
-    "CDR_ENCRYPT_COLUMNS"  -> (if (v.encryptColumns.isEmpty) "(none)" else v.encryptColumns.mkString(", ")),
-    "CDR_KEY_FIELD"        -> v.keyField.getOrElse("(none)"),
-    "CDR_ON_MISSING"       -> v.onMissing,
-    "GLOBAL_KEY_ZONE"      -> v.globalZone.getOrElse("(none: per-column keys)"),
-    "DECRYPT_STAGING_PATH" -> v.stagingPath.getOrElse("(in memory)"))
+    "DECRYPT_MODE"             -> v.decryptMode.name,
+    "KEY_PATH"                 -> (if (v.keyPath.isEmpty) "(not used)" else v.keyPath),
+    "FILE_CIPHER"              -> v.cipher,
+    "PROVIDER_DECRYPT_COLUMNS" -> v.providerDecrypt.fold("(none)")(_.columns.mkString(", ")),
+    "PROVIDER_KEY_FIELD"       -> v.providerDecrypt.fold("(none)")(_.keyField),
+    "CDR_ENCRYPT_COLUMNS"      -> (if (v.encryptColumns.isEmpty) "(none)" else v.encryptColumns.mkString(", ")),
+    "CDR_KEY_FIELD"            -> v.keyField.getOrElse("(none)"),
+    "CDR_KEY_FIELD_VALUE"      -> v.keyFieldValue.getOrElse("(none: the column is read from the data)"),
+    "CDR_ON_MISSING"           -> v.onMissing,
+    "GLOBAL_KEY_ZONE"          -> v.globalZone.getOrElse("(none: per-column keys)"),
+    "COLUMN_TRANSFORMS"        -> (if (v.transforms.isEmpty) "(none)" else v.transforms.map(t => s"${t.column}:${t.kind.name}").mkString(", ")),
+    "DECRYPT_STAGING_PATH"     -> v.stagingPath.getOrElse("(in memory)"))
   }
 }
 
@@ -173,7 +222,10 @@ object IngestConfig {
   private val Identifier = "^[A-Za-z0-9_]{1,128}$"
   private val ColumnName = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
   private val DecryptEncryptOnly = Seq("KEY_PATH_ROOT", "KEY_PATH", "FILE_CIPHER", "CDR_ENCRYPT_COLUMNS", "CDR_KEY_FIELD", "CDR_ON_MISSING",
-    "GLOBAL_KEY_ZONE", "DECRYPT_STAGING_PATH")
+    "GLOBAL_KEY_ZONE", "DECRYPT_STAGING_PATH", "DECRYPT_MODE", "PROVIDER_DECRYPT_COLUMNS", "PROVIDER_KEY_FIELD", "CDR_KEY_FIELD_VALUE",
+    "COLUMN_TRANSFORMS")
+  /** Giá trị của cột hằng số làm `keyField` mã hoá: nằm trong dữ liệu, nên chỉ gồm ký tự an toàn. */
+  private val KeyFieldValue = "^[A-Za-z0-9_.:-]{1,64}$"
   private val OptionPrefix = "INPUT_OPTION_"
 
   /** Gom MỌI lỗi cấu hình rồi trả về một lượt, để sửa manifest/DAG một lần là đủ. */
@@ -307,10 +359,27 @@ object IngestConfig {
 
   private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],
                                      columns: (String, String) => Seq[String], errors: ArrayBuffer[String]): DecryptEncryptSettings = {
+    val mode = raw("DECRYPT_MODE") match {
+      case None => DecryptMode.File
+      case Some(m) => DecryptMode.parse(m).getOrElse {
+        errors += s"DECRYPT_MODE='$m': must be one of ${DecryptMode.All.map(_.name).mkString(" / ")}"
+        DecryptMode.File
+      }
+    }
     val cipher = raw("FILE_CIPHER").map(_.toLowerCase(Locale.ROOT)).getOrElse(DefaultCipher)
     if (!FileCiphers.contains(cipher)) errors += s"FILE_CIPHER='$cipher': must be one of ${FileCiphers.mkString(" / ")}"
-    // Luôn hỏi by-path: chỉ biết file có mã hoá hay không khi chạy (DAK có key hay trả rỗng).
-    val keyPath = keyPathOf(raw, input, errors)
+    if (mode != DecryptMode.File && raw("FILE_CIPHER").isDefined) {
+      errors += "FILE_CIPHER: only used with DECRYPT_MODE=file (whole-file decryption)"
+    }
+    // file, column: luôn hỏi by-path (file: chỉ biết file có mã hoá hay không khi chạy; column: lấy prefix của đối tác). none: không gọi by-path.
+    val keyPath = mode match {
+      case DecryptMode.NoDecrypt =>
+        Seq("KEY_PATH", "KEY_PATH_ROOT").filter(k => raw(k).isDefined).foreach { k =>
+          errors += s"$k: only used with DECRYPT_MODE=file/column (DECRYPT_MODE=none never calls by-path)"
+        }
+        ""
+      case _ => keyPathOf(raw, input, errors)
+    }
     val onMissing = raw("CDR_ON_MISSING").map(_.toLowerCase(Locale.ROOT)).getOrElse(DefaultOnMissing)
     if (!OnMissingValues.contains(onMissing)) {
       errors += s"CDR_ON_MISSING='$onMissing': must be one of ${OnMissingValues.mkString(" / ")}"
@@ -343,9 +412,15 @@ object IngestConfig {
       errors += s"OUTPUT_PARTITION_BY: partition column '$c' must not be listed in CDR_ENCRYPT_COLUMNS (it would be stored in clear in the path)"
     }
 
-    // File có mã hoá hay không chỉ biết khi chạy, nên điều kiện của việc giải mã luôn được kiểm.
+    val provider = providerDecrypt(raw, mode, columns, errors)
+    val keyFieldValue = constantKeyField(raw, keyField, encrypt, errors)
+    val transforms = columnTransforms(raw, lowerEncrypt, errors)
+
+    // Chỉ giải mã CẢ FILE (DECRYPT_MODE=file) mới cần thư mục tạm: file có mã hoá hay không chỉ biết khi chạy, nên điều kiện luôn được kiểm.
     val staging = raw("DECRYPT_STAGING_PATH")
-    if (input.format.isText) {
+    if (mode != DecryptMode.File) {
+      staging.foreach(_ => errors += "DECRYPT_STAGING_PATH: only used with DECRYPT_MODE=file (whole-file decryption); the other modes read the files as they are")
+    } else if (input.format.isText) {
       staging.foreach(_ => errors += "DECRYPT_STAGING_PATH: only used with INPUT_FORMAT=parquet/orc/avro; text formats are decrypted in memory")
       // Mỗi phần tử trong bộ nhớ là một dòng nên không đọc được bản ghi nhiều dòng.
       if (input.options.exists { case (k, v) => k.equalsIgnoreCase("multiLine") && v.trim.equalsIgnoreCase("true") }) {
@@ -357,7 +432,78 @@ object IngestConfig {
       case Some(s) if inside(s, input.path) => errors += "DECRYPT_STAGING_PATH: must not be inside INPUT_PATH"
       case Some(_) =>
     }
-    DecryptEncryptSettings(keyPath, cipher, encrypt, keyField, staging, onMissing, globalZone)
+    DecryptEncryptSettings(keyPath, cipher, encrypt, keyField, if (mode == DecryptMode.File) staging else None, onMissing, globalZone,
+      mode, provider, keyFieldValue, transforms)
+  }
+
+  /** `PROVIDER_DECRYPT_COLUMNS` + `PROVIDER_KEY_FIELD`: bắt buộc với `DECRYPT_MODE=column`, không nhận với các chế độ khác. */
+  private def providerDecrypt(raw: String => Option[String], mode: DecryptMode, columns: (String, String) => Seq[String],
+                              errors: ArrayBuffer[String]): Option[ProviderDecrypt] = {
+    val rawColumns = raw("PROVIDER_DECRYPT_COLUMNS")
+    val rawKeyField = raw("PROVIDER_KEY_FIELD")
+    if (mode != DecryptMode.Column) {
+      rawColumns.foreach(_ => errors += "PROVIDER_DECRYPT_COLUMNS: only used with DECRYPT_MODE=column")
+      rawKeyField.foreach(_ => errors += "PROVIDER_KEY_FIELD: only used with DECRYPT_MODE=column")
+      None
+    } else {
+      val cols = rawColumns match {
+        case Some(v) => columns("PROVIDER_DECRYPT_COLUMNS", v)
+        case None =>
+          errors += "PROVIDER_DECRYPT_COLUMNS: is required with DECRYPT_MODE=column (the columns that the provider encrypted)"
+          Nil
+      }
+      if (rawColumns.isDefined && cols.isEmpty) errors += "PROVIDER_DECRYPT_COLUMNS: must list at least one column"
+      val keyField = rawKeyField match {
+        case Some(k) if !k.matches(ColumnName) => errors += s"PROVIDER_KEY_FIELD: invalid column name '$k'"; Some(k)
+        case Some(k) =>
+          if (cols.exists(_.equalsIgnoreCase(k))) {
+            errors += s"PROVIDER_KEY_FIELD: '$k' must not be listed in PROVIDER_DECRYPT_COLUMNS — it stays plaintext as key material"
+          }
+          Some(k)
+        case None =>
+          errors += "PROVIDER_KEY_FIELD: is required with DECRYPT_MODE=column (the plaintext column that completes the provider key of each row)"
+          None
+      }
+      keyField.map(ProviderDecrypt(cols, _))
+    }
+  }
+
+  /**
+   * `CDR_KEY_FIELD_VALUE`: `CDR_KEY_FIELD` là một cột HẰNG SỐ do job thêm (mọi dòng bằng giá trị này) thay vì cột có sẵn trong dữ liệu, để cùng
+   * một giá trị gốc luôn ra cùng một bản mã ở mọi dòng và mọi bảng (điều kiện để nối được sau khi băm).
+   */
+  private def constantKeyField(raw: String => Option[String], keyField: Option[String], encrypt: Seq[String],
+                               errors: ArrayBuffer[String]): Option[String] =
+    raw("CDR_KEY_FIELD_VALUE").map { value =>
+      if (!value.matches(KeyFieldValue)) errors += "CDR_KEY_FIELD_VALUE: must be 1 to 64 characters of [A-Za-z0-9_.:-]"
+      if (keyField.isEmpty) errors += "CDR_KEY_FIELD_VALUE: needs CDR_KEY_FIELD (the name of the constant column that the job adds)"
+      if (encrypt.isEmpty) errors += "CDR_KEY_FIELD_VALUE: needs CDR_ENCRYPT_COLUMNS (the columns that the constant key field encrypts)"
+      value
+    }
+
+  /** `COLUMN_TRANSFORMS` = `cột:KIND,cột:KIND`. Gom nhóm chạy SAU giải mã và TRƯỚC mã hoá, nên không nhận cột đang mã hoá. */
+  private def columnTransforms(raw: String => Option[String], lowerEncrypt: Set[String],
+                               errors: ArrayBuffer[String]): Seq[ColumnTransform] = {
+    val tokens = raw("COLUMN_TRANSFORMS").fold(Seq.empty[String])(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq)
+    val parsed = tokens.flatMap { token =>
+      token.split(":", -1).map(_.trim) match {
+        case Array(column, kind) if column.nonEmpty && kind.nonEmpty =>
+          if (!column.matches(ColumnName)) errors += s"COLUMN_TRANSFORMS: invalid column name '$column'"
+          if (lowerEncrypt.contains(column.toLowerCase(Locale.ROOT))) {
+            errors += s"COLUMN_TRANSFORMS: column '$column' must not be listed in CDR_ENCRYPT_COLUMNS (transforms run before the encryption)"
+          }
+          TransformKind.parse(kind) match {
+            case Some(k) => Some(ColumnTransform(column, k))
+            case None =>
+              errors += s"COLUMN_TRANSFORMS: unknown transform '$kind' (must be one of ${TransformKind.All.map(_.name).mkString(" / ")})"
+              None
+          }
+        case _ => errors += s"COLUMN_TRANSFORMS: '$token' must be column:KIND"; None
+      }
+    }
+    val lower = parsed.map(_.column.toLowerCase(Locale.ROOT))
+    if (lower.distinct.size != lower.size) errors += "COLUMN_TRANSFORMS: duplicated column (column names are case-insensitive)"
+    parsed
   }
 
   /**

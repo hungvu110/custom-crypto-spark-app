@@ -29,5 +29,10 @@ object SourceFiles {
     files
   }
 
+  /** `INPUT_PATH` có ít nhất một file để nạp không (đường dẫn không tồn tại hoặc thư mục rỗng là không). Dùng cho ngày thiếu của bulk load. */
+  def hasFiles(spark: SparkSession, path: String): Boolean =
+    try { list(spark, path); true }
+    catch { case _: IllegalArgumentException => false }
+
   private def hidden(name: String): Boolean = name.startsWith("_") || name.startsWith(".")
 }
