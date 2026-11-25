@@ -476,8 +476,8 @@ class BulkLoadTest(unittest.TestCase):
         self.assertEqual(common.MAX_BULK_DAYS, 62)
 
 
-WIDE = {"executor_cores": 4, "executor_memory": "16384m", "executor_memory_overhead": "3072m", "driver_memory": "6144m",
-        "driver_memory_overhead": "1536m"}
+WIDE = {"executor_cores": 4, "executor_memory": "7168m", "executor_memory_overhead": "1536m", "driver_memory": "3072m",
+        "driver_memory_overhead": "1024m"}
 NARROW = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m", "driver_memory": "4096m",
           "driver_memory_overhead": "1024m"}
 TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m", "driver_memory": "1024m",
@@ -485,10 +485,10 @@ TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "execut
 
 # Sizes of one day on HDFS (parquet, 2026-11-10) -> tasks of 128 MB; docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md section 10.
 EXPECTED_RESOURCES = {
-    F003: {**WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 256},  # 33.1 G
-    F015: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 192},  # 23.7 G
-    F016: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 224},  # 28.5 G per batch
-    F014: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 128},  # 17.7 G
+    F003: {**WIDE, "executors": 6, "min_executors": 2, "max_executors": 12, "shuffle_partitions": 256},  # 33.1 G
+    F015: {**WIDE, "executors": 4, "min_executors": 2, "max_executors": 10, "shuffle_partitions": 192},  # 23.7 G
+    F016: {**WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 224},  # 28.5 G per batch
+    F014: {**WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 128},  # 17.7 G
     FCUST: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 96},  # 12.1 G
     F022: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 48},  # 5.0 G
     F001: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 32},  # 3.7 G
@@ -529,13 +529,13 @@ class ResourcesTest(unittest.TestCase):
         conf, spec = spark_conf_of(F003)
         self.assertEqual(conf["spark.dynamicAllocation.enabled"], "true")
         self.assertEqual(conf["spark.dynamicAllocation.shuffleTracking.enabled"], "true")  # kubernetes has no external shuffle service
-        self.assertEqual((conf["spark.dynamicAllocation.minExecutors"], conf["spark.dynamicAllocation.maxExecutors"]), ("2", "8"))
-        self.assertEqual(conf["spark.dynamicAllocation.initialExecutors"], "4")
+        self.assertEqual((conf["spark.dynamicAllocation.minExecutors"], conf["spark.dynamicAllocation.maxExecutors"]), ("2", "12"))
+        self.assertEqual(conf["spark.dynamicAllocation.initialExecutors"], "6")
         self.assertEqual(conf["spark.dynamicAllocation.executorIdleTimeout"], "120s")
-        self.assertEqual(spec["executor"]["instances"], 4)
+        self.assertEqual(spec["executor"]["instances"], 6)
         self.assertEqual(spec["executor"]["cores"], 4)
-        self.assertEqual(spec["executor"]["memory"], "16384m")
-        self.assertEqual(spec["driver"]["memory"], "6144m")
+        self.assertEqual(spec["executor"]["memory"], "7168m")
+        self.assertEqual(spec["driver"]["memory"], "3072m")
         self.assertEqual(conf["spark.sql.shuffle.partitions"], "256")
 
     def test_a_static_table_keeps_dynamic_allocation_off_and_has_no_dynamic_keys(self):
@@ -565,6 +565,15 @@ class ResourcesTest(unittest.TestCase):
             self.assertEqual(conf["spark.sql.codegen.maxFields"], str(common.WIDE_TABLE_MAX_FIELDS), dataset)
             self.assertEqual(conf["spark.sql.debug.maxToStringFields"], str(common.WIDE_TABLE_MAX_FIELDS), dataset)
         self.assertGreaterEqual(common.WIDE_TABLE_MAX_FIELDS, 1000)
+
+    def test_a_wide_executor_fits_the_cpu_to_memory_ratio_of_the_namespace(self):
+        # Namespace quota: 200 CPU, 400 GB, i.e. 2 GB per core. Memory ran out first with 4.75 GB per core: keep a wide executor near it.
+        mib = lambda v: int(v[:-1]) * (1024 if v.endswith("g") else 1)
+        per_core = (mib(WIDE["executor_memory"]) + mib(WIDE["executor_memory_overhead"])) / WIDE["executor_cores"] / 1024
+        self.assertLessEqual(per_core, 2.25)
+        both_at_max = sum(r["max_executors"] * (mib(r["executor_memory"]) + mib(r["executor_memory_overhead"]))
+                          + mib(r["driver_memory"]) + mib(r["driver_memory_overhead"]) for r in (EXPECTED_RESOURCES[F003], EXPECTED_RESOURCES[F016])) / 1024
+        self.assertLess(both_at_max, 200)  # f003 and f016 together at their maximum: under half of the namespace
 
     def test_the_dynamic_keys_are_checked(self):
         base = {"executors": 3}

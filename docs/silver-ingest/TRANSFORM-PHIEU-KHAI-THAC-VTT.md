@@ -470,10 +470,10 @@ Cấu hình nằm ở khóa `resources` của từng entry trong `DATASETS` (`si
 
 | Bảng | Một ngày | × 19 ngày | Task (128 MB) | `executors` (đầu, min, max) | Cỡ executor | Dynamic allocation |
 | --- | --- | --- | --- | --- | --- | --- |
-| `f003-mpre-data` | 33,1 G | 629 G | 265 | 4, 2, 8 | WIDE | Có |
-| `f015-mpre-tot-charge-d-acc` | 23,7 G | 450 G | 190 | 3, 2, 6 | WIDE | Có |
-| `f014-mpre-tot-charge-d` | 17,7 G | 336 G | 142 | 3, 2, 6 | WIDE | Có |
-| `f016-mpre-tot-charge-m` | 28,5 G mỗi batch | (batch tháng) | 228 | 3, 2, 6 | WIDE | Có |
+| `f003-mpre-data` | 33,1 G | 629 G | 265 | 6, 2, 12 | WIDE | Có |
+| `f015-mpre-tot-charge-d-acc` | 23,7 G | 450 G | 190 | 4, 2, 10 | WIDE | Có |
+| `f014-mpre-tot-charge-d` | 17,7 G | 336 G | 142 | 4, 2, 8 | WIDE | Có |
+| `f016-mpre-tot-charge-m` | 28,5 G mỗi batch | (batch tháng) | 228 | 4, 2, 8 | WIDE | Có |
 | `f-customer` | 12,1 G | 230 G | 97 | 2, 1, 4 | NARROW | Có |
 | `f022-register` | 5,0 G | 95 G | 40 | 2, 1, 4 | NARROW | Có |
 | `f001-mpre-call` | 3,7 G | 70 G | 30 | 2, 1, 4 | NARROW | Có |
@@ -483,7 +483,7 @@ Cấu hình nằm ở khóa `resources` của từng entry trong `DATASETS` (`si
 
 Tám bảng hằng ngày cộng lại khoảng **99,5 G một ngày, 1,85 TB cho 19 ngày** (parquet nén).
 
-**Cỡ executor:** WIDE = 4 core, heap 16 GB, overhead 3 GB (cho bảng 150 đến 450 cột, 4 GB heap mỗi core), driver 6 GB; NARROW = 4 core, heap 12 GB, overhead 2 GB, driver 4 GB; TINY = 2 core, heap 2 GB, driver 1 GB.
+**Cỡ executor:** WIDE = 4 core, heap 7 GB, overhead 1,5 GB (khoảng 2,1 GB mỗi core, theo tỉ lệ 400 GB / 200 CPU của namespace: RAM hết trước CPU, nên bảng rộng dùng nhiều executor nhỏ hơn), driver 3 GB; NARROW = 4 core, heap 12 GB, overhead 2 GB, driver 4 GB; TINY = 2 core, heap 2 GB, driver 1 GB.
 
 **Điều đã đo và hệ quả:** một lần mã hóa `cdr-crypto` mất **0,74 µs** (khoảng 1,35 triệu giá trị mỗi giây trên một core, đo bằng chính jar VTT). Nên **mã hóa không phải điểm nghẽn**: job bị giới hạn bởi đọc, giải nén và ghi parquet, nên số core theo số task (kích thước chia 128 MB), và bộ nhớ theo độ rộng của bảng.
 
@@ -491,7 +491,7 @@ Tám bảng hằng ngày cộng lại khoảng **99,5 G một ngày, 1,85 TB cho
 
 **Ước lượng chưa phải số đo:** tốc độ giả định 10 đến 25 MB/s mỗi core cho cả đọc và ghi. Với `f003` ở 16 đến 32 core, mỗi ngày xử lý khoảng 1 đến 4 phút cộng 2 đến 3 phút cố định (liệt kê file, lấy key, ghi Delta), tức khoảng 1 đến 2 giờ cho 19 ngày. **Chạy thử một ngày, xem Spark UI** (thời gian mỗi task, spill, GC) rồi chỉnh.
 
-**Giới hạn tài nguyên:** nếu chạy cả 18 DAG cùng lúc ở mức tối đa thì cần khoảng 840 GB RAM và 210 core (tính cả overhead và driver). `ResourceQuota` của namespace chưa biết; nếu nhỏ hơn thì giảm `max_executors` (job chỉ chậm hơn) hoặc nạp bulk từng bảng lớn một. Nên bắt đầu bằng `f001` rồi `f014`.
+**Giới hạn tài nguyên:** nếu chạy cả 18 DAG cùng lúc ở mức tối đa thì cần khoảng 650 GB RAM và 260 core (tính cả overhead và driver), vượt quota 400 GB / 200 CPU: chạy song song vài bảng một lúc. Riêng `f003` và `f016` cùng ở mức tối đa cần khoảng 178 GB và 82 core. `ResourceQuota` của namespace chưa biết; nếu nhỏ hơn thì giảm `max_executors` (job chỉ chậm hơn) hoặc nạp bulk từng bảng lớn một. Nên bắt đầu bằng `f001` rồi `f014`.
 
 **Điều cần chú ý ở các bảng `d-*`:** ảnh kích thước cho thấy `d-cust-type` có thư mục `date=20261114` còn các bảng khác `date=20261110`, nghĩa là bảng danh mục **không có thư mục cho mọi ngày**. Nạp bulk 04/11 đến 22/11 cho các bảng này cần `"missingDays": "skip"`; còn lịch hằng ngày sẽ lỗi ở ngày không có thư mục (job báo `INPUT_PATH does not exist`). `f016` cũng chỉ có hai batch (`date=20261001`, `date=20261110`).
 
