@@ -575,6 +575,27 @@ class ResourcesTest(unittest.TestCase):
                           + mib(r["driver_memory"]) + mib(r["driver_memory_overhead"]) for r in (EXPECTED_RESOURCES[F003], EXPECTED_RESOURCES[F016])) / 1024
         self.assertLess(both_at_max, 200)  # f003 and f016 together at their maximum: under half of the namespace
 
+    def test_every_table_rebalances_its_output_into_files_of_about_the_same_size(self):
+        # Without it every task writes one file per hour of its rows: 281 files of a few MB per hour of f003.
+        for dataset in ALL_DATASETS:
+            env = driver_env(render(DAGS[dag_id(dataset)]))
+            self.assertEqual(env["OUTPUT_FILE_SHUFFLE_MB"], str(common.DEFAULT_FILE_SHUFFLE_MB), dataset)
+            self.assertNotIn("OUTPUT_REBALANCE", env, dataset)  # on by default in the job
+        self.assertEqual(common.DEFAULT_FILE_SHUFFLE_MB, 384)  # 128 MB of parquet x 3 until measured
+        conf, _ = spark_conf_of(F003)
+        self.assertEqual(conf["spark.sql.adaptive.enabled"], "true")
+        self.assertEqual(conf["spark.sql.adaptive.coalescePartitions.enabled"], "true")
+        self.assertEqual(conf["spark.sql.adaptive.optimizeSkewsInRebalancePartitions.enabled"], "true")
+
+    def test_a_table_may_set_its_own_shuffle_size_per_file_within_limits(self):
+        settings = {**vtt_module.DATASETS[F003], "output_file_shuffle_mb": 512}
+        common.check_dataset(F003, settings)
+        source = vtt_module.source_for(F003, settings, None)
+        self.assertEqual(driver_env(common.build_spec(source))["OUTPUT_FILE_SHUFFLE_MB"], "512")
+        for bad in (15, 4097, "384", True, 1.5):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_dataset(F003, {**vtt_module.DATASETS[F003], "output_file_shuffle_mb": bad})
+
     def test_the_dynamic_keys_are_checked(self):
         base = {"executors": 3}
         common.check_resources("d", {**base, "min_executors": 1, "max_executors": 6})

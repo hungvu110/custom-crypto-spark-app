@@ -72,6 +72,23 @@ final case class InputSpec(path: String, format: InputFormat, schema: Option[Str
 final case class Batch(column: String, value: String)
 
 /**
+ * Cách chia file khi ghi. `rebalance`: trước khi ghi, gom dữ liệu theo các cột partition (hint `REBALANCE` + AQE) để mỗi file ghi ra có
+ * khoảng `shuffleBytesPerFile` byte DỮ LIỆU SHUFFLE (AQE tách partition lớn, gộp partition nhỏ). Không gom thì mỗi task ghi một file cho mỗi
+ * partition có trong dữ liệu của nó: với VTT (mọi file landing có đủ 24 giờ) là số task x 24 file nhỏ mỗi ngày.
+ *
+ * Dữ liệu shuffle (dòng nhị phân, nén lz4) lớn hơn parquet đã nén vài lần: để file parquet khoảng 128 MB thì đặt
+ * `OUTPUT_FILE_SHUFFLE_MB` = 128 x (Shuffle Write trên Spark UI / dung lượng parquet đã ghi), đo trên một ngày.
+ */
+final case class OutputFiles(rebalance: Boolean, shuffleBytesPerFile: Long)
+
+object OutputFiles {
+  val DefaultShuffleMb = 384 // 128 MB parquet x hệ số giả định 3, cho tới khi đo
+  val MinShuffleMb = 16
+  val MaxShuffleMb = 4096
+  val Default: OutputFiles = OutputFiles(rebalance = true, shuffleBytesPerFile = DefaultShuffleMb.toLong * 1024 * 1024)
+}
+
+/**
  * Giờ của từng dòng: job thêm cột `column` = giờ `HH`, suy ra từ ĐƯỜNG DẪN file nguồn bằng `pathRegex` (đúng một nhóm bắt, không khớp
  * thì `NA`), hoặc từ một CỘT của chính dữ liệu (`sourceColumn`, `pathRegex` để rỗng): giá trị `0`..`23` được đệm thành `HH`, giá trị khác
  * hoặc rỗng thành `NA`. Đặt cột này vào `OUTPUT_PARTITION_BY` nếu muốn bảng partition theo giờ; không thì nó là cột thường. `replace` (rỗng =
@@ -161,7 +178,8 @@ final case class IngestConfig(
     enableHiveSupport: Boolean,
     decryptEncrypt: Option[DecryptEncryptSettings],
     batch: Option[Batch] = None,
-    hours: Option[Hours] = None) {
+    hours: Option[Hours] = None,
+    outputFiles: OutputFiles = OutputFiles.Default) {
 
   def target: String = s"$outputDb.$outputTable"
 
@@ -179,6 +197,9 @@ final case class IngestConfig(
         (if (h.replace.isEmpty) "" else s"; replace ${h.replace.mkString(",")}")
     },
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
+    "OUTPUT_FILES"        -> (if (!outputFiles.rebalance) "one file per task and partition (OUTPUT_REBALANCE=false)"
+                              else s"rebalance by ${if (partitionBy.isEmpty) "(no partition column)" else partitionBy.mkString(", ")}, " +
+                                s"about ${outputFiles.shuffleBytesPerFile / (1024 * 1024)} MB of shuffle data per file"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
     "DECRYPT_MODE"             -> v.decryptMode.name,
@@ -336,6 +357,18 @@ object IngestConfig {
       if (all.isEmpty) Nil else columns("OUTPUT_PARTITION_BY", all.mkString(","))
     }
 
+    val outputFiles = {
+      val rebalance = bool("OUTPUT_REBALANCE", default = true)
+      val shuffleMb = raw("OUTPUT_FILE_SHUFFLE_MB").map { v =>
+        if (!rebalance) errors += "OUTPUT_FILE_SHUFFLE_MB: only used with OUTPUT_REBALANCE=true"
+        scala.util.Try(v.trim.toInt).toOption.filter(mb => mb >= OutputFiles.MinShuffleMb && mb <= OutputFiles.MaxShuffleMb).getOrElse {
+          errors += s"OUTPUT_FILE_SHUFFLE_MB='$v': must be a whole number of MB from ${OutputFiles.MinShuffleMb} to ${OutputFiles.MaxShuffleMb}"
+          OutputFiles.DefaultShuffleMb
+        }
+      }.getOrElse(OutputFiles.DefaultShuffleMb)
+      OutputFiles(rebalance, shuffleMb.toLong * 1024 * 1024)
+    }
+
     val warehousePath = raw("WAREHOUSE_PATH")
     warehousePath.filterNot(isAbsoluteUri).foreach { _ =>
       errors += "WAREHOUSE_PATH: must be an absolute URI with a scheme, e.g. hdfs://<namenode>:8020/<path>"
@@ -354,7 +387,7 @@ object IngestConfig {
 
     if (errors.nonEmpty) Left(errors.toList)
     else Right(IngestConfig(mode, raw("APP_NAME").getOrElse(s"SilverIngest-${mode.name}"), input, outDb, outTable,
-      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours))
+      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles))
   }
 
   private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],

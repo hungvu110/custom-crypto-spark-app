@@ -628,11 +628,18 @@ rm -f {TRUSTSTORE_DIR}/ca-*.pem
 #   periodic           optional  false: the DAG has NO schedule even with an approved request (no daily run); it only runs by hand (conf
 #                                {"date": ...}, a bulk load {"fromDate": ..., "toDate": ...} or silver_ingest_backfill.py). For a table that is not
 #                                loaded every day (f016, monthly).
+# This setting says how big the written FILES are:
+#   output_file_shuffle_mb  optional  MB of SHUFFLE data per written file (job env OUTPUT_FILE_SHUFFLE_MB, default DEFAULT_FILE_SHUFFLE_MB). Before
+#                                writing, the job gathers the rows of each partition (REBALANCE) and AQE cuts them into pieces of about this size,
+#                                one file each. Shuffle data is bigger than compressed parquet: for files of about 128 MB set
+#                                128 x (Shuffle Write on the Spark UI / size of the parquet written), measured on one day.
 DATASET_KEYS = (
     "mode", "hour_glob", "hour_column", "partition_by_hour", "key_path", "resources",
     "decrypt_mode", "provider_decrypt", "encrypt_columns", "key_field_constant", "transforms",
-    "periodic",
+    "periodic", "output_file_shuffle_mb",
 )
+DEFAULT_FILE_SHUFFLE_MB = 384  # 128 MB of parquet x 3 (assumed ratio until measured); the same default as the job (OutputFiles.DefaultShuffleMb)
+FILE_SHUFFLE_MB_LIMITS = (16, 4096)  # the same limits as the job
 HOUR_COLUMN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")  # the same rule as a column name of the job
 DECRYPT_MODES = ("file", "column", "none")
 TRANSFORM_KINDS = ("AGE_BAND", "HOUR_BAND")
@@ -741,6 +748,11 @@ def check_dataset(dataset, settings):
         raise ValueError(f"{dataset}: unknown settings ({', '.join(sorted(unknown))}); accepted: {', '.join(DATASET_KEYS)}")
     if settings.get("mode") not in MODES:
         raise ValueError(f"{dataset}: mode must be one of {', '.join(MODES)}")
+    if "output_file_shuffle_mb" in settings:
+        size = settings["output_file_shuffle_mb"]
+        low, high = FILE_SHUFFLE_MB_LIMITS
+        if isinstance(size, bool) or not isinstance(size, int) or not low <= size <= high:
+            raise ValueError(f"{dataset}: output_file_shuffle_mb must be a whole number of MB from {low} to {high}")
     glob = settings.get("hour_glob")
     if "hour_glob" in settings:
         # The glob is written inside a quoted Jinja expression (see build_spec) and becomes part of an HDFS path.
@@ -883,6 +895,7 @@ def dataset_fields(settings):
         "partition_by_hour": settings.get("partition_by_hour", False),
         "periodic": settings.get("periodic", True),
         "resources": resources_of(settings),
+        "output_file_shuffle_mb": settings.get("output_file_shuffle_mb", DEFAULT_FILE_SHUFFLE_MB),
     }
 
 
@@ -925,6 +938,8 @@ def build_spec(source):
         {"name": "OUTPUT_TABLE", "value": str(fixed.get("table", ""))},
         {"name": "WAREHOUSE_PATH", "value": WAREHOUSE_PATH},
         {"name": "ENABLE_HIVE_SUPPORT", "value": "true"},
+        # Files of about the same size instead of one file per task and partition (see output_file_shuffle_mb in DATASET_KEYS).
+        {"name": "OUTPUT_FILE_SHUFFLE_MB", "value": str(source.get("output_file_shuffle_mb", DEFAULT_FILE_SHUFFLE_MB))},
     ] + [{"name": k, "value": v} for k, v in source["env"].items()]
     if source.get("hour_glob"):
         # The job adds the column `hour` from the path of every file; BATCH_HOURS = the hours of this run (empty: the whole day), so a run
@@ -1022,6 +1037,10 @@ def build_spec(source):
                 "spark.jars.ivy": "/tmp",
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.sql.adaptive.enabled": "true",
+                # The job REBALANCEs the rows by partition before writing: AQE merges the small pieces and splits the big ones into files of
+                # about the same size (both are Spark defaults, set here so that the file sizes do not depend on them).
+                "spark.sql.adaptive.coalescePartitions.enabled": "true",
+                "spark.sql.adaptive.optimizeSkewsInRebalancePartitions.enabled": "true",
                 "spark.sql.codegen.maxFields": str(WIDE_TABLE_MAX_FIELDS),
                 "spark.sql.debug.maxToStringFields": str(WIDE_TABLE_MAX_FIELDS),
                 **dynamic_allocation_conf(res),

@@ -495,3 +495,26 @@ Tám bảng hằng ngày cộng lại khoảng **99,5 G một ngày, 1,85 TB cho
 
 **Điều cần chú ý ở các bảng `d-*`:** ảnh kích thước cho thấy `d-cust-type` có thư mục `date=20261114` còn các bảng khác `date=20261110`, nghĩa là bảng danh mục **không có thư mục cho mọi ngày**. Nạp bulk 04/11 đến 22/11 cho các bảng này cần `"missingDays": "skip"`; còn lịch hằng ngày sẽ lỗi ở ngày không có thư mục (job báo `INPUT_PATH does not exist`). `f016` cũng chỉ có hai batch (`date=20261001`, `date=20261110`).
 
+## 11. Kích thước file ghi ra (mục tiêu khoảng 128 MB sau nén)
+
+**Vấn đề đã gặp:** `f003` ra **281 file mỗi giờ**, mỗi file vài MB. File landing của VTT không chia theo giờ, nên task đọc nào cũng có dòng của cả 24 giờ; khi ghi theo `(dt, hour)`, mỗi task ghi một file cho mỗi giờ, tức số task × 24 file mỗi ngày (khoảng 6 700 với `f003`).
+
+**Cách sửa (mặc định từ bản này):** trước khi ghi, job gom các dòng của cùng một partition (`SELECT /*+ REBALANCE(dt, hour) */`). AQE tách giờ lớn thành các phần khoảng `OUTPUT_FILE_SHUFFLE_MB` và gộp các phần nhỏ, mỗi phần một file. Bảng chỉ partition theo `dt` cũng được chia theo kích thước. Tắt bằng `OUTPUT_REBALANCE=false`. Code: `TableWriter.scala`, cấu hình `OutputFiles` trong `IngestConfig.scala`.
+
+| `f003` | Trước | Mục tiêu |
+| --- | --- | --- |
+| File mỗi giờ | 281 | khoảng 11 |
+| Kích thước mỗi file | khoảng 5 MB | khoảng 128 MB |
+| File mỗi ngày | khoảng 6 700 | khoảng 265 |
+
+**Chi phí:** thêm một shuffle (khoảng 33 GB mỗi ngày với `f003`, ghi ra đĩa tạm `emptyDir` của executor, khoảng 3 GB mỗi executor với 12 executor). Thời gian mỗi ngày có thể tăng khoảng 10 đến 30%; đổi lại số file giảm khoảng 25 lần.
+
+**Hiệu chỉnh (bắt buộc sau lần chạy đầu):** AQE đo kích thước trên dữ liệu shuffle (dòng nhị phân nén lz4), không phải parquet. Giá trị mặc định 384 MB giả định hệ số 3. Sau một ngày chạy thử:
+
+1. Spark UI, tab Stages: ghi **Shuffle Write** của stage đọc (tổng của ngày).
+2. Dung lượng parquet của ngày: `hdfs dfs -du -s -h <thư mục bảng>/dt=<ngày>`.
+3. Hệ số = Shuffle Write / dung lượng parquet. Đặt `"output_file_shuffle_mb": 128 x hệ số` trong entry của bảng trong `DATASETS` (`silver_ingest_vtt.py`), làm tròn.
+4. Kiểm: `hdfs dfs -count <thư mục bảng>/dt=<ngày>/hour=10` (số file) và `hdfs dfs -du -h ...` (kích thước). Mục tiêu: phần lớn file từ 100 đến 160 MB, mỗi giờ có thể có một file lẻ nhỏ hơn.
+
+**Dữ liệu đã nạp trước bản này** vẫn còn file nhỏ: chạy lại bulk các ngày đó (ghi đè partition), hoặc `OPTIMIZE <bảng> WHERE dt BETWEEN '...' AND '...'` với `spark.databricks.delta.optimize.maxFileSize` = 128 MB. File cũ chỉ bị xoá khỏi HDFS khi chạy `VACUUM` (mặc định giữ 7 ngày).
+

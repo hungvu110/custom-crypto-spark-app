@@ -9,17 +9,44 @@ import vai.lakehouse.silveringest.config.{Batch, IngestConfig, OutputFormat}
  *
  * Có lô (`BATCH_VALUE`): thêm cột lô làm partition đầu tiên. `overwrite-partitions` chỉ thay partition của lô này: Delta dùng
  * `replaceWhere` (thay đúng các dòng của lô, mọi partition con), hive dùng dynamic partition overwrite (thay các partition có trong dữ
- * liệu lần này). Bảng đã có phải được partition đúng như cấu hình, không thì báo lỗi trước khi ghi.
+ * liệu lần này). Bảng đã có phải được partition đúng như cấu hình, không thì báo lỗi trước khi ghi. Trước khi ghi, dữ liệu được gom theo
+ * partition để file có kích thước gần như nhau (`OutputFiles`), trừ khi `OUTPUT_REBALANCE=false`.
  */
 object TableWriter {
 
+  /** Kích thước partition mà AQE nhắm tới khi tách và gộp partition của `REBALANCE`, đặt riêng cho lần ghi. */
+  private[job] val AdvisoryPartitionSize = "spark.sql.adaptive.advisoryPartitionSizeInBytes"
+
   def write(spark: SparkSession, cfg: IngestConfig, data: DataFrame): Unit = {
-    val df = cfg.batch.fold(data) { b =>
+    val withBatch = cfg.batch.fold(data) { b =>
       data.columns.find(_.equalsIgnoreCase(b.column)).foreach { c =>
         throw new IllegalArgumentException(s"BATCH_COLUMN '${b.column}' already exists in the data (column '$c'): choose another BATCH_COLUMN")
       }
       data.withColumn(b.column, lit(b.value))
     }
+    if (cfg.outputFiles.rebalance) {
+      withSessionConf(spark, AdvisoryPartitionSize, cfg.outputFiles.shuffleBytesPerFile.toString) {
+        rebalanced(spark, cfg, withBatch)(df => writeTable(spark, cfg, df))
+      }
+    } else writeTable(spark, cfg, withBatch)
+  }
+
+  /**
+   * Gom các dòng của cùng một partition về cùng các task trước khi ghi (`REBALANCE`): AQE tách partition lớn thành các phần khoảng
+   * `advisoryPartitionSizeInBytes` và gộp các phần nhỏ, nên mỗi file có kích thước gần như nhau thay vì mỗi task một file mỗi partition.
+   * Bảng không có partition thì chỉ chia lại theo kích thước. Cú pháp hint SQL vì `Dataset.hint("rebalance", cột)` bị từ chối khi cột đã
+   * được resolve; temp view của lần ghi bị xoá sau khi ghi (bulk load ghi nhiều ngày trong cùng một session).
+   */
+  private def rebalanced[T](spark: SparkSession, cfg: IngestConfig, df: DataFrame)(body: DataFrame => T): T = {
+    val view = s"silver_ingest_rebalance_${java.util.UUID.randomUUID().toString.replace("-", "")}"
+    df.createOrReplaceTempView(view)
+    try {
+      val hint = if (cfg.partitionBy.isEmpty) "REBALANCE" else s"REBALANCE(${cfg.partitionBy.map(quote).mkString(", ")})"
+      body(spark.sql(s"SELECT /*+ $hint */ * FROM ${quote(view)}"))
+    } finally spark.catalog.dropTempView(view)
+  }
+
+  private def writeTable(spark: SparkSession, cfg: IngestConfig, df: DataFrame): Unit = {
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
     val table = s"${quote(cfg.outputDb)}.${quote(cfg.outputTable)}"
     val exists = spark.catalog.tableExists(cfg.outputDb, cfg.outputTable)
@@ -63,15 +90,19 @@ object TableWriter {
     }
   }
 
-  private def insertOverwriteDynamic(spark: SparkSession, df: DataFrame, table: String): Unit = {
-    val key = "spark.sql.sources.partitionOverwriteMode"
-    val previous = spark.conf.getOption(key)
-    spark.conf.set(key, "dynamic")
-    try {
+  private def insertOverwriteDynamic(spark: SparkSession, df: DataFrame, table: String): Unit =
+    withSessionConf(spark, "spark.sql.sources.partitionOverwriteMode", "dynamic") {
       // insertInto khớp cột THEO VỊ TRÍ: xếp lại theo thứ tự cột của bảng đích.
       val columns = spark.table(table).columns.toSeq
       df.select(columns.map(c => col(quote(c))): _*).write.mode("overwrite").insertInto(table)
-    } finally previous match {
+    }
+
+  /** Đặt `key` = `value` trong session cho `body`, rồi trả lại giá trị cũ (hoặc bỏ đặt), kể cả khi `body` lỗi. */
+  private def withSessionConf[T](spark: SparkSession, key: String, value: String)(body: => T): T = {
+    val previous = spark.conf.getOption(key)
+    spark.conf.set(key, value)
+    try body
+    finally previous match {
       case Some(v) => spark.conf.set(key, v)
       case None => spark.conf.unset(key)
     }

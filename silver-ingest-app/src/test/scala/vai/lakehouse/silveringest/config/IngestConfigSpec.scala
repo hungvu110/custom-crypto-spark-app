@@ -376,4 +376,39 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     text should include("MODE=decrypt-encrypt")
     text should include("CDR_ENCRYPT_COLUMNS=msisdn, imei")
   }
+
+  "OUTPUT_REBALANCE / OUTPUT_FILE_SHUFFLE_MB" should "gom dữ liệu theo partition trước khi ghi, khoảng 384 MB dữ liệu shuffle mỗi file, khi không đặt gì" in {
+    val files = IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.outputFiles
+
+    files shouldBe OutputFiles(rebalance = true, shuffleBytesPerFile = 384L * 1024 * 1024)
+    OutputFiles.DefaultShuffleMb shouldBe 384
+  }
+
+  it should "nhận số MB dữ liệu shuffle mỗi file trong khoảng cho phép" in {
+    for (mb <- Seq(16, 512, 4096)) {
+      IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_FILE_SHUFFLE_MB" -> mb.toString)).toOption.get.outputFiles
+        .shuffleBytesPerFile shouldBe mb.toLong * 1024 * 1024
+    }
+  }
+
+  it should "từ chối số MB không phải số nguyên trong khoảng 16 đến 4096" in {
+    for (bad <- Seq("abc", "15", "4097", "-1", "1.5")) {
+      errors(Mode.Passthrough, common + ("OUTPUT_FILE_SHUFFLE_MB" -> bad)) should include("OUTPUT_FILE_SHUFFLE_MB")
+    }
+  }
+
+  it should "tắt được bằng OUTPUT_REBALANCE=false (mỗi task ghi một file mỗi partition như trước), khi đó không nhận số MB" in {
+    IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> "false")).toOption.get.outputFiles.rebalance shouldBe false
+    errors(Mode.Passthrough, common ++ Map("OUTPUT_REBALANCE" -> "false", "OUTPUT_FILE_SHUFFLE_MB" -> "256")) should
+      include("OUTPUT_FILE_SHUFFLE_MB: only used with OUTPUT_REBALANCE=true")
+    errors(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> "maybe")) should include("OUTPUT_REBALANCE")
+  }
+
+  it should "nêu cách ghi file trong describe" in {
+    val on = IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_PARTITION_BY" -> "hour")).toOption.get.describe.toMap
+    on("OUTPUT_FILES") shouldBe "rebalance by hour, about 384 MB of shuffle data per file"
+    val off = IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> "false")).toOption.get.describe.toMap
+    off("OUTPUT_FILES") shouldBe "one file per task and partition (OUTPUT_REBALANCE=false)"
+  }
 }
+
