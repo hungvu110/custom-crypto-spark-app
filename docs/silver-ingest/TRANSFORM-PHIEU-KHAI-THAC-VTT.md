@@ -452,8 +452,8 @@ Chuỗi `path` trên DAK của mỗi bảng chính là tên dataset (`f014-mpre-
 
 **Còn lại, ngoài code của job:**
 
-1. **Đội dak (hợp đồng phiếu VTT):** với bảng VTT mã hoá, `columns` do dataset cố định nên phiếu **chỉ ghi `globalKey: true` và `globalZone`**, không ghi `encryptColumns` và `keyField`
-   (DAG từ chối hai khoá này). `dak-mock` hiện chưa theo hợp đồng này: `SilverRequestParser` đòi `encryptColumns` không rỗng khi có `globalZone`, và phiếu VTT có cột bị từ chối (`invalid-vtt-with-columns.json`).
+1. **Phiếu VTT (đội dak):** DAK bắt buộc nhập `encryptColumns` và `keyField` khi tick key global, nên DAG **nhận** hai khoá này nhưng chỉ để ghi nhận phiếu:
+   `encryptColumns` phải **đúng bằng** các cột mã hoá của bảng (cột `encrypt_columns` trong `DATASETS`, không phân biệt thứ tự và hoa thường, sai thì DAG báo lỗi kèm danh sách cột đúng), `keyField` là một tên cột hợp lệ không nằm trong `encryptColumns` (khuyên ghi `key_scope`). Job **không** lấy cột hay keyField từ phiếu: vẫn mã hoá các cột cố định với keyField hằng `key_scope=vtt`. Phiếu không có hai khoá này vẫn hợp lệ. Bảng `d-*` không nhận hai khoá.
 2. **Admin DAK nhập prefix của VTT** vào đúng chuỗi `path` của 7 bảng `column` (tên dataset, phân biệt hoa thường).
 3. **Tên thư mục landing** của các bảng ngoài `f001-mpre-call`, `f014-mpre-tot-charge-d` là **giả định** (`f022-register`, `f-home-bts-daily-area`, `f-customer`, `d-*`, `f015…`, `f016…`): kiểm tra bằng `hdfs dfs -ls`.
    Bảng `f016` là bảng tháng, có thể không có thư mục `date=` theo ngày.

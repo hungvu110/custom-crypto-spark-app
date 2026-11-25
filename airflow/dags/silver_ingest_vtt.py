@@ -186,9 +186,11 @@ def source_for(dataset, settings, config=None):
     }
     if mode == "decrypt-encrypt":
         if settings.get("encrypt_columns"):
-            # The columns are fixed by the dataset; the request only says which global key zone encrypts them.
-            source["schedule_keys"] += ("globalKey", "globalZone")
+            # The columns are fixed by the dataset; the request says which global key zone encrypts them. DAK requires encryptColumns and
+            # keyField with a global key: they are accepted when they name exactly these columns, but the job never takes them from the request.
+            source["schedule_keys"] += ("encryptColumns", "keyField", "globalKey", "globalZone")
             source["requires_global_key"] = True
+            source["fixed_columns"] = tuple(settings["encrypt_columns"])
         # The driver calls Keycloak (https) to get a DAK token: it needs hostAliases and a truststore with the internal CA (ConfigMap keycloak-ca).
         source["calls_keycloak"] = True
         source["env"].update(common.dataset_job_env(dataset, settings))

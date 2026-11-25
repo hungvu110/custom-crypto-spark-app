@@ -234,11 +234,43 @@ class ScheduleConfigTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 common.check_schedule_config(source, bad)
 
-    def test_the_columns_are_fixed_by_the_dataset_so_the_request_does_not_choose_them(self):
+    def test_dak_requires_the_columns_with_a_global_key_so_a_request_may_carry_them(self):
+        # f014 encrypts isdn and customer_id: the request may list them, in any order and case, with any keyField.
         source = self.source(F014)
-        for extra in ({"encryptColumns": ["isdn"]}, {"keyField": "sta_date"}, {"encryptColumns": ["isdn"], "keyField": "sta_date"}):
+        for extra in ({"encryptColumns": ["isdn", "customer_id"], "keyField": "sta_date"},
+                      {"encryptColumns": ["CUSTOMER_ID", "isdn"], "keyField": "key_scope"}):
+            common.check_schedule_config(source, config("vtt_x", 1, **GLOBAL, **extra))
+        common.check_schedule_config(source, config("vtt_x", 1, **GLOBAL))  # still optional
+
+    def test_the_columns_of_a_request_must_be_exactly_the_columns_that_the_dataset_encrypts(self):
+        source = self.source(F014)
+        for extra in ({"encryptColumns": ["isdn"], "keyField": "sta_date"},  # one missing
+                      {"encryptColumns": ["isdn", "customer_id", "sta_date"], "keyField": "x"},  # one too many
+                      {"encryptColumns": ["msisdn", "customer_id"], "keyField": "sta_date"}):  # another column
+            with self.assertRaises(ValueError, msg=repr(extra)) as raised:
+                common.check_schedule_config(source, config("vtt_x", 1, **GLOBAL, **extra))
+            self.assertIn("customer_id, isdn", str(raised.exception))  # says which columns are expected
+
+    def test_a_request_with_columns_needs_a_well_formed_key_field_that_is_not_encrypted(self):
+        source = self.source(F014)
+        columns = {"encryptColumns": ["isdn", "customer_id"]}
+        for extra in (columns, {**columns, "keyField": ""}, {**columns, "keyField": "bad field"}, {**columns, "keyField": "isdn"},
+                      {"keyField": "sta_date"}):
             with self.assertRaises(ValueError, msg=repr(extra)):
                 common.check_schedule_config(source, config("vtt_x", 1, **GLOBAL, **extra))
+
+    def test_the_columns_of_the_request_never_change_what_the_job_encrypts(self):
+        with_columns = {**CONFIGS, dag_id(F014): config("vtt_f014_mpre_tot_charge_d", 11, **GLOBAL,
+                                                         encryptColumns=["customer_id", "isdn"], keyField="sta_date")}
+        module = load("silver_ingest_vtt", variables(with_columns))
+        self.assertIsNone(module.CONFIG_PROBLEMS[dag_id(F014)])
+        env = driver_env(render(_dags_of(module)[dag_id(F014)]))
+        self.assertEqual(env["CDR_ENCRYPT_COLUMNS"], "isdn,customer_id")
+        self.assertEqual((env["CDR_KEY_FIELD"], env["CDR_KEY_FIELD_VALUE"]), ("key_scope", "vtt"))
+
+    def test_a_reference_table_takes_no_columns(self):
+        with self.assertRaises(ValueError):
+            common.check_schedule_config(self.source("d-os-type"), config("vtt_d_x", 1, encryptColumns=["a"], keyField="b"))
 
     def test_a_reference_table_takes_no_global_key(self):
         source = self.source("d-os-type")

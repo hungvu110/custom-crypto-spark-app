@@ -334,7 +334,8 @@ def check_schedule_config(source, config):
     """Check the settings that DAK wrote into the Airflow Variable of a recurring dataset; raise ValueError when they are invalid.
 
     `source["schedule_keys"]` lists the accepted keys (ticket, table, cron, outputMode and, for a decrypt-encrypt dataset, encryptColumns,
-    keyField and, only when the request uses a global key, globalKey and globalZone). Messages never repeat the value.
+    keyField and, only when the request uses a global key, globalKey and globalZone). For a dataset with fixed columns (VTT) encryptColumns
+    and keyField only record the request (check_fixed_columns). Messages never repeat a value of the request.
     """
 
     if not isinstance(config, dict):
@@ -363,7 +364,24 @@ def check_schedule_config(source, config):
         check_columns(config)
         check_global_key(config)
     elif source.get("requires_global_key"):
+        check_fixed_columns(source, config)
         check_global_key(config, needs_columns=False, required=True)
+
+
+def check_fixed_columns(source, config):
+    """A dataset whose columns are fixed (`source["fixed_columns"]`, from `encrypt_columns` in DATASETS): DAK requires encryptColumns and
+    keyField with a global key, so the request may carry them, but they only RECORD the request. They must name exactly the columns that
+    the dataset encrypts (any order, case-insensitive), and keyField must be a column name that is not encrypted. The job still takes its
+    columns and its key field from the dataset (the constant key field keeps one ciphertext per value in every table), never from them."""
+
+    if "encryptColumns" not in config and "keyField" not in config:
+        return
+    if not config.get("encryptColumns"):
+        raise ValueError("schedule config keyField needs encryptColumns (the columns that this dataset encrypts)")
+    check_columns(config)
+    expected = sorted(c.lower() for c in source["fixed_columns"])
+    if sorted(c.lower() for c in config["encryptColumns"]) != expected:
+        raise ValueError(f"schedule config encryptColumns must be exactly the columns that this dataset encrypts: {', '.join(expected)}")
 
 
 def check_date(value, name):
