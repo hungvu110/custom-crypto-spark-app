@@ -93,6 +93,9 @@ DATASETS = {
     },
     "f003-mpre-data": {
         "resources": {**WIDE, "executors": 6, "min_executors": 2, "max_executors": 12, "shuffle_partitions": 256},
+        # Measured on 2026-11-04: Shuffle Write 152.1 GiB / Output 32.3 GiB = 4.71, a file filled to 0.88 of the size on average, so
+        # 128 x 4.71 / 0.88 = 685 -> 704: files of about 131 MB (the default 384 gave about 72 MB).
+        "output_file_shuffle_mb": 704,
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["calling_number"], "key_field": "sta_datetime"},
         "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,

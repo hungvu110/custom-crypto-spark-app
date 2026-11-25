@@ -503,6 +503,12 @@ def spark_conf_of(dataset, dynamic_conf=None):
     return common.build_spec(source)["spec"]["sparkConf"], common.build_spec(source)["spec"]
 
 
+# Measured on one day (f003, 2026-11-04): Shuffle Write 152.1 GiB / Output 32.3 GiB = 4.71, and AQE fills a file to 0.88 of the size on
+# average (337 MiB of 384): 128 x 4.71 / 0.88 = 685, rounded up to 704 (files of about 131 MB, at most about 150 MB). The other tables keep the
+# default until measured.
+MEASURED_FILE_SHUFFLE_MB = {F003: 704}
+
+
 class ResourcesTest(unittest.TestCase):
     """Spark resources of every table, from the size of its day on HDFS. The job is limited by reading, decompressing and writing parquet, not by
     the encryption (cdr-crypto: 0.74 microsecond per value, measured), so the cores follow the number of 128 MB tasks and the memory the width of
@@ -579,7 +585,8 @@ class ResourcesTest(unittest.TestCase):
         # Without it every task writes one file per hour of its rows: 281 files of a few MB per hour of f003.
         for dataset in ALL_DATASETS:
             env = driver_env(render(DAGS[dag_id(dataset)]))
-            self.assertEqual(env["OUTPUT_FILE_SHUFFLE_MB"], str(common.DEFAULT_FILE_SHUFFLE_MB), dataset)
+            expected = MEASURED_FILE_SHUFFLE_MB.get(dataset, common.DEFAULT_FILE_SHUFFLE_MB)
+            self.assertEqual(env["OUTPUT_FILE_SHUFFLE_MB"], str(expected), dataset)
             self.assertNotIn("OUTPUT_REBALANCE", env, dataset)  # on by default in the job
         self.assertEqual(common.DEFAULT_FILE_SHUFFLE_MB, 384)  # 128 MB of parquet x 3 until measured
         conf, _ = spark_conf_of(F003)
