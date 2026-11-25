@@ -96,9 +96,13 @@ object SilverApp {
             Log.warn(s"no file for $day under ${dayEnv("INPUT_PATH")}: skipped (BULK_MISSING_DAY=skip)")
             skipped :+= day
           } else {
+            val dayStart = System.nanoTime()
             code = executeDay(mode, dayEnv, Some(spark), keys)
-            if (code == ExitOk) loaded :+= day
-            else Log.fail(s"BULK LOAD STOPPED at day $day (exit code $code): loaded ${loaded.size} day(s) before it " +
+            if (code == ExitOk) {
+              loaded :+= day
+              Log.ok(BulkLoad.dayDone(day, loaded.size + skipped.size, days.size, (System.nanoTime() - dayStart) / 1e9, cfg.target,
+                cfg.batch.map(_.column).getOrElse(IngestConfig.DefaultBatchColumn)))
+            } else Log.fail(s"BULK LOAD STOPPED at day $day (exit code $code): loaded ${loaded.size} day(s) before it " +
               s"(${loaded.mkString(", ")}); to continue run again with BULK_FROM=$day")
           }
         }

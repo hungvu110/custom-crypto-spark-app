@@ -99,4 +99,12 @@ object BulkLoad {
   def dayEnv(env: Map[String, String], day: String): Map[String, String] =
     (env -- Keys) ++ Map("INPUT_PATH" -> env("INPUT_PATH").trim.replace(DayToken, day), "BATCH_VALUE" -> day,
       "OUTPUT_MODE" -> IngestConfig.OverwritePartitions)
+
+  /** Dòng log khi xong MỘT ngày của bulk: ngày, thứ tự (gồm cả ngày bỏ qua), thời gian, bảng và partition đã ghi, số ngày còn lại. */
+  def dayDone(day: String, position: Int, total: Int, seconds: Double, target: String, batchColumn: String): String = {
+    val left = total - position
+    val rest = if (left > 0) s"$left day(s) left" else "no day left"
+    f"BULK DAY $day DONE ($position/$total) in $seconds%.1f s: written to $target, partition $batchColumn=$day; $rest"
+  }
 }
+

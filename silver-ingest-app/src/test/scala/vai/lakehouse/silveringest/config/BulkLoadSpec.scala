@@ -91,4 +91,13 @@ class BulkLoadSpec extends AnyFlatSpec with Matchers {
   it should "đặt OUTPUT_MODE=overwrite-partitions cho từng ngày (mặc định của job khi có BATCH_VALUE)" in {
     BulkLoad.dayEnv(range, "20261104").get("OUTPUT_MODE") shouldBe Some("overwrite-partitions")
   }
+
+  "BulkLoad.dayDone" should "nói ngày nào đã nạp xong, vào bảng nào, mất bao lâu và còn bao nhiêu ngày" in {
+    BulkLoad.dayDone("20261104", position = 1, total = 19, seconds = 42.345, target = "demo_db.vtt_f003_mpre_data", batchColumn = "dt") shouldBe
+      "BULK DAY 20261104 DONE (1/19) in 42.3 s: written to demo_db.vtt_f003_mpre_data, partition dt=20261104; 18 day(s) left"
+  }
+
+  it should "báo hết ngày ở ngày cuối" in {
+    BulkLoad.dayDone("20261122", position = 19, total = 19, seconds = 5.0, target = "s.t", batchColumn = "dt") should endWith("; no day left")
+  }
 }
