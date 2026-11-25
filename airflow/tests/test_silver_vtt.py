@@ -476,9 +476,10 @@ class BulkLoadTest(unittest.TestCase):
         self.assertEqual(common.MAX_BULK_DAYS, 62)
 
 
-WIDE = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m", "driver_memory": "4096m",
-        "driver_memory_overhead": "1024m"}
-NARROW = {"executor_cores": 4, "executor_memory": "8192m", "executor_memory_overhead": "1024m"}
+WIDE = {"executor_cores": 4, "executor_memory": "16384m", "executor_memory_overhead": "3072m", "driver_memory": "6144m",
+        "driver_memory_overhead": "1536m"}
+NARROW = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m", "driver_memory": "4096m",
+          "driver_memory_overhead": "1024m"}
 TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m", "driver_memory": "1024m",
         "shuffle_partitions": 8}
 
@@ -489,10 +490,10 @@ EXPECTED_RESOURCES = {
     F016: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 224},  # 28.5 G per batch
     F014: {**WIDE, "executors": 3, "min_executors": 2, "max_executors": 6, "shuffle_partitions": 128},  # 17.7 G
     FCUST: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 96},  # 12.1 G
-    F022: {**NARROW, "executors": 2, "shuffle_partitions": 48},  # 5.0 G
-    F001: {**NARROW, "executors": 2, "shuffle_partitions": 32},  # 3.7 G
-    FHOME: {**NARROW, "executors": 2, "shuffle_partitions": 24},  # 2.8 G
-    F002: {**NARROW, "executors": 1, "shuffle_partitions": 16},  # 1.4 G
+    F022: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 48},  # 5.0 G
+    F001: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 32},  # 3.7 G
+    FHOME: {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 24},  # 2.8 G
+    F002: {**NARROW, "executors": 1, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 16},  # 1.4 G
     **{dataset: TINY for dataset in D_TABLES},  # 13 K to 482 M for the whole table
 }
 
@@ -516,9 +517,9 @@ class ResourcesTest(unittest.TestCase):
         for dataset, settings in vtt_module.DATASETS.items():
             common.check_dataset(dataset, settings)
 
-    def test_only_the_big_tables_scale_with_dynamic_allocation_the_rest_stay_static(self):
+    def test_every_data_table_scales_with_dynamic_allocation_only_the_reference_tables_stay_static(self):
         dynamic = {d for d, r in EXPECTED_RESOURCES.items() if "max_executors" in r}
-        self.assertEqual(dynamic, {F003, F015, F016, F014, FCUST})
+        self.assertEqual(dynamic, {F003, F015, F016, F014, FCUST, F022, F001, FHOME, F002})
         for dataset in dynamic:
             r = vtt_module.DATASETS[dataset]["resources"]
             self.assertLessEqual(r["min_executors"], r["executors"], dataset)
@@ -533,21 +534,37 @@ class ResourcesTest(unittest.TestCase):
         self.assertEqual(conf["spark.dynamicAllocation.executorIdleTimeout"], "120s")
         self.assertEqual(spec["executor"]["instances"], 4)
         self.assertEqual(spec["executor"]["cores"], 4)
-        self.assertEqual(spec["executor"]["memory"], "12288m")
-        self.assertEqual(spec["driver"]["memory"], "4096m")
+        self.assertEqual(spec["executor"]["memory"], "16384m")
+        self.assertEqual(spec["driver"]["memory"], "6144m")
         self.assertEqual(conf["spark.sql.shuffle.partitions"], "256")
 
     def test_a_static_table_keeps_dynamic_allocation_off_and_has_no_dynamic_keys(self):
-        for dataset in (F001, F002, F022, FHOME, "d-os-type"):
+        for dataset in D_TABLES:
             conf, spec = spark_conf_of(dataset)
             self.assertEqual(conf["spark.dynamicAllocation.enabled"], "false", dataset)
             self.assertFalse([k for k in conf if k.startswith("spark.dynamicAllocation.") and k != "spark.dynamicAllocation.enabled"], dataset)
-        self.assertEqual(spark_conf_of(F001)[1]["executor"]["instances"], 2)
+        self.assertEqual(spark_conf_of("d-os-type")[1]["executor"]["instances"], 1)
+
+    def test_a_small_data_table_also_scales_between_one_and_a_few_executors(self):
+        conf, spec = spark_conf_of(F002)
+        self.assertEqual(conf["spark.dynamicAllocation.enabled"], "true")
+        self.assertEqual((conf["spark.dynamicAllocation.minExecutors"], conf["spark.dynamicAllocation.maxExecutors"]), ("1", "3"))
+        self.assertEqual(spec["executor"]["memory"], "12288m")
+        self.assertEqual(spec["driver"]["memory"], "4096m")
 
     def test_the_other_sources_are_unchanged_dynamic_allocation_stays_off(self):
         for dag in _dags_of(vtt_module).values():
             if "max_executors" not in dag.SOURCE["resources"]:
                 self.assertEqual(common.build_spec(dag.SOURCE)["spec"]["sparkConf"]["spark.dynamicAllocation.enabled"], "false")
+
+    def test_a_wide_table_keeps_whole_stage_codegen_and_its_full_plan_in_the_log(self):
+        # f003, f014, f015 have 150 to 450 columns: above the default 100 fields Spark turns whole-stage codegen off, and above 25 it cuts
+        # the plan in the log ("Truncated the string representation of a plan").
+        for dataset in (F003, F001, "d-os-type"):
+            conf, _ = spark_conf_of(dataset)
+            self.assertEqual(conf["spark.sql.codegen.maxFields"], str(common.WIDE_TABLE_MAX_FIELDS), dataset)
+            self.assertEqual(conf["spark.sql.debug.maxToStringFields"], str(common.WIDE_TABLE_MAX_FIELDS), dataset)
+        self.assertGreaterEqual(common.WIDE_TABLE_MAX_FIELDS, 1000)
 
     def test_the_dynamic_keys_are_checked(self):
         base = {"executors": 3}

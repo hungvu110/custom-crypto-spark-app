@@ -57,15 +57,16 @@ HOUR_FROM_COLUMN = {"hour_column": "hour_id", "partition_by_hour": True}
 # Spark RESOURCES, chosen from the size of ONE day on HDFS (parquet, 2026-11-10) and what the job does. The job is limited by reading, decompressing
 # and writing parquet, NOT by the encryption (cdr-crypto measured at 0.74 microsecond per value, ~1.3 million values per second per core), so the
 # cores follow the number of tasks (size / 128 MB) and the memory follows the width of the table (a task of a wide table keeps more column
-# buffers). 3 GB of heap per core for the wide tables (150 to 450 columns), 2 GB for the others; a tiny table needs one small executor. Tables of
-# about 12 GB a day and more scale with dynamic allocation (common.DYNAMIC_KEYS): they grow while tasks wait and give the executors back when idle,
-# also between the days of a bulk load; the small ones are static (a run lasts a few minutes, not worth it). The numbers are an estimate, not a
+# buffers). 4 GB of heap per core for the wide tables (150 to 450 columns), 3 GB for the others; a tiny table needs one small executor. Every data
+# table scales with dynamic allocation (common.DYNAMIC_KEYS): it grows while tasks wait and gives the executors back when idle, also between the
+# days of a bulk load; only the reference tables (d-*) keep one static executor. The numbers are an estimate, not a
 # measurement of this cluster: run one day, look at the Spark UI (time per task, spill, GC) and adjust. Limits: the ResourceQuota of the namespace
 # (unknown here): lower max_executors if it is smaller, the run is then only slower. Sizes per day: f003 33.1 G, f016 28.5 G (per batch), f015 23.7 G,
 # f014 17.7 G, f-customer 12.1 G, f022 5.0 G, f001 3.7 G, f-home-bts 2.8 G, f002 1.4 G; the d-* tables 13 K to 482 M in all.
-WIDE = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m", "driver_memory": "4096m",
-        "driver_memory_overhead": "1024m"}
-NARROW = {"executor_cores": 4, "executor_memory": "8192m", "executor_memory_overhead": "1024m"}
+WIDE = {"executor_cores": 4, "executor_memory": "16384m", "executor_memory_overhead": "3072m", "driver_memory": "6144m",
+        "driver_memory_overhead": "1536m"}
+NARROW = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m", "driver_memory": "4096m",
+          "driver_memory_overhead": "1024m"}
 TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m", "driver_memory": "1024m",
         "shuffle_partitions": 8}
 
@@ -77,12 +78,12 @@ TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "execut
 # The `resources` of each table are explained above (WIDE, NARROW, TINY); the defaults of common.RESOURCE_DEFAULTS are for a small dataset.
 DATASETS = {
     "f001-mpre-call": {
-        "resources": {**NARROW, "executors": 2, "shuffle_partitions": 32},
+        "resources": {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 32},
         "mode": "decrypt-encrypt", "decrypt_mode": "none",
         "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f002-mpre-sms": {
-        "resources": {**NARROW, "executors": 1, "shuffle_partitions": 16},
+        "resources": {**NARROW, "executors": 1, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 16},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["calling_number", "called_number", "called_number_cl"], "key_field": "sta_datetime"},
         "encrypt_columns": ["calling_number", "called_number", "called_number_cl"], "key_field_constant": KEY_SCOPE,
@@ -116,13 +117,13 @@ DATASETS = {
         "encrypt_columns": ["isdn", "customer_id"], "key_field_constant": KEY_SCOPE, "transforms": AGE_BAND,
     },
     "f022-register": {
-        "resources": {**NARROW, "executors": 2, "shuffle_partitions": 48},
+        "resources": {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 48},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn"], "key_field": "sta_date"},
         "encrypt_columns": ["isdn"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f-home-bts-daily-area": {
-        "resources": {**NARROW, "executors": 2, "shuffle_partitions": 24},
+        "resources": {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 24},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn"], "key_field": "station_code"},
         "encrypt_columns": ["isdn"], "key_field_constant": KEY_SCOPE,
@@ -150,7 +151,7 @@ BASE_ENV = {
     "INPUT_FORMAT": "parquet",
     # Read the whole folder of a day, including any subfolder, and do not turn a folder name such as `hour=12` into a partition column.
     "INPUT_OPTION_recursiveFileLookup": "true",
-    "OUTPUT_DB": "demo_db",
+    "OUTPUT_DB": "silver",
     "OUTPUT_FORMAT": "delta",
 }
 

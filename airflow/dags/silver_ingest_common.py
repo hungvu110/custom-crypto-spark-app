@@ -664,6 +664,10 @@ RESOURCE_COUNT_LIMITS = {
 # external shuffle service on Kubernetes, so shuffle tracking is on. Neither key is in RESOURCE_DEFAULTS: no dataset has them unless it says so.
 DYNAMIC_KEYS = ("min_executors", "max_executors")
 DYNAMIC_IDLE_TIMEOUT = "120s"
+# WIDE TABLES (VTT f003, f014, f015, f016 have 150 to 450 columns). Above spark.sql.codegen.maxFields (default 100) Spark turns whole-stage codegen
+# off for the plan, which is slower; above spark.sql.debug.maxToStringFields (default 25) it cuts the plan and the schema in the log. One limit for
+# both, well above the widest table. A generated method that grows too big still falls back to the interpreted path (spark.sql.codegen.fallback).
+WIDE_TABLE_MAX_FIELDS = 1000
 RESOURCE_MEMORY_LIMITS_MB = (256, 65536)
 MEMORY_VALUE = re.compile(r"([1-9]\d{0,5})([mg])")
 
@@ -1018,6 +1022,8 @@ def build_spec(source):
                 "spark.jars.ivy": "/tmp",
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.sql.adaptive.enabled": "true",
+                "spark.sql.codegen.maxFields": str(WIDE_TABLE_MAX_FIELDS),
+                "spark.sql.debug.maxToStringFields": str(WIDE_TABLE_MAX_FIELDS),
                 **dynamic_allocation_conf(res),
                 "spark.sql.shuffle.partitions": str(res["shuffle_partitions"]),
                 "spark.eventLog.enabled": "true",

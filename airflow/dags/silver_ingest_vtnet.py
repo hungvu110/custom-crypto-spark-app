@@ -60,7 +60,7 @@ BASE_ENV = {
     "INPUT_OPTION_header": "true",
     # The folder of a day holds batch=... subfolders: read them all, and do not turn `batch=1520` into a partition column.
     "INPUT_OPTION_recursiveFileLookup": "true",
-    "OUTPUT_DB": "demo_db",
+    "OUTPUT_DB": "silver",
     "OUTPUT_FORMAT": "delta",
 }
 

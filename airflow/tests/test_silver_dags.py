@@ -474,7 +474,7 @@ class SpecTest(unittest.TestCase):
             env = driver_env(render(dag))
             self.assertEqual(env["INPUT_PATH"], root + folder, dag.DAG_ID)
             self.assertEqual((env["BATCH_COLUMN"], env["BATCH_VALUE"]), ("dt", "20261027"), dag.DAG_ID)
-            self.assertEqual((env["OUTPUT_DB"], env["OUTPUT_TABLE"]), ("demo_db", table), dag.DAG_ID)
+            self.assertEqual((env["OUTPUT_DB"], env["OUTPUT_TABLE"]), ("silver", table), dag.DAG_ID)
             self.assertEqual(env["OUTPUT_MODE"], "overwrite-partitions", dag.DAG_ID)
         self.assertTrue(ROOT_VTT.endswith("/") and ROOT_VTNET.endswith("/"))
 
