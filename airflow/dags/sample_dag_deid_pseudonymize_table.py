@@ -52,6 +52,10 @@ HADOOP_CONFIG_MAP = "teamtscauiy-hadoop-conf"
 SERVICE_ACCOUNT = "spark-application-sa"
 HDFS = "hdfs://vailakehouse.datalakehla.viettel.com.vn:8020"
 WAREHOUSE_PATH = f"{HDFS}/prod8/warehouse"
+# The result databases (sandbox): a new OUTPUT_DB is created at <SANDBOX_ROOT>/<OUTPUT_DB>.db, so its Delta tables are managed by the Hive
+# Metastore like any other table (Ranger table policies unchanged) but stored apart from /prod8/warehouse (own HDFS policies and quota). A
+# database that already exists elsewhere stops the job before writing. Fixed here: the requester cannot set it (not in JOB_ENV).
+SANDBOX_ROOT = f"{HDFS}/sandbox"
 EVENT_LOG_DIR = f"{HDFS}/prod8/spark_history"
 KERBEROS_PRINCIPAL = "presto@VAILAKEHOUSE.VIETTEL.COM"
 KERBEROS_KEYTAB = "/etc/security/keytabs/presto.keytab"
@@ -446,6 +450,7 @@ def build_spec():
                     # Compare source and target after writing (row count, nulls, distinct values, no original value left). Fixed.
                     {"name": "VERIFY", "value": "true"},
                     {"name": "WAREHOUSE_PATH", "value": WAREHOUSE_PATH},
+                    {"name": "OUTPUT_DB_ROOT", "value": SANDBOX_ROOT},
                     # ---- Env of pseudonym-udf: the key is fetched from DAK when the job runs (only the driver needs it) ----
                     *dak_env(),
                 ],

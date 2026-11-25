@@ -284,4 +284,31 @@ class JobConfigSpec extends AnyFlatSpec with Matchers {
     errors.exists(_.startsWith("REQUEST_CODE")) shouldBe true
     errors.exists(_.contains("etc/passwd")) shouldBe false
   }
+
+  "OUTPUT_DB_ROOT" should "không đặt thì giữ cách cũ: database theo warehouse" in {
+    JobConfig.fromEnv(base).toOption.get.outputDbRoot shouldBe None
+  }
+
+  it should "nhận URI tuyệt đối, bỏ dấu / cuối, và hiện trong describe" in {
+    val cfg = JobConfig.fromEnv(base + ("OUTPUT_DB_ROOT" -> "hdfs://nn:8020/sandbox/")).toOption.get
+
+    cfg.outputDbRoot shouldBe Some("hdfs://nn:8020/sandbox")
+    cfg.describe.toMap.apply("OUTPUT_DB_ROOT") shouldBe "hdfs://nn:8020/sandbox"
+  }
+
+  it should "từ chối đường dẫn không phải URI tuyệt đối, hoặc có ký tự không đặt được vào câu lệnh SQL" in {
+    for (bad <- Seq("/sandbox", "sandbox", "hdfs://nn:8020/sand'box", "hdfs://nn:8020/")) {
+      val errors = JobConfig.fromEnv(base + ("OUTPUT_DB_ROOT" -> bad)).left.toOption.getOrElse(fail(s"expected an error for $bad"))
+      errors.exists(_.startsWith("OUTPUT_DB_ROOT")) shouldBe true
+    }
+  }
+
+  it should "đòi bảng ánh xạ (MAPPING_TABLE_PATH) nằm dưới OUTPUT_DB_ROOT" in {
+    val root = base + ("OUTPUT_DB_ROOT" -> "hdfs://nn:8020/sandbox")
+    JobConfig.fromEnv(root + ("MAPPING_TABLE_PATH" -> "hdfs://nn:8020/sandbox/_mapping")).isRight shouldBe true
+    val errors = JobConfig.fromEnv(root + ("MAPPING_TABLE_PATH" -> "hdfs://nn:8020/prod8/mapping")).left.toOption.get
+    errors.exists(_.startsWith("MAPPING_TABLE_PATH")) shouldBe true
+    JobConfig.fromEnv(root + ("MAPPING_TABLE_PATH" -> "hdfs://nn:8020/sandboxes/m")).isLeft shouldBe true // not a prefix match
+  }
 }
+

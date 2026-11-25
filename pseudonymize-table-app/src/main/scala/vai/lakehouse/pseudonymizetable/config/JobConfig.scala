@@ -130,7 +130,8 @@ final case class JobConfig(
     writeRetries: Int = 0,
     retryWaitSeconds: Int = 30,
     partitionByDefaulted: Boolean = false,
-    requestCode: Option[String] = None) {
+    requestCode: Option[String] = None,
+    outputDbRoot: Option[String] = None) {
 
   def source: String = input.describe
 
@@ -156,6 +157,7 @@ final case class JobConfig(
     "OUTPUT_PARTITION_BY" -> (if (outputPartitionBy.isEmpty) "(no partitioning)" else outputPartitionBy.mkString(", ")),
     "MAPPING_TABLE_PATH"  -> mappingTablePath.getOrElse("(spark.pseudonym.mapping.path or not used)"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
+    "OUTPUT_DB_ROOT"      -> outputDbRoot.getOrElse("(none: a new OUTPUT_DB goes to the warehouse)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString,
     "INPUT_BAD_FILES"     -> badFiles.name,
     "INPUT_CHECK_FULL"    -> checkFull.toString,
@@ -292,6 +294,18 @@ object JobConfig {
       errors += s"WAREHOUSE_PATH='$v': must be an absolute URI with a scheme, e.g. hdfs://<namenode>:8020/<path>"
     }
 
+    // Thư mục chứa các database kết quả (vùng sandbox): OUTPUT_DB mới được tạo ở <root>/<OUTPUT_DB>.db, database đã có phải nằm dưới
+    // root (job kiểm khi chạy). Nằm trong câu lệnh SQL (LOCATION '...') nên không nhận dấu nháy.
+    val outputDbRoot = raw("OUTPUT_DB_ROOT").map(_.stripSuffix("/")).flatMap { v =>
+      if (!isAbsoluteUri(v) || new java.net.URI(v).getPath.isEmpty || v.exists(c => c == '\'' || c == '\\' || c.isControl)) {
+        errors += "OUTPUT_DB_ROOT: must be an absolute URI of a folder, e.g. hdfs://<namenode>:8020/sandbox (no quotes)"
+        None
+      } else Some(v)
+    }
+    for (root <- outputDbRoot; mapping <- mappingPath if !PathRoot.under(mapping, root)) {
+      errors += s"MAPPING_TABLE_PATH: must be under OUTPUT_DB_ROOT ($root), like the result tables"
+    }
+
     val badFiles = raw("INPUT_BAD_FILES").map(v => BadFilePolicy.parse(v).getOrElse {
       errors += s"INPUT_BAD_FILES='$v': must be one of ${BadFilePolicy.All.map(_.name).mkString(" / ")}"
       BadFilePolicy.Fail
@@ -321,7 +335,7 @@ object JobConfig {
     else Right(JobConfig(raw("APP_NAME").getOrElse("PseudonymizeTable"), input, columns, mode, outDb, outTable, format,
       outputMode, mappingPath, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), bool("VERIFY", default = true),
       badFiles, parallelism, checkFull, partitionBy, skipExisting, writeRetries, retryWaitSeconds,
-      partitionByDefaulted = raw("OUTPUT_PARTITION_BY").isEmpty, requestCode = requestCode))
+      partitionByDefaulted = raw("OUTPUT_PARTITION_BY").isEmpty, requestCode = requestCode, outputDbRoot = outputDbRoot))
   }
 
   private val InputOptionPrefix = "INPUT_OPTION_"

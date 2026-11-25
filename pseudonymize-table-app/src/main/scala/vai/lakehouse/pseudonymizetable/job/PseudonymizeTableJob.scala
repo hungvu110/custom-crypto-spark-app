@@ -13,7 +13,7 @@ import vai.lakehouse.pseudonym.{ConfigurationException, PseudonymMode}
 import vai.lakehouse.pseudonym.core.KeyProvider
 import vai.lakehouse.pseudonym.policy.{ColumnRule, TablePolicy}
 import vai.lakehouse.pseudonym.spark.{DeidTarget, PseudonymConf, Pseudonymizer}
-import vai.lakehouse.pseudonymizetable.config.{BadFilePolicy, FileInput, JobConfig, OutputFormat, TableInput}
+import vai.lakehouse.pseudonymizetable.config.{BadFilePolicy, FileInput, JobConfig, OutputFormat, PathRoot, TableInput}
 import vai.lakehouse.pseudonymizetable.logging.{Log, Timings}
 
 /** Kết quả đối chiếu 1 cột đã giả danh giữa bảng nguồn và bảng đích. */
@@ -237,7 +237,7 @@ object PseudonymizeTableJob {
       Log.warn("PSEUDO_COLUMNS=none: NO column is pseudonymized, the target is a plain copy of the source (no key is used)")
       Log.kv("pseudonymized columns", "(none)")
     } else Log.kv("pseudonymized columns", cfg.pseudoColumns.map(c => s"${c.name}:${c.mode.name}").mkString(", "))
-    spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
+    ensureOutputDatabase(spark, cfg)
     val statsBefore = stats.settled()
     // Spark runs read + pseudonymize + write fused in the same tasks, so they cannot be timed separately here.
     val writeSummary = Timings.time("write: read + pseudonymize + write (fused)") { write(spark, cfg, toWrite, source, transform, data.partitions, stats) }
@@ -563,6 +563,28 @@ object PseudonymizeTableJob {
       v
     }
     JobResult(rowsSource, rowsTarget, exact, verifications)
+  }
+
+  /**
+   * Database của bảng kết quả. Không có `OUTPUT_DB_ROOT`: như trước, database mới nằm trong warehouse. Có root (vùng sandbox): database mới
+   * được tạo ở `<root>/<OUTPUT_DB>.db`, nên các bảng managed (Delta) của nó nằm dưới root mà vẫn do Hive Metastore quản lý; database ĐÃ CÓ
+   * phải nằm dưới root, không thì dừng TRƯỚC khi ghi (`CREATE DATABASE IF NOT EXISTS ... LOCATION` không báo lỗi và không đổi location của
+   * database đã có, nên bảng sẽ lặng lẽ rơi vào chỗ cũ). Kiểm lại sau khi tạo: một run khác có thể vừa tạo database đó.
+   */
+  private def ensureOutputDatabase(spark: SparkSession, cfg: JobConfig): Unit = cfg.outputDbRoot match {
+    case None => spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)}")
+    case Some(root) =>
+      if (!spark.catalog.databaseExists(cfg.outputDb)) {
+        val location = s"$root/${cfg.outputDb}.db" // OUTPUT_DB is [a-z0-9_] and the root has no quote (JobConfig)
+        spark.sql(s"CREATE DATABASE IF NOT EXISTS ${quote(cfg.outputDb)} LOCATION '$location'")
+        Log.kv("output database", s"${cfg.outputDb} created at $location")
+      }
+      val location = spark.catalog.getDatabase(cfg.outputDb).locationUri
+      if (!PathRoot.under(location, root)) {
+        throw new IllegalStateException(s"OUTPUT_DB ${cfg.outputDb} already exists at $location, outside OUTPUT_DB_ROOT $root: the result " +
+          "table would not be in the sandbox. Use another OUTPUT_DB, or move the database under the root")
+      }
+      Log.kv("output database", s"${cfg.outputDb} at $location")
   }
 
   private def quote(identifier: String): String = s"`${identifier.replace("`", "``")}`"

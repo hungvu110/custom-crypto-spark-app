@@ -555,5 +555,24 @@ class SpecTest(unittest.TestCase):
             dag.check_conf(DAK_RUN_ID, conf)
 
 
+
+class SandboxTest(unittest.TestCase):
+    """The result databases live under /sandbox (HDFS), apart from /prod8/warehouse, and are still Hive Metastore databases of Delta tables."""
+
+    def test_every_run_puts_a_new_result_database_under_the_sandbox(self):
+        self.assertEqual(dag.SANDBOX_ROOT, "hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/sandbox")
+        for run_id, conf in ((DAK_RUN_ID, dak_conf()), ("manual__2026-11-25T10:00:00+07:00", None)):
+            env = driver_env(render(run_id, conf))
+            self.assertEqual(env["OUTPUT_DB_ROOT"], dag.SANDBOX_ROOT, run_id)
+
+    def test_the_sandbox_is_set_by_the_dag_and_not_by_the_requester(self):
+        self.assertNotIn("OUTPUT_DB_ROOT", dag.JOB_ENV)
+        conf = dak_conf()
+        conf["env"]["OUTPUT_DB_ROOT"] = "hdfs://vailakehouse.datalakehla.viettel.com.vn:8020/prod8/warehouse"
+        with self.assertRaises(ValueError):
+            dag.check_conf(DAK_RUN_ID, conf)
+
+
+
 if __name__ == "__main__":
     unittest.main()

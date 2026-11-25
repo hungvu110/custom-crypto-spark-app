@@ -568,4 +568,49 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     runEvents("silver_none", "silver_none_out", (silverKeys ++ Seq("INPUT_FROM" -> "20300101", "INPUT_TO" -> "20300101")): _*) shouldBe
       PseudonymizeTableApp.ExitRuntimeError
   }
+
+  // ---------------------------------------------------------------- OUTPUT_DB_ROOT (vùng sandbox)
+
+  private def sandbox(name: String): String = workDir.resolve(name).toUri.toString.stripSuffix("/")
+
+  private def location(db: String): String = spark.catalog.getDatabase(db).locationUri
+
+  "OUTPUT_DB_ROOT" should "tạo database mới dưới root và ghi bảng đích (Delta, managed) trong thư mục của database đó" in {
+    val root = sandbox("sandbox_new")
+
+    run("OUTPUT_DB" -> "team01_req_1", "OUTPUT_TABLE" -> "subscriber", "OUTPUT_DB_ROOT" -> root) shouldBe PseudonymizeTableApp.ExitOk
+
+    location("team01_req_1").stripSuffix("/") should endWith("/sandbox_new/team01_req_1.db")
+    val table = spark.sql("DESCRIBE DETAIL team01_req_1.subscriber").head()
+    table.getAs[String]("format") shouldBe "delta"
+    table.getAs[String]("location") should include("/sandbox_new/team01_req_1.db/subscriber")
+    spark.sessionState.catalog.getTableMetadata(org.apache.spark.sql.catalyst.TableIdentifier("subscriber", Some("team01_req_1")))
+      .tableType.name shouldBe "MANAGED" // removing the table still removes its data (expiry of the request)
+    spark.table("team01_req_1.subscriber").count() shouldBe 4L
+  }
+
+  it should "dùng lại database đã nằm dưới root (nhiều bảng của một phiếu ghi cùng database)" in {
+    val root = sandbox("sandbox_reuse")
+    run("OUTPUT_DB" -> "team01_req_2", "OUTPUT_TABLE" -> "a", "OUTPUT_DB_ROOT" -> root) shouldBe PseudonymizeTableApp.ExitOk
+
+    run("OUTPUT_DB" -> "team01_req_2", "OUTPUT_TABLE" -> "b", "OUTPUT_DB_ROOT" -> root) shouldBe PseudonymizeTableApp.ExitOk
+
+    spark.sql("DESCRIBE DETAIL team01_req_2.b").head().getAs[String]("location") should include("/sandbox_reuse/team01_req_2.db/b")
+  }
+
+  it should "dừng, không ghi gì, khi database đã có ở chỗ khác (ngoài root)" in {
+    spark.sql("CREATE DATABASE IF NOT EXISTS team01_old") // in the warehouse, like a database made before the sandbox existed
+
+    run("OUTPUT_DB" -> "team01_old", "OUTPUT_TABLE" -> "subscriber", "OUTPUT_DB_ROOT" -> sandbox("sandbox_guard")) shouldBe
+      PseudonymizeTableApp.ExitRuntimeError
+
+    spark.catalog.tableExists("team01_old", "subscriber") shouldBe false
+  }
+
+  it should "không đặt OUTPUT_DB_ROOT thì database mới nằm trong warehouse như trước" in {
+    run("OUTPUT_DB" -> "team01_plain", "OUTPUT_TABLE" -> "subscriber") shouldBe PseudonymizeTableApp.ExitOk
+
+    location("team01_plain") should include("/warehouse/")
+  }
 }
+
