@@ -574,5 +574,82 @@ class SandboxTest(unittest.TestCase):
 
 
 
+def _mb(value):
+    return int(value[:-1]) * (1024 if value.endswith("g") else 1)
+
+
+class TableResourcesTest(unittest.TestCase):
+    """Kích thước job khử định danh theo bảng nguồn: bảng silver dùng đúng tài nguyên của job silver ingest đã nạp nó."""
+
+    SILVER = {"database": "silver", "requestCode": "PYC-2026-000007", "pseudoColumns": "isdn:HASH"}
+
+    def sized(self, table, database="silver"):
+        profile, res = dag.resources_for({**self.SILVER, "database": database, "table": table})
+        return profile, res, dag.with_resources(render(DAK_RUN_ID, dak_conf()), res)["spec"]
+
+    def test_a_silver_table_gets_the_resources_of_its_silver_ingest_job(self):
+        profile, res, spec = self.sized("vtt_f016_mpre_tot_charge_m")
+
+        self.assertEqual(profile, "silver.vtt_f016_mpre_tot_charge_m")
+        self.assertEqual((spec["executor"]["cores"], spec["executor"]["memory"], spec["executor"]["memoryOverhead"]), (4, "7168m", "1536m"))
+        self.assertEqual((spec["driver"]["cores"], spec["driver"]["memory"]), (1, "3072m"))
+        conf = spec["sparkConf"]
+        self.assertEqual((conf["spark.dynamicAllocation.minExecutors"], conf["spark.dynamicAllocation.maxExecutors"]), ("2", "8"))
+        self.assertEqual(conf["spark.sql.shuffle.partitions"], "224")
+        self.assertEqual(conf["spark.sql.codegen.maxFields"], "1000")  # 447 columns: keep whole-stage codegen
+
+    def test_f022_and_f_home_bts_are_narrow_tables_with_few_executors(self):
+        for table, maximum in (("vtt_f022_register", "4"), ("vtt_f_home_bts_daily_area", "3")):
+            _, _, spec = self.sized(table)
+            self.assertEqual((spec["executor"]["memory"], spec["executor"]["memoryOverhead"]), ("12288m", "2048m"), table)
+            self.assertEqual(spec["sparkConf"]["spark.dynamicAllocation.maxExecutors"], maximum, table)
+
+    def test_a_reference_table_gets_one_small_static_executor(self):
+        _, _, spec = self.sized("vtt_d_os_type")
+        self.assertEqual((spec["executor"]["instances"], spec["executor"]["cores"]), (1, 2))
+        self.assertEqual(spec["sparkConf"]["spark.dynamicAllocation.enabled"], "false")
+        self.assertFalse([k for k in spec["sparkConf"] if k.startswith("spark.dynamicAllocation.") and k != "spark.dynamicAllocation.enabled"])
+
+    def test_any_other_table_keeps_the_default_resources(self):
+        for table, database in (("users_cdr_2", "demo_db"), ("vtt_f016_mpre_tot_charge_m", "demo_db"), ("vtnet_ebs_3g_4g", "silver")):
+            profile, res, spec = self.sized(table, database)
+            self.assertEqual(profile, "default", table)
+            self.assertEqual(spec["sparkConf"]["spark.dynamicAllocation.maxExecutors"], str(dag.EXECUTORS_MAX), table)
+        self.assertEqual(dag.resources_for(None)[0], "default")
+
+    def test_the_sized_spec_keeps_integers_and_strings_where_kubernetes_wants_them(self):
+        _, _, spec = self.sized("vtt_f022_register")
+        for role in ("driver", "executor"):
+            self.assertIsInstance(spec[role]["cores"], int)
+        self.assertIsInstance(spec["executor"]["instances"], int)
+        for key, value in spec["sparkConf"].items():
+            self.assertIsInstance(value, str, key)
+
+    def test_the_run_uses_the_operator_that_sizes_the_job(self):
+        self.assertTrue([r for r in dag.recorded if type(r).__name__ == "TableSizedSparkKubernetesOperator"])
+
+    def test_the_three_biggest_tables_of_one_request_fit_in_the_quota_with_room_for_silver(self):
+        cores = memory_gb = 0
+        for table in ("vtt_f016_mpre_tot_charge_m", "vtt_f022_register", "vtt_f_home_bts_daily_area"):
+            _, res = dag.resources_for({"database": "silver", "table": table})
+            cores += res["driver_cores"] + res["max_executors"] * res["executor_cores"]
+            memory_gb += (_mb(res["driver_memory"]) + _mb(res["driver_memory_overhead"])
+                          + res["max_executors"] * (_mb(res["executor_memory"]) + _mb(res["executor_memory_overhead"]))) / 1024
+        self.assertLessEqual(cores, 100)  # quota 200 CPU
+        self.assertLessEqual(memory_gb, 200)  # quota 400 GB
+
+    def test_the_silver_profiles_match_the_silver_ingest_jobs(self):
+        import test_silver_dags  # noqa: E402  (loads the VTT DAG file with Airflow stubbed)
+
+        vtt = test_silver_dags.load("silver_ingest_vtt")
+        keys = ("executors", "min_executors", "max_executors", "executor_cores", "executor_memory", "executor_memory_overhead",
+                "driver_memory", "driver_memory_overhead", "shuffle_partitions")
+        for dataset, settings in vtt.DATASETS.items():
+            table = "vtt_" + dataset.replace("-", "_")
+            silver = test_silver_dags.common.resources_of(settings)
+            _, deid = dag.resources_for({"database": "silver", "table": table})
+            self.assertEqual({k: deid.get(k) for k in keys}, {k: silver.get(k) for k in keys}, table)
+
+
 if __name__ == "__main__":
     unittest.main()

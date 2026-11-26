@@ -102,6 +102,92 @@ SHUFFLE_PARTITIONS = (
     400  # verify step (distinct/join); AQE coalesces it down for small tables
 )
 
+# ---------------------------------------------------------------- RESOURCES PER SOURCE TABLE
+# The numbers above are the DEFAULT. A table of the silver database gets the SAME Spark sizes as the silver ingest job that loaded it
+# (silver_ingest_vtt.py: tiers WIDE, NARROW, TINY and the executor counts of each dataset; test_deid_dag.py guards the drift): the
+# de-identification reads the whole table and writes it again, like that job, so the width of the table decides the memory per core and its
+# size the number of executors. Running the three biggest requests of VTT together then stays well inside the quota of the namespace (200 CPU,
+# 400 GB) instead of 3 x 20 executors of 10 GB. The profile is picked when the run starts, from conf.database and conf.table
+# (TableSizedSparkKubernetesOperator below): the sizes cannot be Jinja templates, they would render as strings and Kubernetes wants integers.
+SILVER_DATABASE = "silver"
+SILVER_WIDE = {"executor_cores": 4, "executor_memory": "7168m", "executor_memory_overhead": "1536m",
+               "driver_memory": "3072m", "driver_memory_overhead": "1024m"}
+SILVER_NARROW = {"executor_cores": 4, "executor_memory": "12288m", "executor_memory_overhead": "2048m",
+                 "driver_memory": "4096m", "driver_memory_overhead": "1024m"}
+SILVER_TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m",
+               "driver_memory": "1024m", "driver_memory_overhead": "512m", "shuffle_partitions": 8}
+# Per silver table: executors = initial, min_executors/max_executors = range of dynamic allocation (absent: a fixed number of executors).
+SILVER_TABLE_RESOURCES = {
+    "vtt_f001_mpre_call": {**SILVER_NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 32},
+    "vtt_f002_mpre_sms": {**SILVER_NARROW, "executors": 1, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 16},
+    "vtt_f003_mpre_data": {**SILVER_WIDE, "executors": 6, "min_executors": 2, "max_executors": 12, "shuffle_partitions": 256},
+    "vtt_f014_mpre_tot_charge_d": {**SILVER_WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 128},
+    "vtt_f015_mpre_tot_charge_d_acc": {**SILVER_WIDE, "executors": 4, "min_executors": 2, "max_executors": 10, "shuffle_partitions": 192},
+    "vtt_f016_mpre_tot_charge_m": {**SILVER_WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 224},
+    "vtt_f022_register": {**SILVER_NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 48},
+    "vtt_f_home_bts_daily_area": {**SILVER_NARROW, "executors": 2, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 24},
+    "vtt_f_customer": {**SILVER_NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 96},
+    **{f"vtt_{t}": SILVER_TINY for t in ("d_cust_type", "d_khdn", "d_mpre_data_package", "d_addon_data_package", "d_device_ttvas",
+                                         "d_os_type", "d_sub_type_gb", "d_telecom_service", "d_vas_direction")},
+}
+DEFAULT_RESOURCES = {"driver_cores": DRIVER_CORES, "driver_memory": DRIVER_MEMORY, "driver_memory_overhead": DRIVER_OVERHEAD,
+                     "executors": EXECUTORS_MIN, "min_executors": EXECUTORS_MIN, "max_executors": EXECUTORS_MAX,
+                     "executor_cores": EXECUTOR_CORES, "executor_memory": EXECUTOR_MEMORY, "executor_memory_overhead": EXECUTOR_OVERHEAD,
+                     "shuffle_partitions": SHUFFLE_PARTITIONS}
+# A silver table has 150 to 450 columns: whole-stage codegen and the plan strings need more than Spark's default of 100 fields (as in silver).
+WIDE_TABLE_MAX_FIELDS = 1000
+
+
+def resources_for(conf):
+    """(profile name, resources) of the source table of a run: its silver profile, or DEFAULT_RESOURCES for any other table."""
+
+    conf = conf or {}
+    if str(conf.get("database", "")).lower() == SILVER_DATABASE:
+        table = str(conf.get("table", "")).lower()
+        if table in SILVER_TABLE_RESOURCES:
+            return f"{SILVER_DATABASE}.{table}", {"driver_cores": 1, **SILVER_TABLE_RESOURCES[table]}
+    return "default", dict(DEFAULT_RESOURCES)
+
+
+def with_resources(spec, res):
+    """A copy of the rendered SparkApplication `spec` with the sizes of `res` (driver, executors, dynamic allocation, shuffle partitions)."""
+
+    sized = copy.deepcopy(spec)
+    driver, executor, conf = sized["spec"]["driver"], sized["spec"]["executor"], sized["spec"]["sparkConf"]
+    driver.update({"cores": res["driver_cores"], "coreLimit": f"{res['driver_cores'] * 1000}m", "memory": res["driver_memory"],
+                   "memoryOverhead": res["driver_memory_overhead"]})
+    executor.update({"instances": res["executors"], "cores": res["executor_cores"], "coreLimit": f"{res['executor_cores'] * 1000}m",
+                     "memory": res["executor_memory"], "memoryOverhead": res["executor_memory_overhead"]})
+    for key in [k for k in conf if k.startswith("spark.dynamicAllocation.")]:
+        del conf[key]
+    if res.get("max_executors"):
+        conf.update({
+            "spark.dynamicAllocation.enabled": "true",
+            "spark.dynamicAllocation.shuffleTracking.enabled": "true",
+            "spark.dynamicAllocation.minExecutors": str(res.get("min_executors", 1)),
+            "spark.dynamicAllocation.initialExecutors": str(res["executors"]),
+            "spark.dynamicAllocation.maxExecutors": str(res["max_executors"]),
+            "spark.dynamicAllocation.executorIdleTimeout": "120s",
+        })
+    else:
+        conf["spark.dynamicAllocation.enabled"] = "false"
+    conf["spark.sql.shuffle.partitions"] = str(res["shuffle_partitions"])
+    return sized
+
+
+class TableSizedSparkKubernetesOperator(SparkKubernetesOperator):
+    """SparkKubernetesOperator that sizes the job for its source table (resources_for) just before submitting it: the spec is already
+    rendered at that point, so the sizes stay integers."""
+
+    def execute(self, context):
+        profile, res = resources_for(context["dag_run"].conf)
+        self.log.info("Spark resources of profile %s: driver %s cores %s+%s, executors %s x (%s cores, %s+%s), dynamic %s..%s",
+                      profile, res["driver_cores"], res["driver_memory"], res["driver_memory_overhead"], res["executors"],
+                      res["executor_cores"], res["executor_memory"], res["executor_memory_overhead"], res.get("min_executors", "-"),
+                      res.get("max_executors", "-"))
+        self.template_spec = with_resources(self.template_spec, res)
+        return super().execute(context)
+
 # ---------------------------------------------------------------- PER-REQUEST PARAMETERS
 # Default values ONLY for a manual trigger; DAK always sends the full conf.
 DEFAULTS = {
@@ -388,6 +474,8 @@ SHARED_SPARK_CONF = {
     "spark.sql.adaptive.enabled": "true",
     "spark.sql.adaptive.coalescePartitions.enabled": "true",
     "spark.sql.sources.ignoreDataLocality.enabled": "true",
+    "spark.sql.codegen.maxFields": str(WIDE_TABLE_MAX_FIELDS),
+    "spark.sql.debug.maxToStringFields": str(WIDE_TABLE_MAX_FIELDS),
     # Event log (Spark History Server).
     "spark.eventLog.enabled": "true",
     "spark.eventLog.dir": EVENT_LOG_DIR,
@@ -514,7 +602,7 @@ with DAG(
     # The spec is a dict, so it is passed through `template_spec`. `application_file` only accepts a file path or a YAML string: a dict there
     # fails with "AttributeError: 'dict' object has no attribute 'rstrip'" (provider cncf.kubernetes 7.x/8.x). The other parameter names
     # (kubernetes_conn_id, ...) depend on the provider version: use the same way you already call SparkKubernetesOperator in the existing DAG.
-    run_job = SparkKubernetesOperator(
+    run_job = TableSizedSparkKubernetesOperator(
         task_id="pseudonymize_table",
         namespace=NAMESPACE,
         template_spec=build_spec(),
