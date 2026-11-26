@@ -7,7 +7,7 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{Column, DataFrame, SparkSession}
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, count, lit, sum, when}
 import org.apache.spark.sql.types.StringType
 import vai.lakehouse.pseudonym.{ConfigurationException, PseudonymMode}
 import vai.lakehouse.pseudonym.core.KeyProvider
@@ -16,22 +16,39 @@ import vai.lakehouse.pseudonym.spark.{DeidTarget, PseudonymConf, Pseudonymizer}
 import vai.lakehouse.pseudonymizetable.config.{BadFilePolicy, FileInput, JobConfig, OutputFormat, PathRoot, TableInput}
 import vai.lakehouse.pseudonymizetable.logging.{Log, Timings}
 
-/** Kết quả đối chiếu 1 cột đã giả danh giữa bảng nguồn và bảng đích. */
+/**
+ * Kết quả đối chiếu 1 cột đã giả danh giữa bảng nguồn và bảng đích. `notPseudonymized` = số giá trị KHÁC NULL ở đích không phải định danh giả:
+ * HASH và MAPPING có dạng cố định nên đếm theo dạng (kiểm MỌI giá trị, một lượt quét, không shuffle); ENCRYPT không có dạng cố định nên đếm
+ * các giá trị gốc còn trong đích (semi-join với nguồn, như trước). `method` nói cách đã đếm.
+ */
 final case class ColumnVerification(
     column: String,
     nullsSource: Long,
     nullsTarget: Long,
-    distinctSource: Long,
-    distinctTarget: Long,
-    originalValuesLeft: Long) {
+    notPseudonymized: Long,
+    method: String) {
 
   /**
-   * `exact` (OUTPUT_MODE=overwrite: đích == kết quả của đúng lần chạy này): null vào -> null ra; số giá trị khác nhau
-   * giữ nguyên (ánh xạ 1-1). Không `exact` (append: đích còn dữ liệu các lần trước) thì chỉ còn kiểm điều luôn đúng.
-   * Cả hai: không còn giá trị gốc nào trong đích.
+   * `exact` (OUTPUT_MODE=overwrite / overwrite-partitions: đích == kết quả của đúng lần chạy này): null vào -> null ra. Cả hai: không còn giá
+   * trị nào chưa giả danh trong đích. Số giá trị khác nhau không còn so: giả danh tất định (cùng giá trị -> cùng định danh, HMAC 128 bit)
+   * nên điều đó đúng theo thuật toán, mà đếm `distinct` là bước tốn nhất (một shuffle mỗi cột mỗi phía).
    */
-  def passed(exact: Boolean): Boolean =
-    originalValuesLeft == 0 && (!exact || (nullsSource == nullsTarget && distinctSource == distinctTarget))
+  def passed(exact: Boolean): Boolean = notPseudonymized == 0 && (!exact || nullsSource == nullsTarget)
+}
+
+/**
+ * Dạng của định danh giả theo chế độ (regex trên giá trị chuỗi), để kiểm "không còn giá trị nào chưa giả danh" bằng một lượt quét: HASH =
+ * `k<version>_` + 32 hex (HmacPseudonymizer), MAPPING = `t_` + 32 hex (MappingTable). ENCRYPT: không có dạng cố định (None).
+ */
+object PseudonymFormat {
+  val Hash = "^k[0-9]+_[0-9a-f]{32}$"
+  val Mapping = "^t_[0-9a-f]{32}$"
+
+  def of(mode: PseudonymMode): Option[String] = mode match {
+    case PseudonymMode.Hash => Some(Hash)
+    case PseudonymMode.Mapping => Some(Mapping)
+    case _ => None
+  }
 }
 
 /** `exact` = bảng đích được thay thế hoàn toàn (overwrite) nên so khớp tuyệt đối với nguồn. */
@@ -537,28 +554,34 @@ object PseudonymizeTableJob {
   private def verify(spark: SparkSession, cfg: JobConfig, source: DataFrame,
                      partitions: Option[Seq[InputPartition]]): JobResult = {
     val whole = spark.table(quoted(cfg.outputDb, cfg.outputTable))
-    // overwrite-partitions: chỉ so với các partition vừa ghi; vẫn "exact" (số dòng, null, distinct phải khớp nguồn).
+    // overwrite-partitions: chỉ so với các partition vừa ghi; vẫn "exact" (số dòng và số null phải khớp nguồn).
     val target =
       if (cfg.outputMode == "overwrite-partitions") whole.where(partitionFilter(cfg, source, partitions)) else whole
-    val rowsSource = source.count()
-    val rowsTarget = target.count()
-    Log.kv("rows source / target", s"$rowsSource / $rowsTarget")
     val exact = cfg.outputMode == "overwrite" || cfg.outputMode == "overwrite-partitions"
-    if (!exact) Log.info("OUTPUT_MODE=append: the target still holds earlier runs, verifying only (target >= source, no original values left)")
+    if (!exact) Log.info("OUTPUT_MODE=append: the target still holds earlier runs, verifying only (target >= source, no value left unpseudonymized)")
+    // ONE pass over each side for every column (count + per-column sums, no shuffle) instead of 5 jobs per column.
+    def value(c: String) = col(quote(c)).cast(StringType)
+    val rules = cfg.pseudoColumns.map(r => (r.name, PseudonymFormat.of(r.mode)))
+    val src = source.agg(count(lit(1)), rules.map { case (c, _) => sum(when(value(c).isNull, 1L).otherwise(0L)) }: _*).head()
+    val tgt = target.agg(count(lit(1)), rules.flatMap { case (c, format) =>
+      Seq(sum(when(value(c).isNull, 1L).otherwise(0L)),
+        sum(format.fold(lit(0L))(f => when(value(c).isNotNull && !value(c).rlike(f), 1L).otherwise(0L))))
+    }: _*).head()
+    def at(r: org.apache.spark.sql.Row, i: Int): Long = if (r.isNullAt(i)) 0L else r.getLong(i)
+    val rowsSource = at(src, 0)
+    val rowsTarget = at(tgt, 0)
+    Log.kv("rows source / target", s"$rowsSource / $rowsTarget")
 
-    val verifications = cfg.columns.map { c =>
-      val src = source.select(col(quote(c)).cast(StringType).as("v"))
-      val tgt = target.select(col(quote(c)).cast(StringType).as("v"))
-      val v = ColumnVerification(
-        column = c,
-        nullsSource = src.where(col("v").isNull).count(),
-        nullsTarget = tgt.where(col("v").isNull).count(),
-        distinctSource = src.where(col("v").isNotNull).distinct().count(),
-        distinctTarget = tgt.where(col("v").isNotNull).distinct().count(),
-        originalValuesLeft = tgt.where(col("v").isNotNull).distinct()
-          .join(src.where(col("v").isNotNull).distinct(), Seq("v"), "left_semi").count())
-      val line = s"$c: null ${v.nullsSource}->${v.nullsTarget}, distinct ${v.distinctSource}->${v.distinctTarget}, " +
-        s"original values left=${v.originalValuesLeft}"
+    val verifications = rules.zipWithIndex.map { case ((c, format), i) =>
+      val notPseudonymized = format match {
+        case Some(_) => at(tgt, 2 + 2 * i)
+        case None => // ENCRYPT: no fixed format, count the original values still in the target
+          target.select(value(c).as("v")).where(col("v").isNotNull).distinct()
+            .join(source.select(value(c).as("v")).where(col("v").isNotNull).distinct(), Seq("v"), "left_semi").count()
+      }
+      val v = ColumnVerification(c, at(src, 1 + i), at(tgt, 1 + 2 * i), notPseudonymized,
+        format.fold("original values left (join with the source)")(f => s"values not matching $f"))
+      val line = s"$c: null ${v.nullsSource}->${v.nullsTarget}, ${v.method}=${v.notPseudonymized}"
       if (v.passed(exact)) Log.ok(line) else Log.fail(line)
       v
     }

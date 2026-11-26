@@ -256,7 +256,7 @@ các giá trị khác nhau của cột partition trong khoảng, mỗi partition
 | `overwrite`                                            | Thay **toàn bộ** bảng bằng dữ liệu lần này (xoá các ngày/giờ khác)                                                                                                                        |
 
 Đối chiếu (`VERIFY`) ở `overwrite-partitions` chỉ so với các partition vừa ghi và vẫn kiểm chính xác (số dòng, null,
-distinct, không sót giá trị gốc). Lưu ý: bảng đã tồn tại với partition khác cấu hình sẽ bị từ chối (exit 1) — đổi
+mọi giá trị là định danh giả). Lưu ý: bảng đã tồn tại với partition khác cấu hình sẽ bị từ chối (exit 1) — đổi
 `OUTPUT_TABLE` hoặc xoá bảng cũ; `OUTPUT_PARTITION_BY` chưa hỗ trợ `OUTPUT_FORMAT=iceberg`.
 
 **Ghi theo từng partition.** Với `overwrite-partitions`/`append` có partition `(date, hour)`, job:
@@ -476,14 +476,20 @@ Bảng ánh xạ chứa **giá trị gốc** → đặt ở vùng HDFS riêng, p
 
 ## 5. Đối chiếu nguồn ↔ đích (`VERIFY=true`)
 
-Sau khi ghi, job đọc lại bảng đích và kiểm, **theo từng cột** trong `PSEUDO_COLUMNS` (mỗi cột theo chế độ riêng của nó):
+Sau khi ghi, job đọc lại bảng đích và kiểm mọi cột trong `PSEUDO_COLUMNS` (mỗi cột theo chế độ riêng của nó). **Mỗi phía chỉ quét
+một lượt cho mọi cột, không shuffle**: một lượt nguồn (số dòng, số `NULL`) và một lượt đích (số dòng, số `NULL`, số giá trị sai dạng).
 
 | Kiểm                                                       | `overwrite` | `append`                                      |
 | ---------------------------------------------------------- | ----------- | --------------------------------------------- |
 | Số dòng đích == nguồn                                      | ✔           | đích ≥ nguồn (đích còn dữ liệu các lần trước) |
 | Số `NULL` không đổi                                        | ✔           | —                                             |
-| Số giá trị khác nhau không đổi (ánh xạ 1-1, không va chạm) | ✔           | —                                             |
-| **Không còn giá trị gốc nào** trong cột đích               | ✔           | ✔                                             |
+| **Mọi giá trị khác `NULL` của đích là định danh giả**      | ✔           | ✔                                             |
+
+"Là định danh giả" kiểm theo dạng: HASH = `k<version>_` + 32 hex, MAPPING = `t_` + 32 hex (kiểm MỌI giá trị, chặt hơn việc chỉ tìm giá
+trị gốc của nguồn). ENCRYPT không có dạng cố định nên vẫn đếm giá trị gốc còn trong đích (semi-join với nguồn, có shuffle).
+
+Không còn so **số giá trị khác nhau**: giả danh tất định (cùng giá trị → cùng định danh, HMAC 128 bit) nên điều đó đúng theo thuật
+toán, mà hai `distinct` mỗi cột là phần tốn nhất (f016, 26 cột: 47% thời gian job, khoảng 1100 giây). `VERIFY=false` bỏ hẳn bước này.
 
 Đạt → `JOB SUCCEEDED`, exit `0`. Không đạt → bảng đích **đã được ghi** nhưng job báo
 `JOB WRITTEN BUT VERIFICATION FAILED`, exit `3`: **đừng dùng** bảng đích đó.
