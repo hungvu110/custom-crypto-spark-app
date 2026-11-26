@@ -10,7 +10,7 @@ import unittest
 import datetime
 
 from test_silver_dags import EBS as _VTNET_EBS
-from test_silver_dags import _AirflowFailException, _dags_of, _Pendulum, driver_env, load, render, variables
+from test_silver_dags import RUN_VARIABLES, _AirflowFailException, _dags_of, _Pendulum, driver_env, load, render, variables
 
 GLOBAL = {"globalKey": True, "globalZone": "vtt"}
 
@@ -507,6 +507,24 @@ def spark_conf_of(dataset, dynamic_conf=None):
 # average (337 MiB of 384): 128 x 4.71 / 0.88 = 685, rounded up to 704 (files of about 131 MB, at most about 150 MB). The other tables keep the
 # default until measured.
 MEASURED_FILE_SHUFFLE_MB = {F003: 704}
+
+
+class DedupCheckTest(unittest.TestCase):
+    """DEDUP=check measures duplicate rows and files in the log, nothing is removed. It costs one more read of the landing, so it is switched on
+    for a few days only, through the Airflow Variable silver_ingest_dedup (read when a run starts: no deploy to switch it)."""
+
+    def tearDown(self):
+        RUN_VARIABLES.clear()
+
+    def test_off_unless_the_variable_says_check(self):
+        for dataset in (F003, F015, "d-os-type"):
+            self.assertEqual(driver_env(render(DAGS[dag_id(dataset)]))["DEDUP"], "off", dataset)
+
+    def test_the_variable_switches_every_table_to_check(self):
+        RUN_VARIABLES[common.DEDUP_VARIABLE] = "check"
+        for dataset in ALL_DATASETS:
+            self.assertEqual(driver_env(render(DAGS[dag_id(dataset)]))["DEDUP"], "check", dataset)
+        self.assertEqual(common.DEDUP_VARIABLE, "silver_ingest_dedup")
 
 
 class ResourcesTest(unittest.TestCase):

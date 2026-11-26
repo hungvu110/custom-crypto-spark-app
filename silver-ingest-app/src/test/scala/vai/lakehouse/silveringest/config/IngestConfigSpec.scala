@@ -430,4 +430,20 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     described() shouldBe "one file per read task: the run writes one partition dt (OUTPUT_REBALANCE=auto)"
     described("OUTPUT_REBALANCE" -> "false") shouldBe "one file per task and partition (OUTPUT_REBALANCE=false)"
   }
+
+  "DEDUP" should "mặc định off: không đo, không đổi gì" in {
+    IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.dedup shouldBe Dedup.Off
+  }
+
+  it should "nhận check (chỉ đo dòng và file trùng, không xoá gì), không phân biệt hoa thường, và hiện trong describe" in {
+    val cfg = IngestConfig.fromEnv(Mode.Passthrough, common + ("DEDUP" -> "CHECK")).toOption.get
+
+    cfg.dedup shouldBe Dedup.Check
+    cfg.describe.toMap.apply("DEDUP") shouldBe "check (measure duplicate rows and files, nothing is removed)"
+  }
+
+  it should "từ chối giá trị khác" in {
+    errors(Mode.Passthrough, common + ("DEDUP" -> "remove")) should include("DEDUP='remove': must be one of off / check")
+  }
 }
+

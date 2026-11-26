@@ -633,4 +633,15 @@ class SilverAppSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     hourCounts("nims_hours") shouldBe Map(("20261013", "09") -> 1L, ("20261013", "10") -> 1L, ("20261013", "11") -> 1L)
     spark.table("silver.nims_hours").where("hour = '10'").select("amount").head().getInt(0) shouldBe 910
   }
+
+  "DEDUP=check" should "chỉ đo: bảng đích vẫn giữ mọi dòng, kể cả dòng trùng" in {
+    val input = dir("dedup_check")
+    write(input.resolve("part-1.csv"), csv(csvRows :+ csvRows.head)) // the first row twice
+    write(input.resolve("part-2.csv"), csv(csvRows))                 // a copy of part-1 without the extra row
+
+    vtt(input, "dedup_check", "DEDUP" -> "check") shouldBe SilverApp.ExitOk
+
+    spark.table("silver.dedup_check").count() shouldBe (2 * csvRows.size + 1).toLong
+  }
 }
+

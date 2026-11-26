@@ -93,6 +93,19 @@ object Rebalance {
   def parse(value: String): Option[Rebalance] = All.find(_.name.equalsIgnoreCase(value.trim))
 }
 
+/**
+ * `DEDUP`: `off` (mặc định) hoặc `check` = ĐO dòng trùng và file trùng của lần nạp rồi ghi vào log, KHÔNG xoá gì (`DuplicateCheck`). Tốn một
+ * lần đọc nguồn nữa (để băm mọi cột) và một shuffle nhỏ (16 byte mỗi dòng): chỉ bật trong những ngày cần đo.
+ */
+sealed abstract class Dedup(val name: String, val describe: String)
+
+object Dedup {
+  case object Off extends Dedup("off", "off")
+  case object Check extends Dedup("check", "check (measure duplicate rows and files, nothing is removed)")
+  val All: Seq[Dedup] = Seq(Off, Check)
+  def parse(value: String): Option[Dedup] = All.find(_.name.equalsIgnoreCase(value.trim))
+}
+
 object OutputFiles {
   val DefaultShuffleMb = 384 // 128 MB parquet x hệ số giả định 3, cho tới khi đo
   val MinShuffleMb = 16
@@ -191,7 +204,8 @@ final case class IngestConfig(
     decryptEncrypt: Option[DecryptEncryptSettings],
     batch: Option[Batch] = None,
     hours: Option[Hours] = None,
-    outputFiles: OutputFiles = OutputFiles.Default) {
+    outputFiles: OutputFiles = OutputFiles.Default,
+    dedup: Dedup = Dedup.Off) {
 
   def target: String = s"$outputDb.$outputTable"
 
@@ -230,6 +244,7 @@ final case class IngestConfig(
     },
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "OUTPUT_FILES"        -> describeOutputFiles,
+    "DEDUP"               -> dedup.describe,
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
     "DECRYPT_MODE"             -> v.decryptMode.name,
@@ -402,6 +417,11 @@ object IngestConfig {
       OutputFiles(rebalance, shuffleMb.toLong * 1024 * 1024)
     }
 
+    val dedup = raw("DEDUP").map(v => Dedup.parse(v).getOrElse {
+      errors += s"DEDUP='$v': must be one of ${Dedup.All.map(_.name).mkString(" / ")}"
+      Dedup.Off
+    }).getOrElse(Dedup.Off)
+
     val warehousePath = raw("WAREHOUSE_PATH")
     warehousePath.filterNot(isAbsoluteUri).foreach { _ =>
       errors += "WAREHOUSE_PATH: must be an absolute URI with a scheme, e.g. hdfs://<namenode>:8020/<path>"
@@ -420,7 +440,7 @@ object IngestConfig {
 
     if (errors.nonEmpty) Left(errors.toList)
     else Right(IngestConfig(mode, raw("APP_NAME").getOrElse(s"SilverIngest-${mode.name}"), input, outDb, outTable,
-      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles))
+      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles, dedup))
   }
 
   private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],

@@ -638,6 +638,10 @@ DATASET_KEYS = (
     "decrypt_mode", "provider_decrypt", "encrypt_columns", "key_field_constant", "transforms",
     "periodic", "output_file_shuffle_mb",
 )
+# DUPLICATE CHECK (job env DEDUP): "check" measures the duplicate rows and files of every run in the log (DEDUP_CHECK_RESULT), nothing is removed.
+# It costs one more read of the landing, so it is switched on for a few days only: set the Airflow Variable below to "check" (or "off").
+# The Variable is read when a run starts, for every silver ingest DAG: no deploy to switch it. A wrong value fails the job (exit 2).
+DEDUP_VARIABLE = "silver_ingest_dedup"
 DEFAULT_FILE_SHUFFLE_MB = 384  # 128 MB of parquet x 3 (assumed ratio until measured); the same default as the job (OutputFiles.DefaultShuffleMb)
 FILE_SHUFFLE_MB_LIMITS = (16, 4096)  # the same limits as the job
 HOUR_COLUMN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")  # the same rule as a column name of the job
@@ -940,6 +944,7 @@ def build_spec(source):
         {"name": "ENABLE_HIVE_SUPPORT", "value": "true"},
         # Files of about the same size instead of one file per task and partition (see output_file_shuffle_mb in DATASET_KEYS).
         {"name": "OUTPUT_FILE_SHUFFLE_MB", "value": str(source.get("output_file_shuffle_mb", DEFAULT_FILE_SHUFFLE_MB))},
+        {"name": "DEDUP", "value": "{{ var.value.get('" + DEDUP_VARIABLE + "', 'off') }}"},
     ] + [{"name": k, "value": v} for k, v in source["env"].items()]
     if source.get("hour_glob"):
         # The job adds the column `hour` from the path of every file; BATCH_HOURS = the hours of this run (empty: the whole day), so a run

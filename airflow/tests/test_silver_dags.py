@@ -174,6 +174,9 @@ class _DagRun:
 RUN_INTERVAL_START = _Pendulum(2026, 10, 26, 20, 0, tzinfo=datetime.timezone.utc)
 
 
+RUN_VARIABLES = {}  # Airflow Variables read when a run starts (Jinja var.value), set by a test and cleared after it
+
+
 def render(dag, conf=None, run_id="scheduled__2026-10-27T03:00:00", interval_start=RUN_INTERVAL_START):
     """Render spec bằng Jinja thường (render_template_as_native_obj=False) với macro k8s_name và data_interval_start như Airflow."""
     environment = jinja2.Environment()
@@ -188,6 +191,8 @@ def render(dag, conf=None, run_id="scheduled__2026-10-27T03:00:00", interval_sta
         "bulk_to": common.bulk_to,
         "bulk_missing_days": common.bulk_missing_days,
         "data_interval_start": interval_start,
+        # Airflow's `var.value.get(name, default)`: the Variables of the run (RUN_VARIABLES, empty by default).
+        "var": types.SimpleNamespace(value=RUN_VARIABLES),
     }
 
     def walk(node):

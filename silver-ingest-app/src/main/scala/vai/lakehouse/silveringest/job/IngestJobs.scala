@@ -6,7 +6,7 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions.{col, lit, raise_error, when}
 import vai.lakehouse.columncrypto.cdr.{CdrCrypto, CdrCryptoConfig}
 import vai.lakehouse.keyprefix.{ColumnKeySource, KeyIntent, PathKeyResult, PathKeySource}
-import vai.lakehouse.silveringest.config.{DecryptEncryptSettings, DecryptMode, IngestConfig, ProviderDecrypt}
+import vai.lakehouse.silveringest.config.{DecryptEncryptSettings, DecryptMode, Dedup, IngestConfig, ProviderDecrypt}
 import vai.lakehouse.silveringest.crypto.FileCipher
 import vai.lakehouse.silveringest.logging.Log
 
@@ -22,9 +22,17 @@ object IngestResult {
 /** Đọc file plaintext của `INPUT_PATH`; có `HOUR_PATH_REGEX` thì chia theo giờ của file và gắn cột giờ ([[HourGroups]]). */
 private[job] object PlainSource {
 
-  def read(spark: SparkSession, cfg: IngestConfig, files: Seq[SourceFile]): DataFrame = cfg.hours match {
-    case None => SourceReader.read(spark, cfg.input, Seq(cfg.input.path))
-    case Some(h) => HourGroups.read(h, files)(group => SourceReader.read(spark, cfg.input, group.map(_.path)))
+  /**
+   * Dữ liệu landing như đã đọc (trước giải mã và gom nhóm). `DEDUP=check`: đo dòng và file trùng trên đúng dữ liệu này trước khi trả về
+   * (thêm một lần đọc nguồn, không đổi dữ liệu trả về).
+   */
+  def read(spark: SparkSession, cfg: IngestConfig, files: Seq[SourceFile]): DataFrame = {
+    val df = cfg.hours match {
+      case None => SourceReader.read(spark, cfg.input, Seq(cfg.input.path))
+      case Some(h) => HourGroups.read(h, files)(group => SourceReader.read(spark, cfg.input, group.map(_.path)))
+    }
+    if (cfg.dedup == Dedup.Check) DuplicateCheck.run(spark, files, df)
+    df
   }
 }
 
