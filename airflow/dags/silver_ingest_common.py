@@ -44,6 +44,13 @@ SPARK_UID = 185  # user of the apache/spark image (USER 185 in silver-ingest-app
 LOG4J = "-Dlog4j.configurationFile=file:/opt/app/log4j2.properties"
 JARS = ("local:///opt/app/key-prefix-lib-1.0-SNAPSHOT.jar,local:///opt/app/cdr-crypto-udf-1.0-SNAPSHOT.jar,"
         "local:///opt/app/DataLakeSecurity_jv8.jar")
+# The library of VTNET (com.viettel.security.PassTranformer, a signed partner jar copied as it is into the image): only the jobs of a dataset
+# whose provider_decrypt has cipher "vtnet" load it (the executors decrypt, so it goes into spark.jars).
+VTNET_JAR = "local:///opt/app/viettelsecurity-2.1.jar"
+
+# The constant key field of the global key (key_field_constant in DATASETS): the SAME in every table of every source, so one value (an isdn, an
+# imsi) gives one ciphertext in the tables of VTT and of VTNET alike, and they join (f022-register.imsi = ebs_3g_4g.imsi).
+JOIN_KEY_FIELD = {"name": "key_scope", "value": "vtt"}
 
 # Ingest modes of the Spark app (entry points of silver-ingest-app): the DAG of a dataset picks the one that fits its data.
 #   passthrough:     read the files and write the table as they are, no DAK call.
@@ -599,6 +606,30 @@ rm -f {TRUSTSTORE_DIR}/ca-*.pem
     }
 
 
+# ---------------------------------------------------------------- INPUT ON ANOTHER CLUSTER (input_cluster in DATASETS)
+# The landing of a dataset may be on another HDFS cluster (VTNET EBS-4G: HKH) with its own KDC (same realm NAME as here, no trust between
+# them): the job keeps its keytab of THIS cluster (writes the table in the metastore here, as before) and READS the other cluster with a
+# delegation token of that cluster, kept in a Secret of THIS namespace (one per cluster, `token_secret`). The token is fetched BY HAND with
+# `hdfs fetchdt` (docs/silver-ingest/VTNET-EBS-HKH.md) and renewed by hand before it ends (renew-interval of that cluster, Hadoop default 24 h);
+# the DAG only mounts the Secret into the driver and the executors (INPUT_TOKEN_DIR): the executors load it through HADOOP_TOKEN_FILE_LOCATION,
+# the driver through INPUT_TOKEN_FILE (its keytab login drops the token files). The job stops (exit 2) when the Secret holds no token of the
+# cluster of INPUT_PATH.
+INPUT_TOKEN_DIR = "/mnt/silver-input-token"
+INPUT_TOKEN_KEY = "hadoop.token"
+INPUT_CLUSTERS = {
+    "hkh": {
+        "hdfs": "hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020",
+        "token_secret": "hkh-hdfs-token",
+    },
+}
+
+
+def input_token_secret(source):
+    """Name of the Secret (in NAMESPACE) with the delegation token of the cluster of the landing of `source`."""
+
+    return INPUT_CLUSTERS[source["input_cluster"]]["token_secret"]
+
+
 # ---------------------------------------------------------------- DATASET SETTINGS (DATASETS in the DAG files)
 # EVERYTHING that is specific to one dataset is written in its entry of DATASETS in the DAG file of its source (silver_ingest_vtt.py,
 # silver_ingest_vtnet.py), and nowhere else. The entry is checked (check_dataset) when Airflow parses the DAG file: a typo is an import error,
@@ -618,7 +649,12 @@ rm -f {TRUSTSTORE_DIR}/ca-*.pem
 #   decrypt_mode       optional  file (default: the whole file, with the by-path key), column (the columns of `provider_decrypt`, with the by-path
 #                                key as the prefix) or none (nothing is decrypted, DAK by-path is never called).
 #   provider_decrypt   column    {"columns": [...], "key_field": "..."}: the columns that the provider encrypted and the plaintext column of the
-#                                provider that completes the key of each row. Required with decrypt_mode column, not allowed otherwise.
+#                                provider that completes the key of each row (cdr-crypto, VTT). Required with decrypt_mode column, not allowed
+#                                otherwise. {"columns": [...], "cipher": "vtnet"}: encrypted with the library of VTNET (PassTranformer), the
+#                                by-path key is its inputKey and there is no key_field.
+# This setting says WHERE the landing is:
+#   input_cluster      optional  a key of INPUT_CLUSTERS: the landing is on that other cluster, read with a delegation token of it (see INPUT ON
+#                                ANOTHER CLUSTER). The DAG file sets the landing root on that cluster.
 #   encrypt_columns    optional  the columns that the job encrypts with cdr-crypto, fixed by the dataset (not by the request). Needs
 #                                key_field_constant; the request then only carries globalKey/globalZone.
 #   key_field_constant optional  {"name": "...", "value": "..."}: a CONSTANT column that the job adds and uses as the key field of the encryption,
@@ -636,8 +672,9 @@ rm -f {TRUSTSTORE_DIR}/ca-*.pem
 DATASET_KEYS = (
     "mode", "hour_glob", "hour_column", "partition_by_hour", "key_path", "resources",
     "decrypt_mode", "provider_decrypt", "encrypt_columns", "key_field_constant", "transforms",
-    "periodic", "output_file_shuffle_mb",
+    "periodic", "output_file_shuffle_mb", "input_cluster",
 )
+PROVIDER_CIPHERS = ("cdr", "vtnet")
 # DUPLICATE CHECK (job env DEDUP): "check" measures the duplicate rows and files of every run in the log (DEDUP_CHECK_RESULT), nothing is removed.
 # It costs one more read of the landing, so it is switched on for a few days only: set the Airflow Variable below to "check" (or "off").
 # The Variable is read when a run starts, for every silver ingest DAG: no deploy to switch it. A wrong value fails the job (exit 2).
@@ -792,6 +829,8 @@ def check_dataset(dataset, settings):
     check_decrypt_settings(dataset, settings)
     if "periodic" in settings and not isinstance(settings["periodic"], bool):
         raise ValueError(f"{dataset}: periodic must be true or false")
+    if "input_cluster" in settings and settings["input_cluster"] not in INPUT_CLUSTERS:
+        raise ValueError(f"{dataset}: input_cluster must be one of {', '.join(INPUT_CLUSTERS)}")
 
 
 def check_column_names(dataset, key, value):
@@ -826,14 +865,21 @@ def check_decrypt_settings(dataset, settings):
         if decrypt_mode != "column":
             raise ValueError(f"{dataset}: provider_decrypt is only for decrypt_mode column")
         provider = settings["provider_decrypt"]
-        if not isinstance(provider, dict) or set(provider) != {"columns", "key_field"}:
-            raise ValueError(f"{dataset}: provider_decrypt must be an object with exactly columns and key_field")
+        if not isinstance(provider, dict) or "columns" not in provider or not set(provider) <= {"columns", "key_field", "cipher"}:
+            raise ValueError(f"{dataset}: provider_decrypt must be an object with columns, and key_field (cdr) or cipher vtnet")
+        cipher = provider.get("cipher", "cdr")
+        if cipher not in PROVIDER_CIPHERS:
+            raise ValueError(f"{dataset}: provider_decrypt.cipher must be one of {', '.join(PROVIDER_CIPHERS)}")
         columns = check_column_names(dataset, "provider_decrypt.columns", provider["columns"])
-        key_field = provider["key_field"]
-        if not isinstance(key_field, str) or not COLUMN.fullmatch(key_field):
-            raise ValueError(f"{dataset}: provider_decrypt.key_field must be the name of a column")
-        if key_field.lower() in columns:
-            raise ValueError(f"{dataset}: provider_decrypt.key_field must not be one of the columns (it stays plaintext as key material)")
+        if cipher == "vtnet":
+            if "key_field" in provider:
+                raise ValueError(f"{dataset}: provider_decrypt.key_field is not used with cipher vtnet (its key has no per-row part)")
+        else:
+            key_field = provider.get("key_field")
+            if not isinstance(key_field, str) or not COLUMN.fullmatch(key_field):
+                raise ValueError(f"{dataset}: provider_decrypt.key_field must be the name of a column")
+            if key_field.lower() in columns:
+                raise ValueError(f"{dataset}: provider_decrypt.key_field must not be one of the columns (it stays plaintext as key material)")
     encrypt = []
     if "encrypt_columns" in settings:
         encrypt = check_column_names(dataset, "encrypt_columns", settings["encrypt_columns"])
@@ -880,7 +926,10 @@ def dataset_job_env(dataset, settings):
     provider = settings.get("provider_decrypt")
     if provider:
         env["PROVIDER_DECRYPT_COLUMNS"] = ",".join(provider["columns"])
-        env["PROVIDER_KEY_FIELD"] = provider["key_field"]
+        if "cipher" in provider:
+            env["PROVIDER_CIPHER"] = provider["cipher"]
+        if "key_field" in provider:
+            env["PROVIDER_KEY_FIELD"] = provider["key_field"]
     if settings.get("encrypt_columns"):
         env["CDR_ENCRYPT_COLUMNS"] = ",".join(settings["encrypt_columns"])
         env["CDR_KEY_FIELD"] = settings["key_field_constant"]["name"]
@@ -900,6 +949,7 @@ def dataset_fields(settings):
         "periodic": settings.get("periodic", True),
         "resources": resources_of(settings),
         "output_file_shuffle_mb": settings.get("output_file_shuffle_mb", DEFAULT_FILE_SHUFFLE_MB),
+        **({"input_cluster": settings["input_cluster"]} if "input_cluster" in settings else {}),
     }
 
 
@@ -966,6 +1016,20 @@ def build_spec(source):
         ]
         if source.get("partition_by_hour"):
             job_env.append({"name": "OUTPUT_PARTITION_BY", "value": HOUR_COLUMN})
+    token_conf = {}
+    if source.get("input_cluster"):
+        # The landing is on another cluster (see INPUT ON ANOTHER CLUSTER): the Secret of its token is mounted into the driver and the executors
+        # by Spark itself (spark.kubernetes.*.secrets, no webhook needed). The driver loads it through INPUT_TOKEN_FILE (its keytab login drops the
+        # token files), the executors through HADOOP_TOKEN_FILE_LOCATION.
+        token_file = f"{INPUT_TOKEN_DIR}/{INPUT_TOKEN_KEY}"
+        job_env.append({"name": "INPUT_TOKEN_FILE", "value": token_file})
+        secret = input_token_secret(source)
+        token_conf = {
+            f"spark.kubernetes.driver.secrets.{secret}": INPUT_TOKEN_DIR,
+            f"spark.kubernetes.executor.secrets.{secret}": INPUT_TOKEN_DIR,
+            "spark.executorEnv.HADOOP_TOKEN_FILE_LOCATION": token_file,
+        }
+    jars = JARS + (f",{VTNET_JAR}" if source["env"].get("PROVIDER_CIPHER") == "vtnet" else "")
     trust = keycloak_trust() if source.get("calls_keycloak") else None
     driver_trust = {k: copy.deepcopy(trust[k]) for k in ("hostAliases", "initContainers", "volumeMounts")} if trust else {}
     spec = {
@@ -1019,8 +1083,8 @@ def build_spec(source):
                 "env": copy.deepcopy(common_env),
             },
             "sparkConf": {
-                # cdr-crypto (the real UDF) + key-prefix-lib + the partner jar: the executors need them too.
-                "spark.jars": JARS,
+                # cdr-crypto (the real UDF) + key-prefix-lib + the partner jar(s): the executors need them too.
+                "spark.jars": jars,
                 "spark.kerberos.access.hadoopFileSystems": HDFS,
                 "spark.kerberos.principal": KERBEROS_PRINCIPAL,
                 "spark.kerberos.keytab": KERBEROS_KEYTAB,
@@ -1056,6 +1120,7 @@ def build_spec(source):
                 "spark.eventLog.rolling.maxFileSize": "128m",
                 # Settings that are specific to one source (e.g. spark.cdrcrypto.audit.* of VTNET).
                 **source.get("extra_spark_conf", {}),
+                **token_conf,
             },
         },
     }

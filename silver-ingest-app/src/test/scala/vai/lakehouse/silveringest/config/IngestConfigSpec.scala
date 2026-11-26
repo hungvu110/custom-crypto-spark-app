@@ -271,7 +271,7 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     val v = settings(vttColumn)
 
     v.decryptMode shouldBe DecryptMode.Column
-    v.providerDecrypt shouldBe Some(ProviderDecrypt(Seq("isdn"), "sta_date"))
+    v.providerDecrypt shouldBe Some(ProviderDecrypt(Seq("isdn"), Some("sta_date")))
     v.keyPath shouldBe "f014-mpre-tot-charge-d"
     v.stagingPath shouldBe None
     v.encryptColumns shouldBe Seq("isdn", "customer_id")
@@ -281,7 +281,31 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     v.transforms shouldBe Seq(ColumnTransform("customer_age", TransformKind.AgeBand))
   }
 
-  it should "column: lấy đường dẫn key từ KEY_PATH_ROOT khi không đặt KEY_PATH" in {
+  "PROVIDER_CIPHER" should "mặc định là cdr (VTT, cần PROVIDER_KEY_FIELD)" in {
+    settings(vttColumn).providerDecrypt.map(_.cipher) shouldBe Some(ProviderCipher.Cdr)
+    errors(Mode.DecryptEncrypt, vttColumn - "PROVIDER_KEY_FIELD") should include("PROVIDER_KEY_FIELD: is required")
+  }
+
+  it should "vtnet: giải mã bằng thư viện VTNET, key by-path là inputKey, không có keyField" in {
+    val env = vttColumn - "PROVIDER_KEY_FIELD" + ("PROVIDER_CIPHER" -> "vtnet") + ("PROVIDER_DECRYPT_COLUMNS" -> "imsi")
+
+    settings(env).providerDecrypt shouldBe Some(ProviderDecrypt(Seq("imsi"), None, ProviderCipher.Vtnet))
+    IngestConfig.fromEnv(Mode.DecryptEncrypt, env).toOption.get.describe.toMap.apply("PROVIDER_CIPHER") shouldBe "vtnet"
+  }
+
+  it should "vtnet: từ chối PROVIDER_KEY_FIELD (không âm thầm bỏ qua)" in {
+    val env = vttColumn + ("PROVIDER_CIPHER" -> "vtnet")
+
+    errors(Mode.DecryptEncrypt, env) should include("PROVIDER_KEY_FIELD: not used with PROVIDER_CIPHER=vtnet")
+  }
+
+  it should "từ chối giá trị lạ, và chỉ dùng với DECRYPT_MODE=column" in {
+    errors(Mode.DecryptEncrypt, vttColumn + ("PROVIDER_CIPHER" -> "aes")) should include("PROVIDER_CIPHER='aes': must be one of cdr / vtnet")
+    errors(Mode.DecryptEncrypt, vtnet + ("PROVIDER_CIPHER" -> "vtnet")) should include("PROVIDER_CIPHER: only used with DECRYPT_MODE=column")
+    errors(Mode.Passthrough, common + ("PROVIDER_CIPHER" -> "vtnet")) should include("only valid for the decrypt-encrypt mode")
+  }
+
+  "DECRYPT_MODE" should "column: lấy đường dẫn key từ KEY_PATH_ROOT khi không đặt KEY_PATH" in {
     val env = vttColumn - "KEY_PATH" + ("KEY_PATH_ROOT" -> "hdfs://nn:8020/landing/vtt/lakehouse/vtt-core")
 
     settings(env).keyPath shouldBe "f014-mpre-tot-charge-d/date=20261104"

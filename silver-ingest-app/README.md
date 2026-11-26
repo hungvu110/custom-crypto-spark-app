@@ -96,7 +96,9 @@ Cột hour (`HOUR_FROM_COLUMN`) lấy từ `hour_id` **gốc**, trước khi gom
 | `BULK_MISSING_DAY` | cả hai mode | `fail` | Ngày không có file: `fail` dừng ở ngày đó; `skip` bỏ ngày đó và nạp các ngày còn lại (không ngày nào nạp được là lỗi) |
 | `DECRYPT_MODE` | decrypt-encrypt | `file` | `file`: giải mã CẢ FILE bằng key `by-path` (VTNET). `column`: đọc file nguyên trạng, giải mã các cột `PROVIDER_DECRYPT_COLUMNS` bằng cdr-crypto, prefix là key `by-path` (VTT); không có key `by-path` là lỗi. `none`: không gọi `by-path`, không giải mã. `column`/`none` không nhận `FILE_CIPHER`, `DECRYPT_STAGING_PATH`; `none` không nhận `KEY_PATH`, `KEY_PATH_ROOT` |
 | `PROVIDER_DECRYPT_COLUMNS` | `DECRYPT_MODE=column` | bắt buộc | Cột mà đối tác đã mã hoá, phân cách bằng dấu phẩy |
-| `PROVIDER_KEY_FIELD` | `DECRYPT_MODE=column` | bắt buộc | Cột plaintext của đối tác ghép sau prefix thành `keyInput`; không được nằm trong `PROVIDER_DECRYPT_COLUMNS` |
+| `PROVIDER_CIPHER` | `DECRYPT_MODE=column` | `cdr` | Thư viện đối tác dùng để mã hoá cột. `cdr` (VTT): cdr-crypto, `keyInput = prefix ‖ PROVIDER_KEY_FIELD`. `vtnet` (VTNET): `com.viettel.security.PassTranformer` (viettelsecurity-2.1.jar, nạp qua `spark.jars`), key `by-path` là `inputKey`, KHÔNG có `PROVIDER_KEY_FIELD` (đặt là lỗi). Giá trị không phải bản mã VTNET (chữ số và a-f thường, bội của 32 ký tự) hoặc key sai làm job dừng |
+| `PROVIDER_KEY_FIELD` | `DECRYPT_MODE=column`, `PROVIDER_CIPHER=cdr` | bắt buộc | Cột plaintext của đối tác ghép sau prefix thành `keyInput`; không được nằm trong `PROVIDER_DECRYPT_COLUMNS` |
+| `INPUT_TOKEN_FILE` | cả hai mode | (không) | `INPUT_PATH` nằm ở một cluster HDFS KHÁC (KDC khác): file token Hadoop của cluster đó (lấy bằng tay với `hdfs fetchdt`, đặt trong Secret mount vào pod). Driver nạp vào user hiện tại trước khi dựng Spark (đăng nhập keytab bỏ token trong file); executor nạp qua `HADOOP_TOKEN_FILE_LOCATION`. Thiếu file, không có token HDFS cho đúng cluster của `INPUT_PATH`, hoặc quá hạn tối đa: exit 2; token cấp hơn 20 giờ: cảnh báo. Log service, owner, lúc cấp và hạn tối đa của từng token, không log nội dung. docs/silver-ingest/VTNET-EBS-HKH.md |
 | `CDR_KEY_FIELD_VALUE` | decrypt-encrypt | không (`CDR_KEY_FIELD` là cột có sẵn trong dữ liệu) | Có thì `CDR_KEY_FIELD` là cột **hằng số** do job thêm, mọi dòng bằng giá trị này (`[A-Za-z0-9_.:-]`, 1 đến 64 ký tự); cột trùng tên đã có trong dữ liệu là lỗi. Cần `CDR_KEY_FIELD` và `CDR_ENCRYPT_COLUMNS` |
 | `COLUMN_TRANSFORMS` | decrypt-encrypt | không | `cột:KIND` cách nhau dấu phẩy, KIND là `AGE_BAND` (`Under 18`, `18–24`, `25–34`, `35–44`, `45–54`, `55–64`, `65+`) hoặc `HOUR_BAND` (`0–5h`, `6–8h`, `9–11h`, `12–13h`, `14–16h`, `17–19h`, `20–23h`); giá trị không hợp lệ là `Unknown`. Chạy sau giải mã, trước mã hoá; không nhận cột đang mã hoá |
 | `CRYPTO_PREFIX_SOURCE=dak`, `DAK_ADDR`, `DAK_TOKEN_URL`, `DAK_CLIENT_ID`, `DAK_CLIENT_SECRET`, `DAK_TAG=internal`, `DAK_CALLER` | decrypt-encrypt | | Client **nội bộ** của DAK, dùng cho cả `by-path` và `by-column` (key-prefix-lib) |
@@ -194,8 +196,9 @@ mvn -B -Pcdr-crypto -pl silver-ingest-app -am clean package -DskipTests
 docker build -f silver-ingest-app/Dockerfile -t <registry>/silver-ingest-app:<tag> .
 ```
 
-Image chứa fat jar (app + Delta + spark-avro + patch block token) và ba jar rời nạp qua `spark.jars`: `cdr-crypto-udf`, `key-prefix-lib`,
-`DataLakeSecurity_jv8.jar`. Đổi tag thì sửa `IMAGE` trong ``.
+Image chứa fat jar (app + Delta + spark-avro + patch block token) và các jar rời nạp qua `spark.jars`: `cdr-crypto-udf`, `key-prefix-lib`,
+`DataLakeSecurity_jv8.jar`, và `viettelsecurity-2.1.jar` (VTNET, chỉ dataset có `PROVIDER_CIPHER=vtnet`; cài vào `~/.m2` một lần bằng
+`mvn install:install-file -Dfile=viettelsecurity-2.1.jar -DpomFile=viettelsecurity-2.1.pom`, file nằm ở gốc repo, bị `.gitignore`). Đổi tag thì sửa `IMAGE` trong ``.
 
 Chạy thử đầu-cuối với dak-mock ([dak-mock/README.md](../dak-mock/README.md) mục 2.3, 2.4):
 

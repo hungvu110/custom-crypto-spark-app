@@ -97,10 +97,13 @@ class _Dag:
 
 
 def _dags_of(module):
+    """{dag id: _Dag}: the objects recorded from a DAG up to the next DAG (the DAG, then its tasks)."""
+
+    starts = [i for i, r in enumerate(module.recorded) if r.args and r.args[0] in module.SOURCES]
+    ends = starts[1:] + [len(module.recorded)]
     return {
-        r.args[0]: _Dag(r.args[0], module.SOURCES[r.args[0]], module.recorded[i : i + 3])
-        for i, r in enumerate(module.recorded)
-        if r.args and r.args[0] in module.SOURCES
+        module.recorded[i].args[0]: _Dag(module.recorded[i].args[0], module.SOURCES[module.recorded[i].args[0]], module.recorded[i:end])
+        for i, end in zip(starts, ends)
     }
 
 
@@ -123,7 +126,7 @@ NIMS_ENCRYPTING_CONFIG = {
     "encryptColumns": ["lng", "lat"],
     "keyField": "eci",
 }
-EBS_CONFIG = {"ticket": "SLV-2026-000002", "table": "vtnet_ebs_3g_4g", "cron": "30 2 * * *"}
+EBS_CONFIG = {"ticket": "SLV-2026-000002", "table": "vtnet_ebs_3g_4g", "cron": "30 2 * * *", "globalKey": True, "globalZone": "silver_vtt"}
 # f001 encrypts calling_number with the global key of a zone: its request carries globalKey/globalZone.
 VTT_CONFIG = {"ticket": "SLV-2026-000004", "table": "vtt_f001_mpre_call", "cron": "30 1 * * *", "globalKey": True, "globalZone": "vtt"}
 VTT_PASS_CONFIG = {"ticket": "SLV-2026-000005", "table": "vtt_d_os_type", "cron": "40 1 * * *"}
@@ -154,6 +157,7 @@ PATH_HOUR_DAGS = (EBS, NIMS)  # the datasets whose hour is in the path (hour_glo
 
 ROOT_VTT = vtt_module.INPUT_ROOT
 ROOT_VTNET = vtnet_module.INPUT_ROOT
+ROOT_HKH = vtnet_module.CLUSTER_INPUT_ROOTS["hkh"]  # EBS-4G: its landing is on HKH (input_cluster)
 
 
 class _Pendulum(datetime.datetime):
@@ -362,7 +366,7 @@ class GlobalKeyTest(unittest.TestCase):
                 common.check_schedule_config(NIMS.SOURCE, config)
 
     def test_a_dataset_that_encrypts_no_column_does_not_accept_a_global_key(self):
-        for source, config in ((EBS.SOURCE, EBS_CONFIG), (VTT_PASS.SOURCE, VTT_PASS_CONFIG)):
+        for source, config in ((VTT_PASS.SOURCE, VTT_PASS_CONFIG),):
             with self.assertRaises(ValueError, msg=source["name"]):
                 common.check_schedule_config(source, {**config, "globalKey": True, "globalZone": "khach_hang"})
 
@@ -466,14 +470,14 @@ class SpecTest(unittest.TestCase):
         passthrough = "vai.lakehouse.silveringest.app.PassthroughSilverApp"
         decrypt_encrypt = "vai.lakehouse.silveringest.app.DecryptEncryptSilverApp"
         self.assertEqual(render(VTT_PASS)["spec"]["mainClass"], passthrough)
-        self.assertEqual(render(EBS)["spec"]["mainClass"], passthrough)
+        self.assertEqual(render(EBS)["spec"]["mainClass"], decrypt_encrypt)  # EBS-4G decrypts imsi (VTNET) and encrypts it again
         self.assertEqual(render(NIMS)["spec"]["mainClass"], decrypt_encrypt)
         self.assertEqual(render(VTT)["spec"]["mainClass"], decrypt_encrypt)  # f001 encrypts calling_number (docs/silver-ingest/TRANSFORM-...)
 
     def test_a_run_ingests_the_folder_of_its_day_into_the_partition_of_that_day(self):
         for dag, root, folder, table in (
             (NIMS, ROOT_VTNET, "nims/dt=20261027", "vtnet_nims_infra_cell_4g"),
-            (EBS, ROOT_VTNET, "ebs_3g_4g/dt=20261027", "vtnet_ebs_3g_4g"),
+            (EBS, ROOT_HKH, "ebs_3g_4g/dt=20261027", "vtnet_ebs_3g_4g"),
             (VTT, ROOT_VTT, "f001-mpre-call/date=20261027", "vtt_f001_mpre_call"),
         ):
             env = driver_env(render(dag))
@@ -509,7 +513,7 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(env["CRYPTO_PREFIX_SOURCE"], "dak")  # DAK is still needed for by-path
 
     def test_passthrough_dags_have_no_dak_or_decrypt_env(self):
-        for dag in (VTT_PASS, EBS):
+        for dag in (VTT_PASS,):
             names = set(driver_env(render(dag)))
             self.assertFalse({n for n in names if n.startswith(("DAK_", "CDR_", "FILE_", "KEY_", "CRYPTO_"))}, dag.DAG_ID)
 
@@ -570,7 +574,7 @@ class SpecTest(unittest.TestCase):
         self.assertNotIn("initContainers", spec["executor"])
 
     def test_passthrough_dags_do_not_call_keycloak_so_they_have_no_hostalias_truststore_or_volumes(self):
-        for dag in (VTT_PASS, EBS):
+        for dag in (VTT_PASS,):
             spec = render(dag)["spec"]
 
             self.assertNotIn("hostAliases", spec["driver"], dag.DAG_ID)
@@ -614,7 +618,7 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(conf["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
         self.assertEqual(render(NIMS)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
         self.assertEqual(render(VTT)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtt-f001-mpre-call")
-        for dag in (VTT_PASS, EBS):  # no cdr_encrypt here: nothing to audit
+        for dag in (VTT_PASS,):  # no cdr_encrypt here: nothing to audit
             keys = render(dag)["spec"]["sparkConf"].keys()
             self.assertFalse([k for k in keys if k.startswith("spark.cdrcrypto.audit")])
 
@@ -633,8 +637,8 @@ class HoursTest(unittest.TestCase):
     def test_each_dataset_selects_the_hour_the_way_its_data_is_laid_out(self):
         one = {"date": "20261013", "fromHour": "10"}
         many = {"date": "20261013", "fromHour": "10", "toHour": "12"}
-        self.assertEqual(self.path(EBS, one), ROOT_VTNET + "ebs_3g_4g/dt=20261013/batch=10*")
-        self.assertEqual(self.path(EBS, many), ROOT_VTNET + "ebs_3g_4g/dt=20261013/batch={10,11,12}*")
+        self.assertEqual(self.path(EBS, one), ROOT_HKH + "ebs_3g_4g/dt=20261013/batch=10*")
+        self.assertEqual(self.path(EBS, many), ROOT_HKH + "ebs_3g_4g/dt=20261013/batch={10,11,12}*")
         self.assertEqual(self.path(NIMS, one), ROOT_VTNET + "nims/dt=20261013/batch=*/infra_cell_4g-10*")
         self.assertEqual(self.path(NIMS, many), ROOT_VTNET + "nims/dt=20261013/batch=*/infra_cell_4g-{10,11,12}*")
 

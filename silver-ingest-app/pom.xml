@@ -39,6 +39,16 @@
       <version>jv8</version>
       <scope>provided</scope>
     </dependency>
+    <!--
+      Lib giải mã của VTNET (com.viettel.security.PassTranformer), jar của đối tác, có chữ ký: "provided", image chép nguyên jar vào /opt/app.
+      Cài một lần: mvn install:install-file -Dfile=viettelsecurity-2.1.jar -DpomFile=viettelsecurity-2.1.pom
+    -->
+    <dependency>
+      <groupId>com.viettel.security</groupId>
+      <artifactId>viettelsecurity</artifactId>
+      <version>2.1</version>
+      <scope>provided</scope>
+    </dependency>
     <!-- Patch lenient block token (HDFS Isilon có wire encryption): shade vào fat jar, như pseudonymize-table-app. -->
     <dependency>
       <groupId>vai.lakehouse</groupId>

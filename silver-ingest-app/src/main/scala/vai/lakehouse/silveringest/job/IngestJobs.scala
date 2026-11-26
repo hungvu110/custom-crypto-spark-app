@@ -3,11 +3,12 @@ package vai.lakehouse.silveringest.job
 import java.util.{Locale, UUID}
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import org.apache.spark.sql.functions.{col, lit, raise_error, when}
+import org.apache.spark.sql.functions.{col, lit, raise_error, udf, when}
+import org.apache.spark.sql.types.StringType
 import vai.lakehouse.columncrypto.cdr.{CdrCrypto, CdrCryptoConfig}
 import vai.lakehouse.keyprefix.{ColumnKeySource, KeyIntent, PathKeyResult, PathKeySource}
-import vai.lakehouse.silveringest.config.{DecryptEncryptSettings, DecryptMode, Dedup, IngestConfig, ProviderDecrypt}
-import vai.lakehouse.silveringest.crypto.FileCipher
+import vai.lakehouse.silveringest.config.{DecryptEncryptSettings, DecryptMode, Dedup, IngestConfig, ProviderCipher, ProviderDecrypt}
+import vai.lakehouse.silveringest.crypto.{FileCipher, VtnetCipher}
 import vai.lakehouse.silveringest.logging.Log
 
 /** Kết quả của một lần chạy. */
@@ -153,8 +154,11 @@ object DecryptEncryptJob {
     Log.kv("path", v.keyPath)
     pathKeys.readPath(v.keyPath) match {
       case PathKeyResult.Available(pathKey) =>
-        Log.ok(s"path key received (keyVersion=${pathKey.keyVersion.getOrElse("-")}): decrypting ${provider.columns.mkString(", ")} " +
-          s"with cdr-crypto (keyField=${provider.keyField})")
+        val how = provider.cipher match {
+          case ProviderCipher.Cdr => s"with cdr-crypto (keyField=${provider.keyField.getOrElse("-")})"
+          case ProviderCipher.Vtnet => "with the VTNET library (PassTranformer, the by-path key is its inputKey)"
+        }
+        Log.ok(s"path key received (keyVersion=${pathKey.keyVersion.getOrElse("-")}): decrypting ${provider.columns.mkString(", ")} $how")
         pathKey.keyPrefix
       case PathKeyResult.NotAvailable =>
         throw new IllegalStateException(s"DAK has no by-path key for '${v.keyPath}': the provider-encrypted columns " +
@@ -167,20 +171,46 @@ object DecryptEncryptJob {
    * `CdrCrypto.transform` trả NULL khi keyField là NULL: bản mã của đối tác sẽ thành NULL âm thầm và mất định danh. Dòng có cột cần giải mã mà keyField
    * null thì job DỪNG (kiểm từng dòng, không thêm lượt đọc); cả hai cùng null thì vẫn là NULL (không có gì để giải mã). Thông báo không chứa giá trị.
    */
-  private def decryptProviderColumns(df: DataFrame, target: String, provider: ProviderDecrypt, prefix: String): DataFrame = {
-    val missingKey = df.columns.find(_.equalsIgnoreCase(provider.keyField)).map(k => col(s"`${k.replace("`", "``")}`"))
+  private def decryptProviderColumns(df: DataFrame, target: String, provider: ProviderDecrypt, prefix: String): DataFrame =
+    (provider.cipher, provider.keyField) match {
+      case (ProviderCipher.Vtnet, _) => decryptVtnetColumns(df, target, provider.columns, prefix)
+      case (ProviderCipher.Cdr, Some(keyField)) => decryptCdrColumns(df, target, provider, keyField, prefix)
+      case (ProviderCipher.Cdr, None) => throw new IllegalArgumentException("PROVIDER_KEY_FIELD is missing (needed by PROVIDER_CIPHER=cdr)")
+    }
+
+  /**
+   * VTNET (`PROVIDER_CIPHER=vtnet`): mỗi cột được giải mã bằng `PassTranformer` với key `by-path` làm `inputKey` (đi theo closure, như prefix của
+   * cdr-crypto). Cột phải là chuỗi; cột thiếu trong dữ liệu là lỗi (không âm thầm bỏ qua cột cần giải mã). Giá trị không phải bản mã, hoặc key sai,
+   * làm job DỪNG ([[VtnetCipher]]): không ghi nửa bản rõ nửa bản mã.
+   */
+  private def decryptVtnetColumns(df: DataFrame, target: String, columns: Seq[String], inputKey: String): DataFrame =
+    columns.foldLeft(df) { (acc, name) =>
+      val field = acc.schema.fields.find(_.name.equalsIgnoreCase(name)).getOrElse {
+        throw new IllegalArgumentException(s"PROVIDER_DECRYPT_COLUMNS: column '$name' is not in the data of $target (columns: ${acc.columns.mkString(", ")})")
+      }
+      if (field.dataType != StringType) {
+        throw new IllegalArgumentException(s"PROVIDER_DECRYPT_COLUMNS: column '${field.name}' of $target is ${field.dataType.simpleString}, " +
+          "a VTNET ciphertext is a string")
+      }
+      val context = s"dataset $target, column ${field.name}"
+      val decrypt = udf((value: String) => VtnetCipher.decrypt(inputKey, value, context))
+      acc.withColumn(field.name, decrypt(col(s"`${field.name.replace("`", "``")}`")))
+    }
+
+  private def decryptCdrColumns(df: DataFrame, target: String, provider: ProviderDecrypt, keyField: String, prefix: String): DataFrame = {
+    val missingKey = df.columns.find(_.equalsIgnoreCase(keyField)).map(k => col(s"`${k.replace("`", "``")}`"))
     val guarded = missingKey.fold(df) { key =>
       provider.columns.foldLeft(df) { (acc, name) =>
         acc.columns.find(_.equalsIgnoreCase(name)).fold(acc) { actual =>
           val column = col(s"`${actual.replace("`", "``")}`")
           acc.withColumn(actual, when(key.isNull && column.isNotNull, raise_error(lit(
-            s"PROVIDER_KEY_FIELD '${provider.keyField}' is NULL in a row where '$name' is not: it cannot be decrypted " +
+            s"PROVIDER_KEY_FIELD '$keyField' is NULL in a row where '$name' is not: it cannot be decrypted " +
               "(decrypting would silently turn it into NULL)"))).otherwise(column))
         }
       }
     }
     val keys = provider.columns.map(_.toLowerCase(Locale.ROOT) -> prefix).toMap
-    CdrCrypto.decryptColumns(guarded, CdrCryptoConfig(keys, provider.keyField, provider.columns, target))
+    CdrCrypto.decryptColumns(guarded, CdrCryptoConfig(keys, keyField, provider.columns, target))
   }
 
   // ---------------------------------------------------------------- DECRYPT_MODE=none

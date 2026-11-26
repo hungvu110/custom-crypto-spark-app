@@ -10,6 +10,7 @@ import vai.lakehouse.keyprefix.{ChainedConfigSource, ColumnKeySource, ColumnKeyS
 import vai.lakehouse.silveringest.config.{BulkLoad, IngestConfig, MissingDay, Mode}
 import vai.lakehouse.silveringest.job.{IngestResult, DecryptEncryptJob, PassthroughJob, SourceFiles}
 import vai.lakehouse.silveringest.logging.Log
+import vai.lakehouse.silveringest.security.InputToken
 
 /**
  * Nguồn key của mode decrypt-encrypt: `by-path` (giải mã file) và key mã hoá cột — `by-column` của DAK (mỗi cột một key), hoặc, khi có
@@ -39,6 +40,31 @@ object SilverApp {
    */
   def execute(mode: Mode, env: Map[String, String], existingSession: Option[SparkSession] = None,
               keys: Option[KeySources] = None): Int =
+    installInputToken(mode, env).getOrElse(executeLoad(mode, env, existingSession, keys))
+
+  /**
+   * `INPUT_TOKEN_FILE` (INPUT_PATH ở một cluster khác, [[InputToken]]): nạp token vào user hiện tại TRƯỚC khi dựng Spark và trước mọi lần đọc
+   * file. Không có biến: không làm gì. `Some(exit code)` = dừng (file thiếu, sai, không có token cho cluster của INPUT_PATH, hoặc hết hạn).
+   */
+  private def installInputToken(mode: Mode, env: Map[String, String]): Option[Int] = {
+    val now = System.currentTimeMillis()
+    InputToken.install(env, env.getOrElse("INPUT_PATH", "").trim, now) match {
+      case Right(None) => None
+      case Right(Some(installed)) =>
+        Log.section("0. INPUT TOKEN (INPUT_PATH is on another cluster)")
+        Log.kv("token file", installed.file)
+        installed.tokens.foreach(t => Log.info(InputToken.describe(t, now)))
+        installed.warnings.foreach(Log.warn)
+        Log.ok(s"${installed.tokens.size} token(s) added to the current user")
+        None
+      case Left(error) =>
+        Log.banner(s"SILVER INGEST — ${mode.name.toUpperCase} — INPUT TOKEN")
+        Log.fail(s"CONFIG $error")
+        Some(ExitConfigError)
+    }
+  }
+
+  private def executeLoad(mode: Mode, env: Map[String, String], existingSession: Option[SparkSession], keys: Option[KeySources]): Int =
     BulkLoad.fromEnv(env) match {
       case Left(errors) =>
         Log.banner(s"SILVER INGEST — ${mode.name.toUpperCase} — BULK LOAD")

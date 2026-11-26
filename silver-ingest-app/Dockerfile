@@ -19,6 +19,9 @@ COPY silver-ingest-app/target/silver-ingest-app.jar /opt/app/silver-ingest-app.j
 COPY cdr-crypto-udf/target/cdr-crypto-udf-1.0-SNAPSHOT.jar /opt/app/cdr-crypto-udf-1.0-SNAPSHOT.jar
 COPY key-prefix-lib/target/key-prefix-lib-1.0-SNAPSHOT.jar /opt/app/key-prefix-lib-1.0-SNAPSHOT.jar
 COPY DataLakeSecurity_jv8.jar /opt/app/DataLakeSecurity_jv8.jar
+# Lib giải mã của VTNET (PassTranformer, jar đối tác có chữ ký, chép nguyên trạng): DAG của dataset VTNET (provider_decrypt cipher vtnet) nạp qua
+# spark.jars. File nằm ở gốc repo, bị .gitignore: phải có sẵn khi build.
+COPY viettelsecurity-2.1.jar /opt/app/viettelsecurity-2.1.jar
 
 # /opt/spark/conf bị ConfigMap của Spark mount đè trên K8s -> đặt log4j2 ở /opt/app và trỏ bằng -Dlog4j.configurationFile.
 COPY silver-ingest-app/src/main/resources/log4j2.properties /opt/app/log4j2.properties

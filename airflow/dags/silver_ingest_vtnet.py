@@ -3,7 +3,9 @@
 mode (common.MODES).
 
   dataset    DAG                            mode             folder of a day
-  ebs_3g_4g  silver_ingest_vtnet_ebs_3g_4g  passthrough      ebs_3g_4g/dt=YYYYMMDD/(batch=...)
+  ebs_3g_4g  silver_ingest_vtnet_ebs_3g_4g  decrypt-encrypt  ebs_3g_4g/dt=YYYYMMDD/(batch=...) ON HKH: imsi decrypted (VTNET library), encrypted
+                                                             with the global key (joins f022-register); read with the token of HKH in the
+                                                             Secret hkh-hdfs-token, fetched by hand (common: INPUT ON ANOTHER CLUSTER)
   nims       silver_ingest_vtnet_nims       decrypt-encrypt  nims/dt=YYYYMMDD/(batch=...)
 
 How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
@@ -34,6 +36,8 @@ import silver_ingest_factory as factory  # noqa: E402
 
 # Landing root shared by every VTNET dataset (ASSUMPTION, adjust to the cluster). INPUT_PATH = INPUT_ROOT + <dataset>/dt=<day>.
 INPUT_ROOT = f"{common.HDFS}/prod8/landing/vtnet/"
+# Landing root of the datasets that are on another cluster (input_cluster): INPUT_PATH = <root> + <dataset>/dt=<day>.
+CLUSTER_INPUT_ROOTS = {"hkh": f"{common.INPUT_CLUSTERS['hkh']['hdfs']}/landing/"}
 
 # Wait for the DAK admin to approve the column key request: the same for every source, see common.PENDING_WAIT.
 PENDING_WAIT = common.PENDING_WAIT
@@ -46,7 +50,14 @@ PENDING_WAIT = common.PENDING_WAIT
 # A small dataset (nims) stays partitioned by day, a big one (ebs_3g_4g) by (dt, hour). The Spark resources are the defaults of
 # common.RESOURCE_DEFAULTS until a dataset sets its own, e.g. "resources": {"executors": 10, "executor_cores": 4, "executor_memory": "8g"}.
 DATASETS = {
-    "ebs_3g_4g": {"mode": "passthrough", "hour_glob": "batch=%H%*", "partition_by_hour": True},
+    # EBS-4G: the landing is on HKH (input_cluster), CSV with a header (imsi,lac,sac,eci,event_time,event_id,event_result). VTNET encrypts only imsi,
+    # with its own library (PassTranformer; the inputKey is the by-path key of DAK for the path "ebs_3g_4g"); the job decrypts it and encrypts it
+    # again with the global key and the SAME constant key field as VTT, so an imsi gives the same ciphertext here and in f022-register (join).
+    "ebs_3g_4g": {
+        "mode": "decrypt-encrypt", "input_cluster": "hkh", "hour_glob": "batch=%H%*", "partition_by_hour": True,
+        "decrypt_mode": "column", "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"},
+        "encrypt_columns": ["imsi"], "key_field_constant": common.JOIN_KEY_FIELD,
+    },
     "nims": {"mode": "decrypt-encrypt", "hour_glob": "batch=*/infra_cell_4g-%H%*"},
     # Two datasets that share sensitive columns (msisdn, imsi) to test the GLOBAL key (docs/silver-ingest/KICH-BAN-TEST-KEY-GLOBAL.md): whole
     # days only, plain CSV files, DAK has no by-path key for them (the files are read as they are) and the requests choose the same zone.
@@ -105,7 +116,7 @@ def source_for(dataset, settings, config=None):
         "dataset": dataset,
         "day_dir": "dt",
         "main_class": common.MODES[mode],
-        "input_root": INPUT_ROOT,
+        "input_root": CLUSTER_INPUT_ROOTS[settings["input_cluster"]] if settings.get("input_cluster") else INPUT_ROOT,
         "conf_keys": common.CONF_KEYS,
         **common.dataset_fields(settings),  # hour_glob, partition_by_hour, resources
         "schedule_keys": ("ticket", "table", "cron", "outputMode"),
@@ -113,7 +124,17 @@ def source_for(dataset, settings, config=None):
         "env": dict(BASE_ENV),
         "fixed": config,
     }
-    if mode == "decrypt-encrypt":
+    if mode == "decrypt-encrypt" and settings.get("decrypt_mode") == "column":
+        # The columns are fixed by the dataset and encrypted with the global key of the zone that the request picks (like VTT): DAK requires
+        # encryptColumns and keyField with a global key, they are accepted when they name exactly these columns, never taken from the request.
+        source["schedule_keys"] += ("encryptColumns", "keyField", "globalKey", "globalZone")
+        source["requires_global_key"] = True
+        source["fixed_columns"] = tuple(settings["encrypt_columns"])
+        source["calls_keycloak"] = True
+        source["env"].update(common.dataset_job_env(dataset, settings))
+        source["driver_extra_env"] = global_key_env(config) + common.dak_connection_env(f"silver-ingest-vtnet-{slug}")
+        source["extra_spark_conf"] = audit_conf(slug)
+    elif mode == "decrypt-encrypt":
         # globalKey/globalZone: only present when the request uses a global key (docs/key-access/YEU-CAU-TU-DAK-KEY-GLOBAL.md).
         source["schedule_keys"] += ("encryptColumns", "keyField", "globalKey", "globalZone")
         source["encrypts_columns"] = True

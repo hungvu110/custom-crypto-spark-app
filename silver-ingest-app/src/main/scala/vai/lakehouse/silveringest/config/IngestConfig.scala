@@ -163,10 +163,27 @@ object DecryptMode {
 }
 
 /**
- * Cột đối tác đã mã hoá theo từng cột và cột `keyField` của đối tác (giữ plaintext, giá trị của từng dòng ghép sau prefix thành `keyInput`).
- * Chỉ dùng với [[DecryptMode.Column]]; `keyField` không được nằm trong `columns`.
+ * Thư viện mà đối tác dùng để mã hoá từng cột (`PROVIDER_CIPHER`):
+ *  - `cdr` (mặc định, VTT): cdr-crypto, `keyInput = prefix ‖ giá trị keyField của dòng`, prefix là key `by-path`;
+ *  - `vtnet` (VTNET): `PassTranformer` của VTNET ([[vai.lakehouse.silveringest.crypto.VtnetCipher]]), key là key `by-path` (`inputKey` của
+ *    VTNET), không có phần theo dòng nên không có keyField.
  */
-final case class ProviderDecrypt(columns: Seq[String], keyField: String)
+sealed abstract class ProviderCipher(val name: String, val needsKeyField: Boolean)
+
+object ProviderCipher {
+  case object Cdr extends ProviderCipher("cdr", needsKeyField = true)
+  case object Vtnet extends ProviderCipher("vtnet", needsKeyField = false)
+
+  val All: Seq[ProviderCipher] = Seq(Cdr, Vtnet)
+
+  def parse(raw: String): Option[ProviderCipher] = All.find(_.name == raw.trim.toLowerCase(Locale.ROOT))
+}
+
+/**
+ * Cột đối tác đã mã hoá theo từng cột, thư viện đối tác dùng ([[ProviderCipher]]) và cột `keyField` của đối tác (giữ plaintext, giá trị của
+ * từng dòng ghép sau prefix thành `keyInput`; chỉ có với `cdr`). Chỉ dùng với [[DecryptMode.Column]]; `keyField` không được nằm trong `columns`.
+ */
+final case class ProviderDecrypt(columns: Seq[String], keyField: Option[String], cipher: ProviderCipher = ProviderCipher.Cdr)
 
 /** Cách gom nhóm một cột (`COLUMN_TRANSFORMS`, dạng `cột:KIND`): giá trị gốc được thay bằng nhãn khung, kiểu cột thành chuỗi. */
 sealed abstract class TransformKind(val name: String)
@@ -251,7 +268,8 @@ final case class IngestConfig(
     "KEY_PATH"                 -> (if (v.keyPath.isEmpty) "(not used)" else v.keyPath),
     "FILE_CIPHER"              -> v.cipher,
     "PROVIDER_DECRYPT_COLUMNS" -> v.providerDecrypt.fold("(none)")(_.columns.mkString(", ")),
-    "PROVIDER_KEY_FIELD"       -> v.providerDecrypt.fold("(none)")(_.keyField),
+    "PROVIDER_CIPHER"          -> v.providerDecrypt.fold("(none)")(_.cipher.name),
+    "PROVIDER_KEY_FIELD"       -> v.providerDecrypt.flatMap(_.keyField).getOrElse("(none)"),
     "CDR_ENCRYPT_COLUMNS"      -> (if (v.encryptColumns.isEmpty) "(none)" else v.encryptColumns.mkString(", ")),
     "CDR_KEY_FIELD"            -> v.keyField.getOrElse("(none)"),
     "CDR_KEY_FIELD_VALUE"      -> v.keyFieldValue.getOrElse("(none: the column is read from the data)"),
@@ -288,7 +306,7 @@ object IngestConfig {
   private val Identifier = "^[A-Za-z0-9_]{1,128}$"
   private val ColumnName = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
   private val DecryptEncryptOnly = Seq("KEY_PATH_ROOT", "KEY_PATH", "FILE_CIPHER", "CDR_ENCRYPT_COLUMNS", "CDR_KEY_FIELD", "CDR_ON_MISSING",
-    "GLOBAL_KEY_ZONE", "DECRYPT_STAGING_PATH", "DECRYPT_MODE", "PROVIDER_DECRYPT_COLUMNS", "PROVIDER_KEY_FIELD", "CDR_KEY_FIELD_VALUE",
+    "GLOBAL_KEY_ZONE", "DECRYPT_STAGING_PATH", "DECRYPT_MODE", "PROVIDER_DECRYPT_COLUMNS", "PROVIDER_KEY_FIELD", "PROVIDER_CIPHER", "CDR_KEY_FIELD_VALUE",
     "COLUMN_TRANSFORMS")
   /** Giá trị của cột hằng số làm `keyField` mã hoá: nằm trong dữ liệu, nên chỉ gồm ký tự an toàn. */
   private val KeyFieldValue = "^[A-Za-z0-9_.:-]{1,64}$"
@@ -522,36 +540,61 @@ object IngestConfig {
       mode, provider, keyFieldValue, transforms)
   }
 
-  /** `PROVIDER_DECRYPT_COLUMNS` + `PROVIDER_KEY_FIELD`: bắt buộc với `DECRYPT_MODE=column`, không nhận với các chế độ khác. */
+  /**
+   * `PROVIDER_DECRYPT_COLUMNS` + `PROVIDER_CIPHER` (+ `PROVIDER_KEY_FIELD` với `cdr`): bắt buộc với `DECRYPT_MODE=column`, không nhận với các chế
+   * độ khác. `vtnet` không có keyField: đặt `PROVIDER_KEY_FIELD` là lỗi (không âm thầm bỏ qua).
+   */
   private def providerDecrypt(raw: String => Option[String], mode: DecryptMode, columns: (String, String) => Seq[String],
                               errors: ArrayBuffer[String]): Option[ProviderDecrypt] = {
     val rawColumns = raw("PROVIDER_DECRYPT_COLUMNS")
     val rawKeyField = raw("PROVIDER_KEY_FIELD")
+    val rawCipher = raw("PROVIDER_CIPHER")
     if (mode != DecryptMode.Column) {
       rawColumns.foreach(_ => errors += "PROVIDER_DECRYPT_COLUMNS: only used with DECRYPT_MODE=column")
       rawKeyField.foreach(_ => errors += "PROVIDER_KEY_FIELD: only used with DECRYPT_MODE=column")
+      rawCipher.foreach(_ => errors += "PROVIDER_CIPHER: only used with DECRYPT_MODE=column")
       None
     } else {
-      val cols = rawColumns match {
-        case Some(v) => columns("PROVIDER_DECRYPT_COLUMNS", v)
-        case None =>
-          errors += "PROVIDER_DECRYPT_COLUMNS: is required with DECRYPT_MODE=column (the columns that the provider encrypted)"
-          Nil
+      val cipher = rawCipher.fold[ProviderCipher](ProviderCipher.Cdr) { c =>
+        ProviderCipher.parse(c).getOrElse {
+          errors += s"PROVIDER_CIPHER='$c': must be one of ${ProviderCipher.All.map(_.name).mkString(" / ")}"
+          ProviderCipher.Cdr
+        }
       }
-      if (rawColumns.isDefined && cols.isEmpty) errors += "PROVIDER_DECRYPT_COLUMNS: must list at least one column"
-      val keyField = rawKeyField match {
-        case Some(k) if !k.matches(ColumnName) => errors += s"PROVIDER_KEY_FIELD: invalid column name '$k'"; Some(k)
-        case Some(k) =>
-          if (cols.exists(_.equalsIgnoreCase(k))) {
-            errors += s"PROVIDER_KEY_FIELD: '$k' must not be listed in PROVIDER_DECRYPT_COLUMNS — it stays plaintext as key material"
-          }
-          Some(k)
-        case None =>
-          errors += "PROVIDER_KEY_FIELD: is required with DECRYPT_MODE=column (the plaintext column that completes the provider key of each row)"
-          None
+      if (cipher.needsKeyField) providerWithKeyField(rawColumns, rawKeyField, cipher, columns, errors)
+      else {
+        rawKeyField.foreach(_ => errors += s"PROVIDER_KEY_FIELD: not used with PROVIDER_CIPHER=${cipher.name} (its key has no per-row part)")
+        Some(ProviderDecrypt(providerColumns(rawColumns, columns, errors), None, cipher))
       }
-      keyField.map(ProviderDecrypt(cols, _))
     }
+  }
+
+  private def providerColumns(rawColumns: Option[String], columns: (String, String) => Seq[String], errors: ArrayBuffer[String]): Seq[String] = {
+    val cols = rawColumns match {
+      case Some(v) => columns("PROVIDER_DECRYPT_COLUMNS", v)
+      case None =>
+        errors += "PROVIDER_DECRYPT_COLUMNS: is required with DECRYPT_MODE=column (the columns that the provider encrypted)"
+        Nil
+    }
+    if (rawColumns.isDefined && cols.isEmpty) errors += "PROVIDER_DECRYPT_COLUMNS: must list at least one column"
+    cols
+  }
+
+  private def providerWithKeyField(rawColumns: Option[String], rawKeyField: Option[String], cipher: ProviderCipher,
+                                   columns: (String, String) => Seq[String], errors: ArrayBuffer[String]): Option[ProviderDecrypt] = {
+    val cols = providerColumns(rawColumns, columns, errors)
+    val keyField = rawKeyField match {
+      case Some(k) if !k.matches(ColumnName) => errors += s"PROVIDER_KEY_FIELD: invalid column name '$k'"; Some(k)
+      case Some(k) =>
+        if (cols.exists(_.equalsIgnoreCase(k))) {
+          errors += s"PROVIDER_KEY_FIELD: '$k' must not be listed in PROVIDER_DECRYPT_COLUMNS — it stays plaintext as key material"
+        }
+        Some(k)
+      case None =>
+        errors += "PROVIDER_KEY_FIELD: is required with DECRYPT_MODE=column (the plaintext column that completes the provider key of each row)"
+        None
+    }
+    keyField.map(k => ProviderDecrypt(cols, Some(k), cipher))
   }
 
   /**

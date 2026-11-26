@@ -45,7 +45,7 @@ INPUT_ROOT = f"{common.HDFS}/landing/vtt/lakehouse/vtt-core/"
 
 # The constant column that the job adds and uses as the key field of the encryption: the same value in every row of every table, so the same
 # number gives the same ciphertext everywhere (the key field of VTT changes per row and per table, so it cannot be used for this).
-KEY_SCOPE = {"name": "key_scope", "value": "vtt"}
+KEY_SCOPE = common.JOIN_KEY_FIELD  # {"name": "key_scope", "value": "vtt"}, shared with VTNET (EBS-4G joins f022-register on imsi)
 HOUR_BAND = {"hour_id": "HOUR_BAND"}
 AGE_BAND = {"customer_age": "AGE_BAND"}
 # VTT writes ONE folder per day, date=YYYYMMDD, and every row carries its hour in the column `hour_id` (not encrypted), so the hour comes from
