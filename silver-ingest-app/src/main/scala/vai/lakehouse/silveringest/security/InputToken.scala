@@ -100,7 +100,8 @@ object InputToken {
         case None =>
           Left(s"$FileEnv: no HDFS token for $service, the cluster of INPUT_PATH (the file has: " +
             s"${if (all.isEmpty) "no token" else all.map(t => s"${t.kind} ${t.service}").mkString(", ")}). Fetch the token again; if the " +
-            s"file has the same host written as an IP (or the opposite), add an alias: hadoop dtutil edit -service <in the file> -alias $service <file>")
+            "file has the same host written as a host name and this job looks for an IP (or the opposite), hadoop.security.token.service.use_ip " +
+            "differs: set it to false in the core-site.xml of this job (Isilon SmartConnect needs host names)")
         case Some(hdfs) =>
           hdfs.maxDate match {
             case Some(max) if max <= now =>

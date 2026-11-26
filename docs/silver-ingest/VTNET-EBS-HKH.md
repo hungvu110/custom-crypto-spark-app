@@ -21,17 +21,18 @@ Mã nguồn đã kiểm (Spark 3.5.1, Hadoop 3.3.4):
 | Executor tự nạp file token | `UserGroupInformation.createLoginUser` đọc biến `HADOOP_TOKEN_FILE_LOCATION` | DAG đặt biến này cho executor |
 | Driver đăng nhập bằng keytab thì **bỏ qua** file token | `SparkSubmit` gọi `loginUserFromKeytab` | Job tự nạp file qua `INPUT_TOKEN_FILE` (`InputToken.install`) |
 | Token do Spark gửi xuống executor được **thêm vào**, không thay thế | `SparkHadoopUtil.addDelegationTokens` | Token HKH vẫn còn khi Spark làm mới token HLA |
-| `hdfs fetchdt` chỉ lấy token HDFS, không lấy token KMS | `DelegationTokenFetcher`: `fs.getDelegationToken` | Nếu landing nằm trong encryption zone thì cần thêm token KMS (xem bước 2.3) |
+| Service của token là `host:port` (HKH đặt `use_ip=false`, Isilon SmartConnect đổi IP theo DNS) | `SecurityUtil.buildTokenService`, đọc `use_ip` trong khởi tạo tĩnh từ `core-site.xml` | `core-site.xml` của job ở HLA (`teamtscauiy-hadoop-conf`) cũng phải có `hadoop.security.token.service.use_ip=false`; đặt qua sparkConf không có tác dụng |
 | Không được liệt kê HKH trong `spark.kerberos.access.hadoopFileSystems` | `HadoopFSDelegationTokenProvider` | Nếu liệt kê, Spark sẽ xin token HKH từ KDC của HLA và lỗi |
 
 ## 2. Lấy token bằng tay
 
-Làm trong **pod HDFS client của HKH** ở namespace `uiy`. Pod này đã có cấu hình HKH và `krb5.conf` trỏ tới KDC `10.208.217.245`.
+Làm trong pod **`hdfs-kerberos-client-hkh`** ở namespace **`lakehouse`**. Pod này đã có cấu hình HKH và `krb5.conf` trỏ tới KDC `10.208.217.245`.
+Secret thì tạo ở namespace của job Spark (`vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy`).
 
 ```bash
-NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy
-POD=<tên pod hdfs client hkh>
-kubectl -n $NS exec -it $POD -- bash
+POD_NS=lakehouse; POD=hdfs-kerberos-client-hkh          # nơi lấy token
+JOB_NS=vlp-tenantw1xjixm-wsw7vtwvi-teamtscauiy           # nơi job Spark chạy và đọc Secret
+kubectl -n $POD_NS exec -it $POD -- bash
 ```
 
 Các lệnh dưới đây chạy **trong pod**:
@@ -43,25 +44,16 @@ klist                                   # phải có krbtgt/VAILAKEHOUSE.VIETTEL
 hdfs getconf -confKey fs.defaultFS      # phải là hdfs://vailakehouse.datalakehkh.viettel.com.vn:8020
 hdfs dfs -ls /landing/ebs_3g_4g/dt=20261120 | head -3
 
-# 2.2 Lấy token HDFS vào một file
+# 2.2 Lấy token vào một file. Client của pod lấy luôn cả token KMS của HKH (10.221.149.66:9292) nếu cấu hình có key provider.
 hdfs fetchdt --renewer k8s /tmp/hkh.token
-hdfs fetchdt --print /tmp/hkh.token     # xem service (vd vailakehouse.datalakehkh.viettel.com.vn:8020), owner, renewer
+hdfs fetchdt --print /tmp/hkh.token     # 2 token: vailakehouse.datalakehkh.viettel.com.vn:8020 (HDFS) và 10.221.149.66:9292 (KMS)
 
-# 2.3 Landing có nằm trong encryption zone không? "No FileEncryptionInfo found" = KHÔNG, token HDFS là đủ.
-hdfs crypto -getFileEncryptionInfo -path /landing/ebs_3g_4g/dt=20261120/batch=2340/ebs_3g_4g-231050.csv
-#     Nếu CÓ FileEncryptionInfo: còn cần token KMS, fetchdt không lấy được -> dừng lại, báo để bổ sung bước lấy token KMS.
-
-# 2.4 Thêm bản sao cho dạng ip:port. Client HDFS bên HLA tìm token theo hadoop.security.token.service.use_ip của NÓ (mặc định Hadoop
-#     là true = ip:port), còn HKH đặt false (host:port). Có cả hai bản thì bên nào cũng tìm thấy.
-IP=$(getent hosts vailakehouse.datalakehkh.viettel.com.vn | awk '{print $1}'); echo $IP
-hadoop dtutil edit -service vailakehouse.datalakehkh.viettel.com.vn:8020 -alias $IP:8020 /tmp/hkh.token
-hadoop dtutil print /tmp/hkh.token      # 2 dòng HDFS_DELEGATION_TOKEN: host:8020 và ip:8020
-
-# 2.5 Biết hạn thật: renew một lần, lệnh in ra thời điểm hết hạn mới (renew-interval của HKH, Hadoop mặc định 24 giờ)
+# 2.3 Renew (in cảnh báo "No TokenRenewer defined for token kind kms-dt": client này KHÔNG renew được token KMS, xem mục 4)
 hdfs fetchdt --renew /tmp/hkh.token
 
-# 2.6 Thử đọc CHỈ bằng token, không dùng vé Kerberos (đúng như job sẽ làm)
+# 2.4 Thử đọc CHỈ bằng token, không dùng vé Kerberos. -cat (không chỉ -ls) để thử cả đường dữ liệu (DataNode, privacy, KMS nếu có)
 kdestroy
+HADOOP_TOKEN_FILE_LOCATION=/tmp/hkh.token hdfs dfs -ls /landing/ebs_3g_4g/dt=20261120 | head -3
 HADOOP_TOKEN_FILE_LOCATION=/tmp/hkh.token hdfs dfs -cat /landing/ebs_3g_4g/dt=20261120/batch=2340/ebs_3g_4g-231050.csv | head -2
 ```
 
@@ -70,10 +62,10 @@ HADOOP_TOKEN_FILE_LOCATION=/tmp/hkh.token hdfs dfs -cat /landing/ebs_3g_4g/dt=20
 Chạy ở máy có `kubectl`. Dùng `exec` **không có `-t`**, để file nhị phân không bị đổi ký tự xuống dòng.
 
 ```bash
-kubectl -n $NS exec $POD -- cat /tmp/hkh.token > hkh.token
-kubectl -n $NS create secret generic hkh-hdfs-token --from-file=hadoop.token=hkh.token --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n $POD_NS exec $POD -- cat /tmp/hkh.token > hkh.token
+kubectl -n $JOB_NS create secret generic hkh-hdfs-token --from-file=hadoop.token=hkh.token --dry-run=client -o yaml | kubectl apply -f -
 rm hkh.token
-kubectl -n $NS get secret hkh-hdfs-token -o jsonpath='{.data.hadoop\.token}' | base64 -d | wc -c   # > 0
+kubectl -n $JOB_NS get secret hkh-hdfs-token -o jsonpath='{.data.hadoop\.token}' | base64 -d | wc -c   # > 0
 ```
 
 - Tên Secret và tên key (`hadoop.token`) **phải đúng như trên**: DAG đọc chúng từ `INPUT_CLUSTERS["hkh"]` trong `airflow/dags/silver_ingest_common.py`.
@@ -85,7 +77,7 @@ kubectl -n $NS get secret hkh-hdfs-token -o jsonpath='{.data.hadoop\.token}' | b
 |---|---|
 | Giữ token sống mỗi ngày | Trước giờ chạy của DAG: `kinit ...` rồi `hdfs fetchdt --renew /tmp/hkh.token` ở pod client. Renew **không đổi nội dung file** nên **không phải cập nhật Secret**. Mỗi lần renew lùi hạn thêm một renew-interval (mặc định 24 giờ) |
 | Hết max-lifetime (mặc định 7 ngày từ lúc cấp) | Không renew được nữa: làm lại mục 2 và mục 3 (token mới, cập nhật Secret) |
-| Pod client bị tạo lại, mất `/tmp/hkh.token` | Lấy lại file từ Secret: `kubectl -n $NS get secret hkh-hdfs-token -o jsonpath='{.data.hadoop\.token}' \| base64 -d > hkh.token` rồi `kubectl cp` vào pod |
+| Pod client bị tạo lại, mất `/tmp/hkh.token` | Lấy lại file từ Secret: `kubectl -n $JOB_NS get secret hkh-hdfs-token -o jsonpath='{.data.hadoop\.token}' \| base64 -d > hkh.token` rồi `kubectl cp hkh.token $POD_NS/$POD:/tmp/hkh.token` |
 | Thôi dùng token (hoặc token bị lộ) | `hdfs fetchdt --cancel /tmp/hkh.token`: token chết ngay lập tức |
 
 **Đặt thời hạn token:** client không đặt được. Hạn do server HKH quyết định qua `dfs.namenode.delegation.token.renew-interval` và `max-lifetime`;

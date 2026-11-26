@@ -51,11 +51,11 @@ class InputTokenSpec extends AnyFlatSpec with Matchers {
     InputToken.check(creds(fresh), inputPath, now).map(_._2) shouldBe Right(Nil)
   }
 
-  it should "từ chối khi không có token cho cluster của INPUT_PATH, nêu service trong file và cách thêm alias" in {
+  it should "từ chối khi không có token cho cluster của INPUT_PATH, nêu service trong file và gợi ý use_ip" in {
     val result = InputToken.check(creds(hdfsToken("10.0.0.1:8020", now, now + hour)), inputPath, now)
     result.left.get should include(service)
     result.left.get should include("10.0.0.1:8020")
-    result.left.get should include("dtutil edit")
+    result.left.get should include("use_ip")
   }
 
   it should "từ chối token đã quá hạn tối đa" in {
