@@ -13,13 +13,13 @@ VTT writes parquet files and encrypts SOME COLUMNS itself (cdr-crypto: `keyInput
 The step after the silver table (pseudonymize-table-app) hashes those ciphertexts, so the tables of one request can be joined.
 
   dataset (folder of the table)  columns VTT encrypted -> key field of VTT        encrypted with the global key          grouped
-  f001-mpre-call                 (none)                                           calling_number                         hour_id
+  f001-mpre-call                 (none)                                           calling_number, called_number          hour_id
   f002-mpre-sms                  calling_number, called_number, called_number_cl -> sta_datetime     the same three columns                hour_id
-  f003-mpre-data                 calling_number -> sta_datetime                   calling_number                         hour_id
+  f003-mpre-data                 calling_number -> sta_datetime                   calling_number, called_number          hour_id
   f014-mpre-tot-charge-d         isdn -> sta_date                                 isdn, customer_id                      customer_age
   f015-mpre-tot-charge-d-acc     isdn -> customer_id                              isdn, customer_id                      customer_age
   f016-mpre-tot-charge-m         isdn -> customer_id                              isdn, customer_id                      customer_age
-  f022-register                  isdn -> sta_date                                 isdn                                   hour_id
+  f022-register                  isdn -> sta_date                                 isdn, imsi (imsi: to join EBS-4G)      hour_id
   f-home-bts-daily-area          isdn -> station_code                             isdn                                   (none)
   f-customer                     (none)                                           cust_id                                customer_age
   d-*  (9 tables)                (none)                                           (none)                                 (none)
@@ -82,7 +82,9 @@ DATASETS = {
     "f001-mpre-call": {
         "resources": {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 32},
         "mode": "decrypt-encrypt", "decrypt_mode": "none",
-        "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
+        # called_number is plaintext at VTT (like calling_number here) but encrypted in f002: it is encrypted with the same global key and key
+        # field, so one number gives one ciphertext (and one hash after step 2) as called_number of f001, f002, f003 and as calling_number.
+        "encrypt_columns": ["calling_number", "called_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f002-mpre-sms": {
         "resources": {**NARROW, "executors": 1, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 16},
@@ -98,7 +100,8 @@ DATASETS = {
         "output_file_shuffle_mb": 704,
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["calling_number"], "key_field": "sta_datetime"},
-        "encrypt_columns": ["calling_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
+        # called_number: plaintext at VTT, only encrypted (not decrypted), for the same reason as in f001.
+        "encrypt_columns": ["calling_number", "called_number"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f014-mpre-tot-charge-d": {
         "resources": {**WIDE, "executors": 4, "min_executors": 2, "max_executors": 8, "shuffle_partitions": 128},
@@ -125,7 +128,9 @@ DATASETS = {
         "resources": {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 4, "shuffle_partitions": 48},
         "mode": "decrypt-encrypt", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn"], "key_field": "sta_date"},
-        "encrypt_columns": ["isdn"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
+        # imsi is plaintext at VTT but encrypted at VTNET (EBS-4G): it is encrypted here with the same global key and key field, so one imsi
+        # gives the same ciphertext (and the same hash after step 2) in f022 and in EBS-4G, and the two tables join on it.
+        "encrypt_columns": ["isdn", "imsi"], "key_field_constant": KEY_SCOPE, "transforms": HOUR_BAND, **HOUR_FROM_COLUMN,
     },
     "f-home-bts-daily-area": {
         "resources": {**NARROW, "executors": 2, "min_executors": 1, "max_executors": 3, "shuffle_partitions": 24},

@@ -31,7 +31,7 @@ Vì mọi bảng cùng mã hóa bằng một key global nên cùng một giá tr
 - **Hai nhóm cột nhạy cảm, xử lý ở hai bước:**
   - **Bước 2 (băm): cột có tag "Mã hóa" của DS:** `isdn`, `customer_id`, `cust_id`, `calling_number`.
   - **Bước 1 (mã hóa global): hợp của cột trên và các cột VTT đã mã hóa sẵn** trong danh mục dữ liệu (STT 135, 226, 420, 421, 424, 599, 777, 1163, 1610).
-    Khác biệt duy nhất: `f002_mpre_sms.called_number` và `called_number_cl` được mã hóa ở bước 1 nhưng **không băm ở bước 2** (đã chốt).
+    ~~Khác biệt duy nhất: `f002_mpre_sms.called_number` và `called_number_cl` được mã hóa ở bước 1 nhưng không băm ở bước 2.~~ Phiếu mới (BM01, cột A = 1) đánh dấu khử hai cột này: nay **băm ở bước 2**, cùng `called_number` của `f001`, `f003` (mục 4.1).
   - **Bước 1 giải mã trước khi mã hóa lại chỉ với cột VTT đã mã hóa sẵn.** Cột DS muốn băm mà VTT **không** mã hóa (đã chốt: `f001_mpre_call.calling_number`; suy ra từ danh mục:
     `customer_id`, `cust_id`) thì bước 1 **chỉ mã hóa**, không giải mã, để cùng số thuê bao ra cùng bản mã ở mọi bảng.
 - **Cột gom nhóm ở bước 1:** `customer_age`, `hour_id`. `bts_name` đi theo khung giờ của `hour_id` (mục 3.4), không có transform riêng.
@@ -148,15 +148,18 @@ Bản mã tất định theo số thuê bao không làm yếu thêm so với bư
 | `f014_mpre_tot_charge_d` | `isdn` | `isdn`, `customer_id` | `isdn`, `customer_id` |
 | `f015_mpre_tot_charge_d_acc` | `isdn` | `isdn`, `customer_id` | `isdn`, `customer_id` |
 | `F_HOME_BTS_DAILY_AREA` | `isdn` | `isdn` | `isdn` |
-| `F022_REGISTER` | `isdn` | `isdn` | `isdn` |
+| `F022_REGISTER` | `isdn` | `isdn`, `imsi` | `isdn`, `imsi` |
 | `F_CUSTOMER` | không | `cust_id` | `cust_id` |
-| `f003_mpre_data` | `calling_number` | `calling_number` | `calling_number` |
-| `f001_mpre_call` | **không** (VTT không mã hóa cột này) | `calling_number` | `calling_number` |
-| `f002_mpre_sms` | `calling_number`, `called_number`, `called_number_cl` | `calling_number`, `called_number`, `called_number_cl` | `calling_number` |
+| `f003_mpre_data` | `calling_number` | `calling_number`, `called_number` | `calling_number`, `called_number` |
+| `f001_mpre_call` | **không** (VTT không mã hóa cột này) | `calling_number`, `called_number` | `calling_number`, `called_number` |
+| `f002_mpre_sms` | `calling_number`, `called_number`, `called_number_cl` | `calling_number`, `called_number`, `called_number_cl` | `calling_number`, `called_number`, `called_number_cl` |
 | 9 bảng `d_*` | không | không | không |
 
 - Cột giải mã lấy từ danh mục dữ liệu của VTT (cột đã phân loại dữ liệu cá nhân và mã hóa sẵn). `customer_id`, `cust_id` **đã xác nhận là số rõ ở nguồn**, chỉ mã hóa.
 - `customer_id` vừa là cột cần mã hóa (f014, f016) vừa là `keyField` giải mã `isdn` (f015, f016): **giải mã `isdn` phải chạy trước khi mã hóa `customer_id`** (đúng thứ tự bước 5 rồi bước 7).
+- **`F022_REGISTER.imsi` được thêm vào cột mã hóa và băm** (đã chốt): VTT để `imsi` bản rõ, còn VTNET mã hóa `imsi` của EBS-4G. Ta giải mã EBS-4G rồi mã hóa cả hai bằng cùng key global và cùng `keyField` hằng, nên một `imsi` cho cùng bản mã (và cùng giá trị băm ở bước 2) ở cả hai bảng, nối được với nhau. Định dạng `imsi` của hai nguồn đã kiểm là giống nhau. Phiếu f022 trên DAK phải khai `encryptColumns` = `isdn`, `imsi`; các ngày f022 đã nạp (còn `imsi` bản rõ) phải nạp lại.
+- **`called_number` của `f001`, `f003` được thêm vào cột mã hóa** (đã chốt, phiếu mới đánh dấu khử định danh cột này): VTT để số rõ ở hai bảng này (chỉ mã hóa, không giải mã), còn `f002.called_number` VTT mã hóa nên bước 1 giải mã rồi mã hóa lại. Cả ba bảng mã hóa bằng cùng key global và `keyField` hằng, nên một số bị gọi cho cùng bản mã ở `called_number` của ba bảng và ở `calling_number`/`isdn`, băm ở bước 2 ra cùng định danh giả. `f003.callednumber` (danh mục không mô tả) **chưa** mã hóa: chờ xác nhận nó có phải số thuê bao không.
+  Phiếu f001, f003 trên DAK phải khai `encryptColumns` = `calling_number`, `called_number` (Variable còn khai `calling_number` thì DAG bỏ qua Variable và mất lịch); các ngày f001, f003 đã nạp (còn `called_number` bản rõ) phải nạp lại. Phiếu bước 2 của ba bảng băm thêm `called_number` (và `called_number_cl` ở f002), mục 4.1.
 - **`f015.customer_id` được thêm vào cột mã hóa và băm** dù DS không khai cột này ở f015 (đã đồng ý). Cột này phải còn ở silver để làm `keyField` giải mã `isdn`; nếu không thêm thì DS thấy mã khách hàng rõ ở f015 trong khi f014, f016 thì băm.
 - **Quy tắc chung: cột nào VTT mã hóa mà bước 1 đã giải mã thì phải nằm trong `CDR_ENCRYPT_COLUMNS`.** Nếu giải mã mà không mã hóa lại thì silver và DS nhận **số điện thoại rõ**, tệ hơn lúc VTT còn mã hóa (áp dụng cho `f002_mpre_sms.called_number`, `called_number_cl`).
 
@@ -233,15 +236,15 @@ Một bảng một lần chạy. Chế độ **`HASH`** vì các cột này ch�
 
 | Bảng silver | `PSEUDO_COLUMNS` |
 | --- | --- |
-| `f016_mpre_tot_charge_m` | `isdn:HASH,customer_id:HASH` |
+| `f016_mpre_tot_charge_m` | 26 cột, mục 4.1.1 |
 | `f014_mpre_tot_charge_d` | `isdn:HASH,customer_id:HASH` |
 | `f015_mpre_tot_charge_d_acc` | `isdn:HASH,customer_id:HASH` (`customer_id` thêm ngoài phiếu DS, mục 3.3) |
-| `F_HOME_BTS_DAILY_AREA` | `isdn:HASH` |
-| `F022_REGISTER` | `isdn:HASH` |
+| `F_HOME_BTS_DAILY_AREA` | 9 cột, mục 4.1.1 |
+| `F022_REGISTER` | 12 cột, mục 4.1.1 (`imsi` thêm để nối EBS-4G, mục 3.3) |
 | `F_CUSTOMER` | `cust_id:HASH` |
-| `f003_mpre_data` | `calling_number:HASH` |
-| `f001_mpre_call` | `calling_number:HASH` |
-| `f002_mpre_sms` | `calling_number:HASH` (`called_number`, `called_number_cl` **không băm**) |
+| `f003_mpre_data` | `calling_number:HASH,called_number:HASH` |
+| `f001_mpre_call` | `calling_number:HASH,called_number:HASH` |
+| `f002_mpre_sms` | `calling_number:HASH,called_number:HASH,called_number_cl:HASH` |
 | 9 bảng `d_*` | **`none`** (mục 4.4) |
 
 **9 bảng `d_*` vẫn chạy qua bước 2 nhưng không khử cột nào** (đã chốt), để DS thấy đủ 18 bảng trong cùng một database của phiếu.
@@ -249,6 +252,47 @@ Một bảng một lần chạy. Chế độ **`HASH`** vì các cột này ch�
 
 Đầu ra: cùng cột, cùng thứ tự với bảng silver. Cột trong `PSEUDO_COLUMNS` thành chuỗi `k1_` + 32 ký tự hex. **Cột kiểu số thành `STRING`.** `NULL` vẫn là `NULL`. Cùng giá trị gốc luôn ra cùng định danh giả.
 `HASH` là HMAC-SHA256(key, giá trị), **không phụ thuộc tên cột hay tên bảng**: `isdn` của f014 nối được với `calling_number` của f003 miễn bản mã bước 1 giống nhau.
+
+#### 4.1.1 Phiếu mới (BM01, cột A = 1): F022, F_HOME_BTS, f016
+
+Nguồn: `BM01_Phieu yeu cau tao moi, thay doi truy cap du lieu.xlsx`, sheet `Dulieusudung`, dòng có giá trị `1` ở cột A (159 cột của 13 bảng). Phiếu chỉ đánh dấu cột, **không** ghi cách khử, và DAG `deid_pseudonymize_table` chỉ nhận `HASH`, nên mọi cột đánh dấu được băm, trừ cột đã gom nhóm ở bước 1. Chuỗi dưới đây sinh thẳng từ file Excel và đã qua `check_conf` của DAG khử định danh. Đây là giá trị `pseudoColumns` mà phiếu bước 2 trên DAK phải khai (repo không lưu cấu hình theo bảng).
+
+| Bảng silver | Đánh dấu | Băm | Không băm |
+| --- | --- | --- | --- |
+| `vtt_f022_register` | 13 | 12 | `hour_id` (đã gom nhóm giờ ở bước 1) |
+| `vtt_f_home_bts_daily_area` | 9 | 9 | |
+| `vtt_f016_mpre_tot_charge_m` | 27 | 26 | `customer_age` (đã gom nhóm tuổi ở bước 1) |
+
+`F022_REGISTER`:
+
+```
+isdn:HASH,imsi:HASH,imei:HASH,cell_id:HASH,last_access_datetime:HASH,cell_hexa:HASH,cell_vtn:HASH,headnum_no:HASH,bts_name:HASH,area_code:HASH,province_name:HASH,district_name:HASH
+```
+
+`F_HOME_BTS_DAILY_AREA`:
+
+```
+isdn:HASH,bts_code:HASH,station_code:HASH,province_code:HASH,province_name:HASH,district_code:HASH,district_name:HASH,village_code:HASH,village_name:HASH
+```
+
+`f016_mpre_tot_charge_m`:
+
+```
+isdn:HASH,headnum_no:HASH,customer_id:HASH,staff_code:HASH,sale_district:HASH,serial:HASH,sub_id:HASH,province_code_active:HASH,province_name_active:HASH,district_code_active:HASH,district_name_active:HASH,active_bts_code:HASH,user_name:HASH,province_code_home:HASH,province_name_home:HASH,district_code_home:HASH,district_name_home:HASH,home_bts:HASH,imei_use:HASH,is_vip:HASH,birth_day:HASH,province_code_reg:HASH,province_name_reg:HASH,district_code_reg:HASH,district_name_reg:HASH,register_bts:HASH
+```
+
+**Bước 1 (silver ingest) của ba bảng không cần đổi** để khử đúng các cột này:
+
+- Job silver ghi **mọi cột của landing, giữ nguyên tên** (chỉ thêm `dt`, `hour` và cột hằng `key_scope`), nên mọi cột trên có trong bảng silver. Tên cột sai hoặc thiếu thì job bước 2 dừng (không âm thầm bỏ cột).
+- Cột mới đều là cột bước 1 không đụng tới (số rõ của landing), băm bằng cùng khóa của phiếu nên vẫn nối được giữa các bảng khi cùng định dạng: `F022.imei` với `f016.imei_use`, `headnum_no` của F022 với f016, mã tỉnh/huyện của F_HOME_BTS với f016.
+- `isdn`, `imsi` (F022), `customer_id` (f016) là bản mã global của bước 1, như trước.
+- `station_code` (F_HOME_BTS) và `customer_id` (f016) là `keyField` giải mã `isdn` của VTT: bước 1 cần chúng nguyên giá trị và giải mã xong mới ghi silver, nên băm ở bước 2 không ảnh hưởng.
+
+**Còn hở, không sửa được bằng cấu hình:**
+
+1. **Giờ chính xác của F022 vẫn lộ qua cột partition `hour`** (lấy từ `hour_id` gốc, mục 3.4). Bước 2 ghi theo `dt,hour` và không cho băm cột partition. Cần thêm tính năng ở `pseudonymize-table-app` (ghi chỉ theo `dt`, bỏ hoặc gom nhóm `hour`) nếu DS không được thấy giờ.
+2. **Băm làm mất giá trị phân tích** của cột thời gian (`last_access_datetime`), ngày sinh (`birth_day`), địa giới và cột ít giá trị (`is_vip`): DS chỉ còn đếm và nối được, không lọc theo khoảng thời gian, tuổi hay vùng. Nếu DS muốn gom nhóm thay vì băm thì phải làm thêm (bước 2 chưa có chế độ gom nhóm).
+3. Cột vị trí (`cell_id`, `bts_*`, `station_code`) sau khi băm không nối được với bảng danh mục chưa băm (NIMS, `d_cell_final`).
 
 ### 4.2 Cấu hình đọc bảng silver
 
@@ -304,16 +348,14 @@ Phiếu để trống các cột này, bước 1 không đổi và bước 2 ch�
 | Bảng | Cột |
 | --- | --- |
 | `F_CUSTOMER` | `name`, `birth_date`, `id_no`, `email`, `address`, `street`, `street_name`, `street_block`, `street_block_name`, `home`, `nationality` |
-| `f014`, `f015`, `f016` | `sub_id`, `user_name` (không có ở f015), `birth_day`, `imei_use`, `home_bts` |
-| `F022_REGISTER` | `imsi`, `imei` |
-| `f003_mpre_data` | `called_number`, `callednumber`, `calledimei`, `callingimei` |
-| `f001_mpre_call` | `called_number` |
+| `f014`, `f015` | `sub_id`, `user_name` (không có ở f015), `birth_day`, `imei_use`, `home_bts` (`f016` nay băm, mục 4.1.1) |
+| `f003_mpre_data` | `callednumber`, `calledimei`, `callingimei` |
 
-`f002_mpre_sms.called_number` và `called_number_cl` **không** nằm trong bảng này: chúng mã hóa ở bước 1 nên DS nhận bản mã global (không băm).
+`F022_REGISTER` (`imsi`, `imei`) và `f016` không còn trong bảng này: phiếu mới đánh dấu khử, xem mục 4.1.1. `called_number` của `f001`, `f002`, `f003` (và `f002.called_number_cl`) cũng không: chúng mã hóa ở bước 1 (mục 3.3) rồi băm ở bước 2 (mục 4.1).
 Hai hệ quả cần ghi nhớ:
 
 1. `birth_date` / `birth_day` để nguyên nên tuổi chính xác suy ra được, việc gom nhóm `customer_age` không có tác dụng che tuổi.
-2. `called_number` của `f001`, `f003` để nguyên (số rõ) trong khi của `f002` là bản mã: ba bảng không nhất quán với nhau về số bị gọi.
+2. ~~`called_number` của `f001`, `f003` để nguyên~~: nay mã hóa ở bước 1 như `f002` (mục 3.3), ba bảng nhất quán về số bị gọi.
 
 Dữ liệu giả danh vẫn là dữ liệu cá nhân: các cột định danh gián tiếp (ngày sinh, địa giới, giới tính, quốc tịch) vẫn còn.
 
@@ -332,7 +374,7 @@ Dữ liệu giả danh vẫn là dữ liệu cá nhân: các cột định danh 
 | Hai phiếu có chung khóa không | Không cần quan tâm; cả 18 bảng ở một phiếu |
 | `nationality` | Bỏ quy tắc ngưỡng, ghi nguyên giá trị |
 | Ngôn ngữ giá trị điền vào | Tiếng Anh: `Under 18`, `18–24`, …, `65+`, `Unknown` |
-| `f002.called_number`, `called_number_cl` | **Không băm** ở bước 2; vẫn mã hóa global ở bước 1 |
+| `f002.called_number`, `called_number_cl` | Mã hóa global ở bước 1 **và băm** ở bước 2 (phiếu mới; trước đây không băm) |
 | Bước 1 của VTT | Không còn `passthrough`: giải mã từng cột VTT, mã hóa lại bằng một key global |
 | Thuật toán giải mã VTT | `cdr-crypto` (`DataLakeSecurity_jv8.jar`), **theo từng cột**, `keyInput = prefix ‖ keyField` |
 | Nơi lấy prefix của VTT | `by-path` của DAK (một `path` một prefix) |
@@ -344,6 +386,8 @@ Dữ liệu giả danh vẫn là dữ liệu cá nhân: các cột định danh 
 | `F_HOME_BTS_DAILY_AREA.isdn` | VTT có mã hóa, `keyField` là `station_code`: bước 1 giải mã rồi mã hóa lại |
 | `f015.customer_id` | Thêm vào cột mã hóa và băm (ngoài phiếu DS) để không lộ mã khách hàng rõ |
 | `f001.calling_number` | VTT không mã hóa: bước 1 **chỉ mã hóa** (không giải mã), để băm ra cùng giá trị với `f002`, `f003` |
+| `called_number` của `f001`, `f003` | Bước 1 **chỉ mã hóa** bằng key global (như `f002`), bước 2 băm, để số bị gọi nối được giữa ba bảng và với `calling_number` |
+| Cột đánh dấu ở phiếu mới (BM01, cột A = 1) | Băm ở bước 2, trừ cột đã gom nhóm ở bước 1 (`hour_id`, `customer_age`); F022, F_HOME_BTS, f016 ở mục 4.1.1 |
 
 ## 7. Câu hỏi còn mở
 

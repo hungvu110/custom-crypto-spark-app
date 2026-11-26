@@ -80,7 +80,7 @@ class DatasetsTest(unittest.TestCase):
             self.assertEqual(settings["provider_decrypt"], {"columns": columns, "key_field": key_field}, dataset)
 
     def test_the_columns_that_vtt_does_not_encrypt_are_only_encrypted_never_decrypted(self):
-        for dataset, columns in ((F001, ["calling_number"]), (FCUST, ["cust_id"])):
+        for dataset, columns in ((F001, ["calling_number", "called_number"]), (FCUST, ["cust_id"])):
             settings = vtt_module.DATASETS[dataset]
             self.assertEqual(settings["decrypt_mode"], "none", dataset)
             self.assertNotIn("provider_decrypt", settings, dataset)
@@ -88,18 +88,38 @@ class DatasetsTest(unittest.TestCase):
 
     def test_the_columns_encrypted_with_the_global_key(self):
         expected = {
-            F001: ["calling_number"],
+            F001: ["calling_number", "called_number"],
             F002: ["calling_number", "called_number", "called_number_cl"],
-            F003: ["calling_number"],
+            F003: ["calling_number", "called_number"],
             F014: ["isdn", "customer_id"],
             F015: ["isdn", "customer_id"],
             F016: ["isdn", "customer_id"],
-            F022: ["isdn"],
+            F022: ["isdn", "imsi"],
             FHOME: ["isdn"],
             FCUST: ["cust_id"],
         }
         for dataset, columns in expected.items():
             self.assertEqual(vtt_module.DATASETS[dataset]["encrypt_columns"], columns, dataset)
+
+    def test_f022_encrypts_its_plaintext_imsi_so_that_it_joins_the_imsi_of_ebs_4g(self):
+        # VTT does not encrypt imsi (only isdn is decrypted), VTNET does: f022 encrypts it with the global key so both give one ciphertext.
+        settings = vtt_module.DATASETS[F022]
+        self.assertNotIn("imsi", settings["provider_decrypt"]["columns"])
+        self.assertIn("imsi", settings["encrypt_columns"])
+        self.assertEqual(vtt_module.source_for(F022, settings)["fixed_columns"], ("isdn", "imsi"))
+
+    def test_the_called_number_is_encrypted_in_every_call_table_so_that_it_joins_the_calling_number(self):
+        # f002 decrypts called_number (VTT encrypts it) and encrypts it again; f001 and f003 get it in plaintext from VTT. All three encrypt it
+        # with the same global key and key field, so one number gives one ciphertext (and one hash after step 2) as called_number of f001,
+        # f002, f003 and as calling_number.
+        for dataset in (F001, F002, F003):
+            self.assertIn("called_number", vtt_module.DATASETS[dataset]["encrypt_columns"], dataset)
+        for dataset in (F001, F003):
+            decrypted = vtt_module.DATASETS[dataset].get("provider_decrypt", {}).get("columns", [])
+            self.assertNotIn("called_number", decrypted, dataset)
+        self.assertEqual(env_of(F003)["CDR_ENCRYPT_COLUMNS"], "calling_number,called_number")
+        self.assertEqual(env_of(F003)["PROVIDER_DECRYPT_COLUMNS"], "calling_number")
+        self.assertEqual(vtt_module.source_for(F001, vtt_module.DATASETS[F001])["fixed_columns"], ("calling_number", "called_number"))
 
     def test_every_encrypting_table_uses_the_same_constant_key_field_so_that_one_number_gives_one_ciphertext(self):
         constants = {str(vtt_module.DATASETS[d]["key_field_constant"]) for d in COLUMN_DATASETS + NONE_DATASETS}
@@ -163,7 +183,7 @@ class SpecTest(unittest.TestCase):
             for name in ("KEY_PATH", "KEY_PATH_ROOT", "PROVIDER_DECRYPT_COLUMNS", "PROVIDER_KEY_FIELD", "FILE_CIPHER"):
                 self.assertNotIn(name, env, (dataset, name))
             self.assertEqual(env["GLOBAL_KEY_ZONE"], "vtt", dataset)
-        self.assertEqual(env_of(F001)["CDR_ENCRYPT_COLUMNS"], "calling_number")
+        self.assertEqual(env_of(F001)["CDR_ENCRYPT_COLUMNS"], "calling_number,called_number")
         self.assertEqual(env_of(FCUST)["CDR_ENCRYPT_COLUMNS"], "cust_id")
         self.assertNotIn("HOUR_FROM_COLUMN", env_of(FCUST))
 
