@@ -574,9 +574,12 @@ Spark app **chưa loại trùng**. Hai file Excel cũng không định nghĩa kh
 
 | Số đo | Cách tính | Chi phí |
 | --- | --- | --- |
-| File trùng | Cùng kích thước và cùng checksum HDFS (`getFileChecksum`, chế độ COMPOSITE_CRC, không phụ thuộc block size) | Gần như không: không đọc dữ liệu qua Spark |
-| Dòng trùng | Băm mọi cột (128 bit, kèm cờ null của từng cột) rồi đếm theo hash | Một lần đọc landing nữa và shuffle 16 byte mỗi dòng |
+| Dòng trùng | Băm mọi cột (128 bit, kèm cờ null của từng cột) rồi đếm theo hash | Một lần đọc landing nữa và một shuffle nhỏ (hash mỗi dòng) |
 | Trùng trong cùng một file | Nhóm trùng mà mọi bản đều nằm trong một file | Cùng lần trên |
+| File trùng | Cùng số dòng và cùng tổng hash các dòng (dấu vân tay không phụ thuộc thứ tự dòng), tính trên executor | Cùng lần trên (`GROUPING SETS`), hầu như không thêm shuffle |
+
+Ba số đo cùng một lượt đọc, không đọc file nào trên driver. Bản trước so file bằng checksum HDFS; Isilon không trả checksum nên job đọc
+cả nội dung file qua driver để băm SHA-256 (f022: khoảng 2,2 phút mỗi ngày, gần nửa thời gian đo).
 
 Mỗi run có đúng một dòng tổng kết, để gom số liệu theo ngày và theo bảng:
 
@@ -591,7 +594,7 @@ DEDUP_CHECK_RESULT files=219 duplicate_files=0 rows=... extra_rows=... duplicate
 | Kết quả sau vài ngày | Cách loại trùng | Chi phí khi chạy hằng ngày |
 | --- | --- | --- |
 | `extra_rows=0` mọi ngày | Không loại trùng | 0 |
-| `duplicate_files` > 0 và `extra_rows` chỉ đến từ các file đó | Bỏ file trùng theo checksum trước khi đọc | Gần như 0 |
+| `duplicate_files` > 0 và `extra_rows` chỉ đến từ các file đó | Bỏ file trùng (theo dấu vân tay, hoặc theo manifest của nguồn) trước khi ghi | Gần như 0 |
 | `extra_rows` = `within_file_extra_rows` | Loại trùng trong từng task đọc (mỗi file trọn trong một task) | Không shuffle |
 | Trùng rải rác giữa các file, bảng `(dt, hour)` | Gộp loại trùng vào shuffle chia file đang có: `repartition(hour_id, pmod(hash, k))` rồi `dropDuplicates` trên mọi cột (không thêm `Exchange`) | Thêm CPU, không thêm shuffle |
 | Trùng rải rác giữa các file, bảng chỉ `dt` | Tìm hash trùng (shuffle 16 byte mỗi dòng), broadcast danh sách, chỉ loại trùng chính xác các dòng có hash trùng | Thêm một lần đọc landing |

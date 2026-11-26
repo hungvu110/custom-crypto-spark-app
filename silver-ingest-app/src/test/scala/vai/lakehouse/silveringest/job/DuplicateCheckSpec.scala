@@ -59,8 +59,10 @@ class DuplicateCheckSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
 
   private def source: DataFrame = spark.read.parquet(day.toUri.toString)
 
-  "DuplicateCheck.rows" should "đếm dòng thừa, số nhóm trùng, và nhóm trùng chỉ nằm trong một file" in {
-    val report = DuplicateCheck.rows(source)
+  private def measured = DuplicateCheck.measure(spark, files, source)
+
+  "DuplicateCheck.measure" should "đếm dòng thừa, số nhóm trùng, và nhóm trùng chỉ nằm trong một file" in {
+    val (_, report) = measured
 
     report.rows shouldBe 11L
     report.duplicateGroups shouldBe 3L // r1, r2, r3
@@ -70,29 +72,30 @@ class DuplicateCheckSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
   }
 
   it should "không coi (null, x) và (x, null) là trùng (xxhash64 bỏ qua null)" in {
-    val report = DuplicateCheck.rows(spark.read.parquet(day.resolve("e.parquet").toUri.toString))
+    val single = spark.read.parquet(day.resolve("e.parquet").toUri.toString)
+    val (_, report) = DuplicateCheck.measure(spark, files.filter(_.path.endsWith("e.parquet")), single)
 
     report.rows shouldBe 2L
     report.duplicateGroups shouldBe 0L
   }
 
-  "DuplicateCheck.files" should "tìm file trùng nội dung (theo kích thước và checksum, không đọc qua Spark)" in {
-    val report = DuplicateCheck.files(spark, files)
+  it should "tìm file trùng nội dung trên executor, trong cùng lượt đọc (không đọc file trên driver)" in {
+    val (report, _) = measured
 
     report.files shouldBe 5
+    report.withRows shouldBe 5
     report.duplicateGroups shouldBe 1 // a and b
     report.duplicateFiles shouldBe 1 // one file too many
-    report.method should not be empty
   }
 
-  "DuplicateCheck.groupFiles" should "chỉ gộp file cùng kích thước và cùng checksum; file không có checksum không bị gộp" in {
+  "DuplicateCheck.groupFiles" should "chỉ gộp file cùng số dòng và cùng tổng hash" in {
     val groups = DuplicateCheck.groupFiles(Seq(
-      ("x", 10L, Some("md5:1")), ("y", 10L, Some("md5:1")), ("z", 11L, Some("md5:1")), ("w", 10L, None), ("v", 10L, None)))
+      "x" -> ((3L, 10L, 20L)), "y" -> ((3L, 10L, 20L)), "z" -> ((4L, 10L, 20L)), "w" -> ((3L, 11L, 20L))))
 
     groups shouldBe Seq(Seq("x", "y"))
   }
 
   "DuplicateCheck.run" should "không bao giờ làm hỏng lần nạp: lỗi khi đo chỉ ghi cảnh báo" in {
-    noException should be thrownBy DuplicateCheck.run(spark, Seq(SourceFile("hdfs://nowhere.invalid:8020/x", 1L)), source)
+    noException should be thrownBy DuplicateCheck.run(spark, files, spark.range(1).selectExpr("map('a', 1) AS m")) // a map cannot be hashed
   }
 }
