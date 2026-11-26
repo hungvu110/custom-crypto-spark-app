@@ -40,3 +40,9 @@ __pycache__/
 
 docs/silver-ingest/tools/ebs_3g_4g-160000.csv
 docs/silver-ingest/tools/ebs_3g_4g-160000.csv.plain
+
+viettelsecurity-2.1.jar
+viettelsecurity-2.1.pom
+
+# Excel files of the requests (BM01) and data catalog: they hold personal data, never commit them
+docs/schema/
