@@ -42,7 +42,7 @@ object PassthroughJob {
 
   def run(spark: SparkSession, cfg: IngestConfig): IngestResult = {
     Log.section("3. READ SOURCE")
-    val files = SourceFiles.list(spark, cfg.input.path)
+    val files = SourceFiles.list(spark, cfg.input.path, cfg.input.fileGlob)
     Log.kv("files", files.size)
     val df = PlainSource.read(spark, cfg, files)
     Log.kv("columns", df.columns.mkString(", "))
@@ -100,7 +100,7 @@ object DecryptEncryptJob {
     val finish = finishing(cfg, v, columnKeys)
 
     Log.section("5. READ, TRANSFORM, ENCRYPT COLUMNS, WRITE")
-    val files = SourceFiles.list(spark, cfg.input.path)
+    val files = SourceFiles.list(spark, cfg.input.path, cfg.input.fileGlob)
     Log.kv("files", files.size)
     fileKey match {
       case None =>
@@ -141,7 +141,7 @@ object DecryptEncryptJob {
     val finish = finishing(cfg, v, columnKeys)
 
     Log.section("5. READ, DECRYPT PROVIDER COLUMNS, TRANSFORM, ENCRYPT COLUMNS, WRITE")
-    val files = SourceFiles.list(spark, cfg.input.path)
+    val files = SourceFiles.list(spark, cfg.input.path, cfg.input.fileGlob)
     Log.kv("files", files.size)
     val plain = PlainSource.read(spark, cfg, files)
     write(spark, cfg, finish(decryptProviderColumns(plain, cfg.target, provider, prefix)))
@@ -221,7 +221,7 @@ object DecryptEncryptJob {
     val finish = finishing(cfg, v, columnKeys)
 
     Log.section("5. READ, TRANSFORM, ENCRYPT COLUMNS, WRITE")
-    val files = SourceFiles.list(spark, cfg.input.path)
+    val files = SourceFiles.list(spark, cfg.input.path, cfg.input.fileGlob)
     Log.kv("files", files.size)
     write(spark, cfg, finish(PlainSource.read(spark, cfg, files)))
     IngestResult.Written(files.size)

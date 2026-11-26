@@ -107,7 +107,9 @@ def _dags_of(module):
     }
 
 
-NIMS_ID = "silver_ingest_vtnet_nims"
+# The VTNET dataset whose request picks the columns to encrypt (decrypt-encrypt, no fixed columns): sub_profile. The real nims is now a
+# passthrough on HKH (test_silver_vtnet_ebs.py), so the generic decrypt-encrypt behaviour is tested here on sub_profile.
+NIMS_ID = "silver_ingest_vtnet_sub_profile"
 EBS_ID = "silver_ingest_vtnet_ebs_3g_4g"
 VTT_ID = "silver_ingest_vtt_f001_mpre_call"
 VTT_PASS_ID = "silver_ingest_vtt_d_os_type"  # a reference table of VTT: nothing to protect, so a passthrough
@@ -153,7 +155,7 @@ EBS = _VTNET[EBS_ID]
 NIMS = _VTNET[NIMS_ID]
 NIMS_ENC = _dags_of(encrypting_module)[NIMS_ID]
 ALL_DAGS = (VTT, EBS, NIMS)
-PATH_HOUR_DAGS = (EBS, NIMS)  # the datasets whose hour is in the path (hour_glob); VTT's hour is a column of the data (hour_column)
+PATH_HOUR_DAGS = (EBS,)  # the datasets whose hour is in the path (hour_glob); VTT's hour is a column of the data (hour_column)
 
 ROOT_VTT = vtt_module.INPUT_ROOT
 ROOT_VTNET = vtnet_module.INPUT_ROOT
@@ -476,7 +478,7 @@ class SpecTest(unittest.TestCase):
 
     def test_a_run_ingests_the_folder_of_its_day_into_the_partition_of_that_day(self):
         for dag, root, folder, table in (
-            (NIMS, ROOT_VTNET, "nims/dt=20261027", "vtnet_nims_infra_cell_4g"),
+            (NIMS, ROOT_VTNET, "sub_profile/dt=20261027", "vtnet_nims_infra_cell_4g"),
             (EBS, ROOT_HKH, "ebs_3g_4g/dt=20261027", "vtnet_ebs_3g_4g"),
             (VTT, ROOT_VTT, "f001-mpre-call/date=20261027", "vtt_f001_mpre_call"),
         ):
@@ -494,7 +496,7 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(driver_env(render(NIMS, interval_start=later))["BATCH_VALUE"], "20261028")
 
     def test_a_manual_run_can_ingest_another_day(self):
-        for dag, folder in ((NIMS, "nims/dt=20261001"), (VTT, "f001-mpre-call/date=20261001")):
+        for dag, folder in ((NIMS, "sub_profile/dt=20261001"), (VTT, "f001-mpre-call/date=20261001")):
             env = driver_env(render(dag, {"date": "20261001"}, run_id="manual__2026-10-28"))
             self.assertTrue(env["INPUT_PATH"].endswith(folder), dag.DAG_ID)
             self.assertEqual(env["BATCH_VALUE"], "20261001")
@@ -525,8 +527,8 @@ class SpecTest(unittest.TestCase):
         env = driver_env(render(NIMS))
         self.assertEqual(env["FILE_CIPHER"], "aes-256-gcm")
         # One by-path key for the whole dataset: the same KEY_PATH for every day, no KEY_PATH_ROOT.
-        self.assertEqual(env["KEY_PATH"], "nims")
-        self.assertEqual(driver_env(render(NIMS, interval_start=_Pendulum(2026, 10, 27, 20, 0, tzinfo=datetime.timezone.utc)))["KEY_PATH"], "nims")
+        self.assertEqual(env["KEY_PATH"], "sub_profile")
+        self.assertEqual(driver_env(render(NIMS, interval_start=_Pendulum(2026, 10, 27, 20, 0, tzinfo=datetime.timezone.utc)))["KEY_PATH"], "sub_profile")
         self.assertNotIn("KEY_PATH_ROOT", env)
         # Chờ admin DAK duyệt yêu cầu key cột theo exponential backoff, có timeout.
         self.assertEqual(env["DAK_PENDING_WAIT_TIMEOUT_SECONDS"], str(vtnet_module.PENDING_WAIT["timeout"]))
@@ -585,7 +587,7 @@ class SpecTest(unittest.TestCase):
 
     def test_the_application_name_is_valid_and_unique_per_run(self):
         for dag, pattern in (
-            (NIMS, r"^silver-vtnet-nims-[0-9a-f]{12}$"),
+            (NIMS, r"^silver-vtnet-sub-profile-[0-9a-f]{12}$"),
             (EBS, r"^silver-vtnet-ebs-3g-4g-[0-9a-f]{12}$"),
             (VTT, r"^silver-vtt-f001-mpre-call-[0-9a-f]{12}$"),
         ):
@@ -615,8 +617,8 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(conf["spark.cdrcrypto.audit.tenant"], "tenantw1xjixm")
         self.assertEqual(conf["spark.cdrcrypto.audit.workspace"], "wsw7vtwvi")
         self.assertEqual(conf["spark.cdrcrypto.audit.team"], "teamtscauiy")
-        self.assertEqual(conf["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
-        self.assertEqual(render(NIMS)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-nims")
+        self.assertEqual(conf["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-sub-profile")
+        self.assertEqual(render(NIMS)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtnet-sub-profile")
         self.assertEqual(render(VTT)["spec"]["sparkConf"]["spark.cdrcrypto.audit.engineId"], "silver-ingest-vtt-f001-mpre-call")
         for dag in (VTT_PASS,):  # no cdr_encrypt here: nothing to audit
             keys = render(dag)["spec"]["sparkConf"].keys()
@@ -639,8 +641,8 @@ class HoursTest(unittest.TestCase):
         many = {"date": "20261013", "fromHour": "10", "toHour": "12"}
         self.assertEqual(self.path(EBS, one), ROOT_HKH + "ebs_3g_4g/dt=20261013/batch=10*")
         self.assertEqual(self.path(EBS, many), ROOT_HKH + "ebs_3g_4g/dt=20261013/batch={10,11,12}*")
-        self.assertEqual(self.path(NIMS, one), ROOT_VTNET + "nims/dt=20261013/batch=*/infra_cell_4g-10*")
-        self.assertEqual(self.path(NIMS, many), ROOT_VTNET + "nims/dt=20261013/batch=*/infra_cell_4g-{10,11,12}*")
+        # A dataset without an hour layout (sub_profile) always reads the whole day, whatever the hours asked.
+        self.assertEqual(self.path(NIMS, {"date": "20261013"}), ROOT_VTNET + "sub_profile/dt=20261013")
 
     def test_hours_are_two_digits_and_may_be_given_as_numbers_or_text(self):
         for conf in ({"date": "20261013", "fromHour": 5, "toHour": 7}, {"date": "20261013", "fromHour": "5", "toHour": "07"}):
@@ -667,7 +669,6 @@ class HoursTest(unittest.TestCase):
 
         for dag, paths in (
             (EBS, {"hdfs://nn/x/ebs_3g_4g/dt=20261013/batch=1520/ebs_3g_4g-152000.csv": "15"}),
-            (NIMS, {"hdfs://nn/x/nims/dt=20261013/batch=2/infra_cell_4g-130012.csv": "13"}),
         ):
             regex = driver_env(render(dag))["HOUR_PATH_REGEX"]
             self.assertEqual(re.compile(regex).groups, 1, dag.DAG_ID)
@@ -723,8 +724,9 @@ class HoursTest(unittest.TestCase):
             validate(dag_run=_DagRun("r", {"fromHour": "10"}))
 
     def test_every_dataset_says_where_its_hour_comes_from_exactly_once(self):
-        for dag in ALL_DAGS:
+        for dag in (VTT, EBS):  # sub_profile has no hour at all: a whole day, partitioned by dt only
             self.assertEqual(bool(dag.SOURCE["hour_glob"]) + bool(dag.SOURCE["hour_column"]), 1, dag.DAG_ID)
+        self.assertEqual(bool(NIMS.SOURCE["hour_glob"]) + bool(NIMS.SOURCE["hour_column"]), 0)
         for dag in PATH_HOUR_DAGS:
             self.assertIn(common.HOUR_TOKEN, dag.SOURCE["hour_glob"], dag.DAG_ID)
             self.assertNotIn("}}", dag.SOURCE["hour_glob"])  # it is written inside a Jinja expression
@@ -840,8 +842,9 @@ class DatasetSettingsTest(unittest.TestCase):
         self.assertEqual({k: v for k, v in mine.items() if k != "executors"}, {k: v for k, v in common.RESOURCE_DEFAULTS.items() if k != "executors"})
 
     def test_the_defaults_are_what_every_dataset_used_before_resources_existed(self):
-        # The datasets of VTNET still use the defaults; every VTT table has the resources of its own size (test_silver_vtt.ResourcesTest).
-        for dag in (EBS, NIMS):
+        # sub_profile (a test dataset of VTNET) still uses the defaults; every VTT table and the real VTNET datasets have the resources of their
+        # own size (test_silver_vtt.ResourcesTest, test_silver_vtnet_ebs.ResourcesTest).
+        for dag in (NIMS,):
             spec = render(dag)["spec"]
             self.assertEqual(
                 (spec["driver"]["cores"], spec["driver"]["coreLimit"], spec["driver"]["memory"], spec["driver"]["memoryOverhead"]),
@@ -865,7 +868,7 @@ class DatasetSettingsTest(unittest.TestCase):
         self.assertEqual((spec["driver"]["cores"], spec["driver"]["coreLimit"], spec["driver"]["memory"]), (2, "2000m", "4g"))
         self.assertEqual(spec["driver"]["memoryOverhead"], "512m")  # not set: the default
         self.assertEqual(spec["sparkConf"]["spark.sql.shuffle.partitions"], "1200")
-        self.assertEqual(render(EBS)["spec"]["executor"]["instances"], 2)  # another dataset keeps the default
+        self.assertEqual(render(NIMS)["spec"]["executor"]["instances"], 2)  # another dataset keeps the default
 
     def test_the_dag_file_checks_its_datasets_when_it_is_parsed(self):
         for bad in ({"mode": "other"}, {"mode": "passthrough", "resources": {"executor": 4}}):
@@ -874,9 +877,9 @@ class DatasetSettingsTest(unittest.TestCase):
 
     def test_the_source_of_every_dataset_carries_the_fields_of_its_entry(self):
         for dag in ALL_DAGS:
-            if dag in (EBS, NIMS):
+            if dag is NIMS:
                 self.assertEqual(dag.SOURCE["resources"], common.RESOURCE_DEFAULTS, dag.DAG_ID)
-            else:  # VTT: the resources of its entry over the defaults
+            else:  # VTT, EBS: the resources of its entry over the defaults
                 self.assertGreaterEqual(set(dag.SOURCE["resources"]), set(common.RESOURCE_DEFAULTS), dag.DAG_ID)
             self.assertIn("hour_glob", dag.SOURCE)
             self.assertIn("partition_by_hour", dag.SOURCE)

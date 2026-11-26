@@ -8,7 +8,7 @@ Run from the repository root (needs Python 3 and jinja2):
 
 import unittest
 
-from test_silver_dags import EBS, EBS_CONFIG, NIMS, VTT, common, driver_env, load, render
+from test_silver_dags import EBS, EBS_CONFIG, NIMS, VTT, _dags_of, common, driver_env, load, render, variables
 
 HKH = common.INPUT_CLUSTERS["hkh"]
 SECRET = "hkh-hdfs-token"  # one Secret per cluster (INPUT_CLUSTERS), filled by hand
@@ -119,6 +119,90 @@ class DatasetSettingsTest(unittest.TestCase):
         self.assertNotIn("PROVIDER_KEY_FIELD", vtnet)
         self.assertNotIn("PROVIDER_CIPHER", cdr)  # VTT renders exactly as before
         self.assertEqual(cdr["PROVIDER_KEY_FIELD"], "sta_date")
+
+
+NIMS_ID, MAPPING_ID = "silver_ingest_vtnet_nims", "silver_ingest_vtnet_isdn_imsi_mapping"
+NIMS_CONF = {"ticket": "SLV-2026-000021", "table": "vtnet_nims_4g", "cron": "0 14 * * *"}
+MAPPING_CONF = {"ticket": "SLV-2026-000022", "table": "vtnet_isdn_imsi_mapping", "cron": "30 2 * * *", "globalKey": True, "globalZone": "silver_vtt"}
+_real = _dags_of(load("silver_ingest_vtnet", variables({NIMS_ID: NIMS_CONF, MAPPING_ID: MAPPING_CONF, "silver_ingest_vtnet_ebs_3g_4g": EBS_CONFIG})))
+REAL_NIMS, MAPPING, REAL_EBS = _real[NIMS_ID], _real[MAPPING_ID], _real["silver_ingest_vtnet_ebs_3g_4g"]
+
+
+def _mb(value):
+    return int(value[:-1]) * (1024 if value.endswith("g") else 1)
+
+
+class DayDatasetsTest(unittest.TestCase):
+    """nims and isdn_imsi_mapping: every batch folder of the day (on HKH) goes into the partition dt of the table."""
+
+    def test_both_read_the_whole_day_folder_on_hkh_into_dt_only(self):
+        for dag, folder in ((REAL_NIMS, "nims"), (MAPPING, "isdn_imsi_mapping")):
+            env = driver_env(render(dag, {"date": "20261105"}, run_id="manual__x"))
+            self.assertEqual(env["INPUT_PATH"], f"{HKH['hdfs']}/landing/{folder}/dt=20261105", dag.DAG_ID)  # every batch=... below it
+            self.assertEqual(env["INPUT_OPTION_recursiveFileLookup"], "true", dag.DAG_ID)
+            self.assertEqual(env["INPUT_OPTION_pathGlobFilter"], "*.csv", dag.DAG_ID)  # not the manifest.json next to the CSV
+            self.assertEqual((env["BATCH_COLUMN"], env["BATCH_VALUE"]), ("dt", "20261105"), dag.DAG_ID)
+            self.assertFalse({"OUTPUT_PARTITION_BY", "HOUR_PATH_REGEX", "BATCH_HOURS"} & set(env), dag.DAG_ID)
+            self.assertEqual(env["INPUT_TOKEN_FILE"], TOKEN_FILE, dag.DAG_ID)
+
+    def test_nims_is_written_as_it_is(self):
+        spec = render(REAL_NIMS)["spec"]
+        self.assertEqual(spec["mainClass"], "vai.lakehouse.silveringest.app.PassthroughSilverApp")
+        self.assertFalse([n for n in driver_env(render(REAL_NIMS)) if n.startswith(("DAK_", "CDR_", "PROVIDER_", "KEY_"))])
+
+    def test_the_mapping_decrypts_both_columns_and_encrypts_them_like_vtt(self):
+        env = driver_env(render(MAPPING))
+        self.assertEqual((env["DECRYPT_MODE"], env["PROVIDER_CIPHER"], env["PROVIDER_DECRYPT_COLUMNS"]), ("column", "vtnet", "isdn,imsi"))
+        self.assertEqual(env["KEY_PATH"], "isdn_imsi_mapping")
+        self.assertEqual(env["CDR_ENCRYPT_COLUMNS"], "isdn,imsi")
+        self.assertEqual((env["CDR_KEY_FIELD"], env["CDR_KEY_FIELD_VALUE"]), (common.JOIN_KEY_FIELD["name"], common.JOIN_KEY_FIELD["value"]))
+        self.assertEqual(env["GLOBAL_KEY_ZONE"], "silver_vtt")
+        self.assertIn(common.VTNET_JAR, render(MAPPING)["spec"]["sparkConf"]["spark.jars"])
+
+    def test_the_mapping_request_must_pick_the_global_key(self):
+        without = {k: v for k, v in MAPPING_CONF.items() if k not in ("globalKey", "globalZone")}
+        with self.assertRaises(ValueError):
+            common.check_schedule_config(MAPPING.SOURCE, without)
+
+
+class ResourcesTest(unittest.TestCase):
+    """The Spark resources of the three VTNET datasets, from the size of one day (CSV): EBS 2.2-2.5 TB, mapping 4.8 GB, nims 32 MB."""
+
+    def peak(self, dag):
+        spec = render(dag)["spec"]
+        conf, driver, executor = spec["sparkConf"], spec["driver"], spec["executor"]
+        count = int(conf["spark.dynamicAllocation.maxExecutors"]) if conf["spark.dynamicAllocation.enabled"] == "true" else executor["instances"]
+        cores = driver["cores"] + count * executor["cores"]
+        memory = (_mb(driver["memory"]) + _mb(driver["memoryOverhead"]) + count * (_mb(executor["memory"]) + _mb(executor["memoryOverhead"]))) / 1024
+        return cores, memory
+
+    def test_ebs_has_many_small_executors_because_the_vtnet_library_decrypts_under_one_lock(self):
+        spec = render(REAL_EBS)["spec"]
+        self.assertEqual((spec["executor"]["cores"], spec["executor"]["memory"]), (2, "3072m"))
+        self.assertEqual(spec["sparkConf"]["spark.dynamicAllocation.maxExecutors"], "30")
+        self.assertEqual(self.peak(REAL_EBS), (62, 125.0))
+
+    def test_ebs_reads_bigger_splits_because_it_writes_one_file_per_read_task(self):
+        # Hour from the path (batch=HHmm): no shuffle, so a file is about one read task of 384 MB of CSV once compressed.
+        self.assertEqual(render(REAL_EBS)["spec"]["sparkConf"]["spark.sql.files.maxPartitionBytes"], str(384 * 1024 * 1024))
+        self.assertNotIn("spark.sql.files.maxPartitionBytes", render(MAPPING)["spec"]["sparkConf"])
+
+    def test_the_mapping_and_nims_stay_small(self):
+        self.assertEqual(self.peak(MAPPING), (13, 26.5))
+        self.assertEqual(render(REAL_NIMS)["spec"]["sparkConf"]["spark.dynamicAllocation.enabled"], "false")
+        self.assertEqual(self.peak(REAL_NIMS), (3, 4.0))
+
+    def test_the_three_together_leave_most_of_the_quota_to_vtt_and_the_de_identification(self):
+        cores = sum(self.peak(d)[0] for d in (REAL_EBS, MAPPING, REAL_NIMS))
+        memory = sum(self.peak(d)[1] for d in (REAL_EBS, MAPPING, REAL_NIMS))
+        self.assertLessEqual(cores, 100)  # quota 200 CPU
+        self.assertLessEqual(memory, 200)  # quota 400 GB
+
+    def test_the_input_split_is_checked(self):
+        common.check_resources("x", {"input_split_mb": 384})
+        for bad in (8, 4096, "384", True):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_resources("x", {"input_split_mb": bad})
 
 
 if __name__ == "__main__":

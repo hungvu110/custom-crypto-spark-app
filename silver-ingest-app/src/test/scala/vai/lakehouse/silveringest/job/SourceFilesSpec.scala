@@ -66,6 +66,21 @@ class SourceFilesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
       "nims/dt=20261013/batch=1/infra_cell_4g-100012.csv", "nims/dt=20261013/batch=2/infra_cell_4g-110500.csv")
   }
 
+  it should "keep only the files whose name matches INPUT_OPTION_pathGlobFilter (VTNET: no manifest.json next to the CSV)" in {
+    val batch = Files.createDirectories(workDir.resolve("mapping/dt=20261105/batch=01"))
+    Files.write(batch.resolve("isdn_imsi_mapping-20261105.csv"), "isdn,imsi\n".getBytes)
+    Files.write(batch.resolve("manifest.json"), "{}".getBytes)
+    Files.write(batch.resolve("_SUCCESS"), Array.emptyByteArray)
+    val root = workDir.toString
+    def names(glob: Option[String]) = SourceFiles.list(spark, at("mapping/dt=20261105"), glob).map(f => f.path.substring(f.path.indexOf(root) + root.length + 1))
+
+    names(Some("*.csv")) shouldBe Seq("mapping/dt=20261105/batch=01/isdn_imsi_mapping-20261105.csv")
+    names(None) shouldBe Seq("mapping/dt=20261105/batch=01/isdn_imsi_mapping-20261105.csv", "mapping/dt=20261105/batch=01/manifest.json")
+    val none = the[IllegalArgumentException] thrownBy SourceFiles.list(spark, at("mapping/dt=20261105"), Some("*.parquet"))
+    none.getMessage should include("matching *.parquet")
+    SourceFiles.hasFiles(spark, at("mapping/dt=20261105"), Some("*.parquet")) shouldBe false
+  }
+
   it should "list a single file once" in {
     listed("vtt/date=20261013/hour=10/part-1.csv") shouldBe Seq("vtt/date=20261013/hour=10/part-1.csv")
   }

@@ -62,6 +62,9 @@ object OutputFormat {
 final case class InputSpec(path: String, format: InputFormat, schema: Option[String], options: Map[String, String]) {
   /** Option đọc thực sự: mặc định của định dạng, rồi `INPUT_OPTION_*` đè lên. */
   def readOptions: Map[String, String] = format.defaults ++ options
+
+  /** Mẫu tên file Spark đọc (`INPUT_OPTION_pathGlobFilter`), để job liệt kê đúng các file đó ([[vai.lakehouse.silveringest.job.SourceFiles]]). */
+  def fileGlob: Option[String] = options.collectFirst { case (k, v) if k.equalsIgnoreCase("pathGlobFilter") && v.trim.nonEmpty => v.trim }
 }
 
 /**
@@ -229,13 +232,17 @@ final case class IngestConfig(
   /**
    * Có gom dữ liệu theo partition trước khi ghi không. `auto`: chỉ khi bảng có cột partition KHÁC cột lô (vd `hour`). Một lần chạy ghi đúng
    * một lô, nên bảng chỉ partition theo lô thì mỗi task đọc đã chỉ có một partition: không gom, mỗi task ghi một file cỡ phần nó đọc, khỏi
-   * tốn một shuffle toàn bộ dữ liệu (f015: 145 GiB mỗi ngày).
+   * tốn một shuffle toàn bộ dữ liệu (f015: 145 GiB mỗi ngày). Giờ lấy từ ĐƯỜNG DẪN file (`HOUR_PATH_REGEX`) cũng vậy: file được đọc theo nhóm
+   * giờ ([[vai.lakehouse.silveringest.job.HourGroups]]) nên mỗi task đọc chỉ thuộc một giờ (VTNET EBS: khỏi shuffle khoảng 2,5 TB mỗi ngày).
+   * Giờ lấy từ CỘT dữ liệu thì một task có nhiều giờ, nên vẫn gom.
    */
   def rebalances: Boolean = outputFiles.rebalance match {
     case Rebalance.Always => true
     case Rebalance.Never => false
-    case Rebalance.Auto => partitionBy.exists(c => !batch.exists(_.column.equalsIgnoreCase(c)))
+    case Rebalance.Auto => partitionBy.exists(c => !batch.exists(_.column.equalsIgnoreCase(c)) && !hourFromPath(c))
   }
+
+  private def hourFromPath(column: String): Boolean = hours.exists(h => h.sourceColumn.isEmpty && h.column.equalsIgnoreCase(column))
 
   private def describeOutputFiles: String = {
     val mode = s"(OUTPUT_REBALANCE=${outputFiles.rebalance.name})"
@@ -243,6 +250,7 @@ final case class IngestConfig(
       s"rebalance by ${if (partitionBy.isEmpty) "(no partition column)" else partitionBy.mkString(", ")}, " +
         s"about ${outputFiles.shuffleBytesPerFile / (1024 * 1024)} MB of shuffle data per file $mode"
     } else if (outputFiles.rebalance == Rebalance.Never) s"one file per task and partition $mode"
+    else if (partitionBy.exists(hourFromPath)) s"one file per read task: every task reads the files of one hour (hour from the path) $mode"
     else s"one file per read task: the run writes one partition ${batch.fold("")(_.column)} $mode".replace("  ", " ")
   }
 

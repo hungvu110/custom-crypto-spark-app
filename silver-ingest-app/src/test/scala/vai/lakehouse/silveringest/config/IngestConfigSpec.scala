@@ -427,6 +427,22 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.rebalances shouldBe false // no partition, no batch
   }
 
+  it should "không gom ở chế độ auto khi giờ lấy từ đường dẫn file (mỗi task đọc chỉ có một giờ), nhưng vẫn gom khi giờ lấy từ cột" in {
+    val base = common ++ Map("BATCH_COLUMN" -> "dt", "BATCH_VALUE" -> "20261105", "OUTPUT_PARTITION_BY" -> "hour", "HOUR_COLUMN" -> "hour")
+    val byPath = IngestConfig.fromEnv(Mode.Passthrough, base + ("HOUR_PATH_REGEX" -> "/batch=(\\d{2})[^/]*(?:/|$)")).toOption.get
+
+    byPath.rebalances shouldBe false // VTNET EBS: batch=HHMM folders, no shuffle of the whole day
+    byPath.describe.toMap.apply("OUTPUT_FILES") should include("one file per read task: every task reads the files of one hour")
+    IngestConfig.fromEnv(Mode.Passthrough, base + ("HOUR_FROM_COLUMN" -> "hour_id")).toOption.get.rebalances shouldBe true // VTT f001
+    IngestConfig.fromEnv(Mode.Passthrough, base + ("HOUR_PATH_REGEX" -> "/batch=(\\d{2})") + ("OUTPUT_REBALANCE" -> "true")).toOption.get
+      .rebalances shouldBe true
+  }
+
+  "INPUT_OPTION_pathGlobFilter" should "là mẫu tên file job dùng khi liệt kê file" in {
+    IngestConfig.fromEnv(Mode.Passthrough, common + ("INPUT_OPTION_pathGlobFilter" -> "*.csv")).toOption.get.input.fileGlob shouldBe Some("*.csv")
+    IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.input.fileGlob shouldBe None
+  }
+
   it should "nhận số MB dữ liệu shuffle mỗi file trong khoảng cho phép" in {
     for (mb <- Seq(16, 512, 4096)) {
       IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_FILE_SHUFFLE_MB" -> mb.toString)).toOption.get.outputFiles

@@ -90,6 +90,21 @@ class VtnetColumnPipelineSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     written.map(_.getAs[String]("lac")).distinct.toSeq shouldBe Seq(null)
   }
 
+  it should "đọc mọi file CSV trong các thư mục batch=... của ngày, bỏ manifest.json và _SUCCESS cạnh chúng" in {
+    val day = Files.createDirectories(workDir.resolve("mapping/dt=20261105"))
+    for ((batch, imsi) <- Seq("01" -> "452041000000011", "02" -> "452041000000012")) {
+      val dir = Files.createDirectories(day.resolve(s"batch=$batch"))
+      Files.write(dir.resolve(s"part-$batch.csv"), (header +: Seq(row(VtnetCipher.encrypt(vtnetKey, imsi), 1L, 1L))).mkString("", "\n", "\n").getBytes(UTF_8))
+      Files.write(dir.resolve("manifest.json"), "{\"files\": 1}".getBytes(UTF_8))
+      Files.write(dir.resolve("_SUCCESS"), Array.emptyByteArray)
+    }
+
+    run(env(day, "ebs_batches", "INPUT_OPTION_recursiveFileLookup" -> "true", "INPUT_OPTION_pathGlobFilter" -> "*.csv")) shouldBe SilverApp.ExitOk
+
+    spark.table("silver.ebs_batches").select("imsi").collect().map(_.getString(0)).sorted.toSeq shouldBe
+      Seq("452041000000011", "452041000000012").map(f022Ciphertext).sorted
+  }
+
   it should "dừng khi key by-path không phải key VTNET đã dùng (không ghi gì)" in {
     val in = csv("wrong_key", (1 to 40).map(i => row(VtnetCipher.encrypt(vtnetKey, f"452041$i%09d"), i.toLong, 1795193804394L + i)))
 

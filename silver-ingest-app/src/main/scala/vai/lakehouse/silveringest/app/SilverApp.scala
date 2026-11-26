@@ -118,7 +118,7 @@ object SilverApp {
           val day = remaining.next()
           val dayEnv = BulkLoad.dayEnv(env, day)
           Log.section(s"BULK DAY $day (${loaded.size + skipped.size + 1}/${days.size})")
-          if (bulk.onMissingDay == MissingDay.Skip && !SourceFiles.hasFiles(spark, dayEnv("INPUT_PATH"))) {
+          if (bulk.onMissingDay == MissingDay.Skip && !SourceFiles.hasFiles(spark, dayEnv("INPUT_PATH"), cfg.input.fileGlob)) {
             Log.warn(s"no file for $day under ${dayEnv("INPUT_PATH")}: skipped (BULK_MISSING_DAY=skip)")
             skipped :+= day
           } else {

@@ -6,7 +6,10 @@ mode (common.MODES).
   ebs_3g_4g  silver_ingest_vtnet_ebs_3g_4g  decrypt-encrypt  ebs_3g_4g/dt=YYYYMMDD/(batch=...) ON HKH: imsi decrypted (VTNET library), encrypted
                                                              with the global key (joins f022-register); read with the token of HKH in the
                                                              Secret hkh-hdfs-token, fetched by hand (common: INPUT ON ANOTHER CLUSTER)
-  nims       silver_ingest_vtnet_nims       decrypt-encrypt  nims/dt=YYYYMMDD/(batch=...)
+  nims       silver_ingest_vtnet_nims       passthrough      nims/dt=YYYYMMDD/batch=N ON HKH: every batch folder into the partition dt
+  isdn_imsi_mapping                         decrypt-encrypt  isdn_imsi_mapping/dt=YYYYMMDD/batch=NN ON HKH: isdn and imsi decrypted (VTNET
+             silver_ingest_vtnet_isdn_imsi_mapping           library), encrypted with the global key (joins the isdn of VTT and the imsi of
+                                                             f022-register and ebs_3g_4g); every batch folder into the partition dt
 
 How a dataset gets its schedule (Airflow Variable written by DAK when the request is approved once): silver_ingest_factory.py.
 A run ingests the folder of the day BEFORE the run (all its batch subfolders) into the partitions dt = <day>; a manual run can take
@@ -44,11 +47,28 @@ PENDING_WAIT = common.PENDING_WAIT
 
 # The datasets of VTNET, one DAG each. Everything that is specific to a dataset is in ITS entry below, nowhere else: the keys (mode, hour_glob,
 # partition_by_hour, key_path, resources) are described, and checked when this file is parsed, in common.DATASET_KEYS. ASSUMPTION: adjust to
-# the real data. The datasets write the hour differently (`hour_glob`, `%H%` = the hour):
-#   ebs_3g_4g  batch=HHmm folders (batch=1000, batch=1010, ...): the hour is the start of the folder name, so "batch=%H%*".
-#   nims       batch=N folders hold files named infra_cell_4g-HHmmss.csv: the hour is in the FILE name, so "batch=*/infra_cell_4g-%H%*".
-# A small dataset (nims) stays partitioned by day, a big one (ebs_3g_4g) by (dt, hour). The Spark resources are the defaults of
-# common.RESOURCE_DEFAULTS until a dataset sets its own, e.g. "resources": {"executors": 10, "executor_cores": 4, "executor_memory": "8g"}.
+# the real data. The landing of VTNET is on HKH (input_cluster), one folder per day dt=YYYYMMDD holding batch=... folders of CSV files
+# with a header, next to a manifest.json and a _SUCCESS (BASE_ENV reads only *.csv):
+#   ebs_3g_4g          batch=HHmm folders every 20 minutes (batch=0000, 0020, 0040, ...): the hour is the start of the folder name, so
+#                      "batch=%H%*", and the table is partitioned by (dt, hour). About 2.2 to 2.5 TB of CSV a day.
+#   nims               ONE batch=1 folder a day, about 32 MB: every batch folder goes into the partition dt (no hour).
+#   isdn_imsi_mapping  ONE batch=01 folder a day, one CSV file of about 4.8 GB: every batch folder goes into the partition dt (no hour).
+#
+# RESOURCES, from the size of one day (CSV, 2026-11-05/10). The namespace has 200 CPU and 400 GB, shared with VTT and the de-identification.
+#   ebs_3g_4g          narrow (7 columns) but huge (about 29 billion rows a day of ~85 bytes). The VTNET library is static and not thread-safe,
+#                      so the job decrypts under ONE lock per executor JVM: many executors of 2 cores (the lock is the limit, not the cores),
+#                      2 GB per core is plenty for 7 columns. No shuffle (hour from the path, IngestConfig.rebalances): one file per read
+#                      task, so a task reads 384 MB of CSV (input_split_mb) for files of about 100 to 150 MB. Peak 2 + 30 x 2 = 62 cores,
+#                      5 + 30 x 4 = 125 GB. Estimate: 30 to 60 minutes a day; measure one day (Spark UI: task time, GC) and adjust.
+#   isdn_imsi_mapping  4.8 GB, two columns decrypted under the same lock: about 38 read tasks, up to 6 executors of 2 cores. Peak 13 cores, 26 GB.
+#   nims               32 MB: one small static executor, like the d-* tables of VTT. 3 cores, 4 GB.
+EBS = {"driver_cores": 2, "driver_memory": "4096m", "driver_memory_overhead": "1024m", "executor_cores": 2, "executor_memory": "3072m",
+       "executor_memory_overhead": "1024m", "executors": 8, "min_executors": 4, "max_executors": 30, "shuffle_partitions": 512,
+       "input_split_mb": 384}
+MAPPING = {"executor_cores": 2, "executor_memory": "3072m", "executor_memory_overhead": "1024m", "executors": 2, "min_executors": 1,
+           "max_executors": 6, "shuffle_partitions": 48}
+TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m", "driver_memory": "1024m",
+        "shuffle_partitions": 8}
 DATASETS = {
     # EBS-4G: the landing is on HKH (input_cluster), CSV with a header (imsi,lac,sac,eci,event_time,event_id,event_result). VTNET encrypts only imsi,
     # with its own library (PassTranformer; the inputKey is the by-path key of DAK for the path "ebs_3g_4g"); the job decrypts it and encrypts it
@@ -56,9 +76,18 @@ DATASETS = {
     "ebs_3g_4g": {
         "mode": "decrypt-encrypt", "input_cluster": "hkh", "hour_glob": "batch=%H%*", "partition_by_hour": True,
         "decrypt_mode": "column", "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"},
-        "encrypt_columns": ["imsi"], "key_field_constant": common.JOIN_KEY_FIELD,
+        "encrypt_columns": ["imsi"], "key_field_constant": common.JOIN_KEY_FIELD, "resources": EBS,
     },
-    "nims": {"mode": "decrypt-encrypt", "hour_glob": "batch=*/infra_cell_4g-%H%*"},
+    # NIMS-4G (cell inventory): no column is flagged in the request (BM01), so it is written as it is.
+    "nims": {"mode": "passthrough", "input_cluster": "hkh", "resources": TINY},
+    # The isdn <-> imsi mapping: both columns are flagged. ASSUMPTION: VTNET encrypts both, like imsi of ebs_3g_4g (by-path key of DAK for the
+    # path "isdn_imsi_mapping"); a plain value stops the job ("not a VTNET ciphertext"): then drop it from provider_decrypt. Encrypted again with
+    # the global key and the constant key field of VTT, so the mapping joins the isdn of VTT and the imsi of f022-register and ebs_3g_4g.
+    "isdn_imsi_mapping": {
+        "mode": "decrypt-encrypt", "input_cluster": "hkh", "decrypt_mode": "column",
+        "provider_decrypt": {"columns": ["isdn", "imsi"], "cipher": "vtnet"},
+        "encrypt_columns": ["isdn", "imsi"], "key_field_constant": common.JOIN_KEY_FIELD, "resources": MAPPING,
+    },
     # Two datasets that share sensitive columns (msisdn, imsi) to test the GLOBAL key (docs/silver-ingest/KICH-BAN-TEST-KEY-GLOBAL.md): whole
     # days only, plain CSV files, DAK has no by-path key for them (the files are read as they are) and the requests choose the same zone.
     "sub_profile": {"mode": "decrypt-encrypt"},
@@ -71,6 +100,8 @@ BASE_ENV = {
     "INPUT_OPTION_header": "true",
     # The folder of a day holds batch=... subfolders: read them all, and do not turn `batch=1520` into a partition column.
     "INPUT_OPTION_recursiveFileLookup": "true",
+    # Only the CSV files: a batch folder of VTNET also holds a manifest.json (and a _SUCCESS, hidden anyway), which is not data.
+    "INPUT_OPTION_pathGlobFilter": "*.csv",
     "OUTPUT_DB": "silver",
     "OUTPUT_FORMAT": "delta",
 }

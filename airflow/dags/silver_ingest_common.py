@@ -711,6 +711,10 @@ RESOURCE_COUNT_LIMITS = {
 # shrink down to `min_executors` (default 1) when they are idle for DYNAMIC_IDLE_TIMEOUT. Without `max_executors` the number is fixed. There is no
 # external shuffle service on Kubernetes, so shuffle tracking is on. Neither key is in RESOURCE_DEFAULTS: no dataset has them unless it says so.
 DYNAMIC_KEYS = ("min_executors", "max_executors")
+# Optional, per dataset: MB of input that one read task takes (spark.sql.files.maxPartitionBytes, Spark default 128). A table written without
+# a shuffle (one file per read task) gets files of about this input size once compressed: raise it for files closer to 128 MB.
+SPLIT_KEY = "input_split_mb"
+SPLIT_MB_LIMITS = (16, 2048)
 DYNAMIC_IDLE_TIMEOUT = "120s"
 # WIDE TABLES (VTT f003, f014, f015, f016 have 150 to 450 columns). Above spark.sql.codegen.maxFields (default 100) Spark turns whole-stage codegen
 # off for the plan, which is slower; above spark.sql.debug.maxToStringFields (default 25) it cuts the plan and the schema in the log. One limit for
@@ -734,13 +738,17 @@ def check_resources(dataset, resources):
 
     if not isinstance(resources, dict):
         raise ValueError(f"{dataset}: resources must be an object")
-    accepted = tuple(RESOURCE_DEFAULTS) + DYNAMIC_KEYS
+    accepted = tuple(RESOURCE_DEFAULTS) + DYNAMIC_KEYS + (SPLIT_KEY,)
     unknown = set(resources) - set(accepted)
     if unknown:
         raise ValueError(f"{dataset}: resources has keys that are not accepted ({', '.join(sorted(unknown))}); accepted: {', '.join(accepted)}")
     low, high = RESOURCE_MEMORY_LIMITS_MB
     for key, value in resources.items():
-        if key in RESOURCE_COUNT_LIMITS:
+        if key == SPLIT_KEY:
+            first, last = SPLIT_MB_LIMITS
+            if isinstance(value, bool) or not isinstance(value, int) or not first <= value <= last:
+                raise ValueError(f"{dataset}: resources.{key} must be a whole number of MB from {first} to {last}")
+        elif key in RESOURCE_COUNT_LIMITS:
             first, last = RESOURCE_COUNT_LIMITS[key]
             if isinstance(value, bool) or not isinstance(value, int) or not first <= value <= last:
                 raise ValueError(f"{dataset}: resources.{key} must be a whole number from {first} to {last}")
@@ -1113,6 +1121,7 @@ def build_spec(source):
                 "spark.sql.codegen.maxFields": str(WIDE_TABLE_MAX_FIELDS),
                 "spark.sql.debug.maxToStringFields": str(WIDE_TABLE_MAX_FIELDS),
                 **dynamic_allocation_conf(res),
+                **({"spark.sql.files.maxPartitionBytes": str(res[SPLIT_KEY] * 1024 * 1024)} if res.get(SPLIT_KEY) else {}),
                 "spark.sql.shuffle.partitions": str(res["shuffle_partitions"]),
                 "spark.eventLog.enabled": "true",
                 "spark.eventLog.dir": EVENT_LOG_DIR,
