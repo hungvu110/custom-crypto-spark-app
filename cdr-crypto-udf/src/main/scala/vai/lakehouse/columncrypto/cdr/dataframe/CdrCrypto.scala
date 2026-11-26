@@ -1,5 +1,7 @@
 package vai.lakehouse.columncrypto.cdr
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{Column, DataFrame}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
@@ -47,17 +49,31 @@ object CdrCrypto {
    * Hàm biến đổi thực sự chạy trên executor: `(giá trị, giá trị keyField của dòng) => mã hoá/giải mã`, với
    * `keyInput = key của cột + keyField`. NULL vào thì NULL ra. AES/ECB không IV nên kết quả TẤT ĐỊNH.
    */
-  def transform(prefix: String, encryptMode: Boolean): (String, String) => String =
+  def transform(prefix: String, encryptMode: Boolean): (String, String) => String = transform(prefix, encryptMode, context = "")
+
+  /**
+   * Như trên; `context` (vd `dataset x, column y, keyField z`) đi vào thông báo lỗi khi giải mã hoặc mã hoá thất bại, kèm HÌNH DẠNG của giá
+   * trị keyField và của bản mã ([[shapeOf]]) và loại lỗi, để biết nguyên nhân mà không cần dữ liệu. Không bao giờ chứa giá trị, keyField
+   * hay prefix.
+   */
+  def transform(prefix: String, encryptMode: Boolean, context: String): (String, String) => String =
     (value, fieldValue) =>
       if (value == null || fieldValue == null) null
       else {
         val keyInput = prefix + fieldValue
-        if (encryptMode) CdrCipherCore.encrypt(value, keyInput) else CdrCipherCore.decrypt(value, keyInput)
+        try {
+          if (encryptMode) CdrCipherCore.encrypt(value, keyInput) else CdrCipherCore.decrypt(value, keyInput)
+        } catch {
+          case NonFatal(e) => throw new IllegalStateException(failure(encryptMode, context, value, fieldValue, e), e)
+        }
       }
 
   /** Như [[transform]], kèm đếm số dòng cho audit khi có `meter` (cộng trên executor qua accumulator). */
-  def transform(prefix: String, encryptMode: Boolean, meter: Option[AuditMeter]): (String, String) => String = {
-    val base = transform(prefix, encryptMode)
+  def transform(prefix: String, encryptMode: Boolean, meter: Option[AuditMeter]): (String, String) => String =
+    transform(prefix, encryptMode, meter, context = "")
+
+  def transform(prefix: String, encryptMode: Boolean, meter: Option[AuditMeter], context: String): (String, String) => String = {
+    val base = transform(prefix, encryptMode, context)
     meter match {
       case None => base
       case Some(m) => (value, fieldValue) => { m.record(value, fieldValue); base(value, fieldValue) }
@@ -100,6 +116,47 @@ object CdrCrypto {
     require(withoutKey.isEmpty, s"no key loaded for encryptedColumns: ${withoutKey.mkString(", ")}")
   }
 
+  private val MaxShapeRuns = 24
+
+  /**
+   * Hình dạng của một chuỗi, không chứa dữ liệu: độ dài và các đoạn liên tiếp cùng loại ký tự, `d` = chữ số, `a` = chữ cái, `_` = khoảng
+   * trắng, dấu câu giữ nguyên. Vd `20260928123456` -> `14 chars d14`, `2026-09-28 12:34:56` -> `19 chars d4-d2-d2_1d2:d2:d2`. Đủ để thấy
+   * keyField bị ép sang chuỗi khác dạng (timestamp, date, số thực), không đủ để đoán lại giá trị.
+   */
+  def shapeOf(text: String): String = {
+    def kind(c: Char): String = if (c.isDigit) "d" else if (c.isLetter) "a" else if (c.isWhitespace) "_" else if (c.isControl) "?" else c.toString
+    val runs = text.foldLeft(List.empty[(String, Int)]) {
+      case ((k, n) :: rest, c) if kind(c) == k => (k, n + 1) :: rest
+      case (acc, c) => (kind(c), 1) :: acc
+    }.reverse.map { case (k, n) => if (k == "d" || k == "a" || k == "_" || k == "?") s"$k$n" else k * n }
+    val body = if (runs.size > MaxShapeRuns) runs.take(MaxShapeRuns).mkString + "..." else runs.mkString
+    if (text.isEmpty) "0 chars" else s"${text.length} chars $body"
+  }
+
+  /** Bản mã của đối tác là base64 của một bội số 16 byte (AES/ECB). Chỉ nói độ dài và có đúng dạng đó không. */
+  private def ciphertextShape(value: String): String =
+    scala.util.Try(java.util.Base64.getDecoder.decode(value)).toOption match {
+      case Some(bytes) if bytes.nonEmpty && bytes.length % 16 == 0 =>
+        s"${value.length} chars base64, ${bytes.length} bytes (a multiple of 16)"
+      case _ => s"${value.length} chars, not base64 of a multiple of 16 bytes"
+    }
+
+  private def failure(encryptMode: Boolean, context: String, value: String, fieldValue: String, error: Throwable): String = {
+    val root = Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq.last
+    val kind = root.getClass.getSimpleName
+    val reason = (encryptMode, root) match {
+      case (false, _: javax.crypto.BadPaddingException) =>
+        "wrong key: the prefix, or the keyField value as a string, differs from the one used to encrypt"
+      case (false, _: javax.crypto.IllegalBlockSizeException | _: IllegalArgumentException) =>
+        "not a provider ciphertext (plain value, or cut/changed)"
+      case _ => "see the cause"
+    }
+    val where = if (context.isEmpty) "" else s" ($context)"
+    val action = if (encryptMode) "encrypt" else "decrypt"
+    val valueShape = if (encryptMode) s"value: ${value.length} chars" else s"ciphertext: ${ciphertextShape(value)}"
+    s"CDR $action failed$where: $kind, $reason; keyField value: ${shapeOf(fieldValue)}; $valueShape"
+  }
+
   // Tên cột là 1 phần duy nhất (không tách theo dấu '.').
   private def attr(name: String): Column = new Column(UnresolvedAttribute.quoted(name))
 
@@ -116,7 +173,8 @@ object CdrCrypto {
     cfg.encryptedColumns.foldLeft(df) { (acc, c) =>
       val prefix = cfg.keyFor(c).get // validate đã bảo đảm mọi cột có key
       def udfExpr(meter: Option[AuditMeter]): Expression =
-        udf(transform(prefix, encryptMode, meter)).apply(attr(c).cast(StringType), keyAttr.cast(StringType)).expr
+        udf(transform(prefix, encryptMode, meter, s"dataset ${cfg.datasetName}, column $c, keyField ${cfg.keyField}"))
+          .apply(attr(c).cast(StringType), keyAttr.cast(StringType)).expr
       val expr = audit match {
         case Some(runtime) => runtime.tag(function, cfg.datasetName, c, attr(c).expr, keyAttr.expr, udfExpr)
         case None => udfExpr(None)

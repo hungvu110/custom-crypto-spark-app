@@ -8,7 +8,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import vai.lakehouse.silveringest.app.SparkSessions
-import vai.lakehouse.silveringest.config.{IngestConfig, Mode, OutputFiles}
+import vai.lakehouse.silveringest.config.{IngestConfig, Mode, OutputFiles, Rebalance}
 
 /**
  * Số file ghi ra mỗi partition. Không gom lại thì mỗi task ghi một file cho MỖI giờ có trong dữ liệu của nó (VTT: mọi task có đủ 24 giờ),
@@ -60,7 +60,7 @@ class TableWriterSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
   "TableWriter.write" should "ghi MỘT file cho mỗi giờ nhỏ khi gom lại theo partition (mặc định)" in {
     val cfg = config("rebalanced")
-    cfg.outputFiles.rebalance shouldBe true
+    cfg.rebalances shouldBe true
 
     TableWriter.write(spark, cfg, data(30000, Seq("10", "11", "12")))
 
@@ -73,11 +73,26 @@ class TableWriterSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     filesPerHour("per_task") shouldBe Map("10" -> inputTasks.toLong, "11" -> inputTasks.toLong, "12" -> inputTasks.toLong)
   }
 
+  it should "không shuffle bảng chỉ partition theo lô (auto): mỗi task đọc ghi một file, như f015" in {
+    val cfg = config("day_only", "OUTPUT_PARTITION_BY" -> "")
+    cfg.rebalances shouldBe false
+
+    TableWriter.write(spark, cfg, data(30000, Seq("10")))
+
+    spark.table("silver_test.day_only").select(input_file_name()).distinct().count() shouldBe inputTasks.toLong
+  }
+
+  it should "vẫn gom bảng chỉ partition theo lô khi OUTPUT_REBALANCE=true" in {
+    TableWriter.write(spark, config("day_forced", "OUTPUT_PARTITION_BY" -> "", "OUTPUT_REBALANCE" -> "true"), data(30000, Seq("10")))
+
+    spark.table("silver_test.day_forced").select(input_file_name()).distinct().count() shouldBe 1L
+  }
+
   it should "chia một giờ lớn thành nhiều file theo kích thước dữ liệu shuffle mỗi file" in {
     // Khoảng 100k dòng x 140 byte = 14 MB cho một giờ, mỗi task đọc góp khoảng 0,7 MB. AQE chỉ tách theo ranh giới các phần của từng task
     // đọc, nên 4 MB mỗi file gộp được vài phần một: phải ra nhiều file, ít hơn hẳn 20 task. (Dữ liệu thật: mỗi task góp khoảng 5 MB cho
     // một giờ, rất nhỏ so với 384 MB mỗi file.)
-    val cfg = config("split").copy(outputFiles = OutputFiles(rebalance = true, shuffleBytesPerFile = 4L * 1024 * 1024))
+    val cfg = config("split").copy(outputFiles = OutputFiles(Rebalance.Always, shuffleBytesPerFile = 4L * 1024 * 1024))
 
     TableWriter.write(spark, cfg, data(100000, Seq("10")))
 

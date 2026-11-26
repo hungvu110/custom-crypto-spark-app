@@ -148,4 +148,56 @@ class CdrCryptoSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     multiCfg.toString should include("keyField=start_datetime")
     multiCfg.toString should include("c2")
   }
+
+  // ---------------------------------------------------------------- lỗi giải mã: đủ để chẩn đoán, không lộ dữ liệu
+
+  private def decryptFailure(value: String, field: String, prefix: String = "wrong-prefix"): String = {
+    val df = spark.createDataFrame(spark.sparkContext.parallelize(Seq(Row(value, field))), schema)
+    val wrong = CdrCryptoConfig(Map("isdn" -> prefix), "start_datetime", Seq("isdn"), Dataset)
+    val error = intercept[Exception](CdrCrypto.decryptColumns(df, wrong).collect())
+    Iterator.iterate[Throwable](error)(_.getCause).takeWhile(_ != null).map(_.getMessage).filter(_ != null).mkString(" | ")
+  }
+
+  "Lỗi giải mã" should "nêu bảng, cột, keyField, hình dạng của keyField và bản mã, và loại lỗi (khoá sai)" in {
+    val ciphertext = CdrCipherCore.encrypt("978356099", Prefix + "20260928123456")
+
+    val message = decryptFailure(ciphertext, "20260928123456")
+
+    message should include(s"dataset $Dataset, column isdn, keyField start_datetime")
+    message should include("keyField value: 14 chars d14")
+    message should include("ciphertext: 24 chars base64, 16 bytes (a multiple of 16)")
+    message should include("BadPaddingException")
+    message should include("wrong key: the prefix, or the keyField value as a string, differs from the one used to encrypt")
+    // Nothing of the data or of the key.
+    message should not include "978356099"
+    message should not include "20260928123456"
+    message should not include ciphertext
+    message should not include "wrong-prefix"
+  }
+
+  it should "cho thấy keyField khác định dạng (vd timestamp ép sang chuỗi) qua hình dạng, không qua giá trị" in {
+    val ciphertext = CdrCipherCore.encrypt("978356099", Prefix + "20260928123456")
+
+    val message = decryptFailure(ciphertext, "2026-09-28 12:34:56", Prefix)
+
+    message should include("keyField value: 19 chars d4-d2-d2_1d2:d2:d2")
+    message should not include "2026-09-28"
+  }
+
+  it should "nói rõ khi giá trị không phải bản mã (bản rõ, độ dài không phải bội số 16)" in {
+    val message = decryptFailure("84912345678", "20260928123456", Prefix)
+
+    message should include("ciphertext: 11 chars, not base64 of a multiple of 16 bytes")
+    message should include("not a provider ciphertext")
+    message should not include "84912345678"
+  }
+
+  "Hình dạng (CdrCrypto.shapeOf)" should "gộp các ký tự cùng loại, giữ dấu câu, và cắt khi quá dài" in {
+    CdrCrypto.shapeOf("") shouldBe "0 chars"
+    CdrCrypto.shapeOf("VN84a-1") shouldBe "7 chars a2d2a1-d1"
+    CdrCrypto.shapeOf("1.0E9") shouldBe "5 chars d1.d1a1d1"
+    CdrCrypto.shapeOf(" 123 ") shouldBe "5 chars _1d3_1"
+    CdrCrypto.shapeOf("a-" * 40) should endWith("...")
+  }
 }
+

@@ -60,7 +60,7 @@ class CdrCryptoExtension(keySource: () => ColumnKeySource, audit: () => Option[C
           // AES/ECB không IV -> mã hoá/giải mã TẤT ĐỊNH thật sự (khác GCM ngẫu nhiên của
           // column_encrypt), nên udfDeterministic = true là đúng bản chất, không phải xấp xỉ.
           def udfExpr(meter: Option[AuditMeter]): Expression =
-            ScalaUDF(CdrCrypto.transform(prefix, encryptMode, meter), StringType,
+            ScalaUDF(CdrCrypto.transform(prefix, encryptMode, meter, s"dataset $dataset, column $columnName"), StringType,
               Seq(Cast(value, StringType), Cast(fieldValue, StringType)), udfDeterministic = true)
           audit() match {
             case Some(runtime) => runtime.tag(name, dataset, columnName, value, fieldValue, udfExpr)

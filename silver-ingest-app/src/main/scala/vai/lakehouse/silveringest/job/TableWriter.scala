@@ -10,7 +10,7 @@ import vai.lakehouse.silveringest.config.{Batch, IngestConfig, OutputFormat}
  * Có lô (`BATCH_VALUE`): thêm cột lô làm partition đầu tiên. `overwrite-partitions` chỉ thay partition của lô này: Delta dùng
  * `replaceWhere` (thay đúng các dòng của lô, mọi partition con), hive dùng dynamic partition overwrite (thay các partition có trong dữ
  * liệu lần này). Bảng đã có phải được partition đúng như cấu hình, không thì báo lỗi trước khi ghi. Trước khi ghi, dữ liệu được gom theo
- * partition để file có kích thước gần như nhau (`OutputFiles`), trừ khi `OUTPUT_REBALANCE=false`.
+ * partition để file có kích thước gần như nhau (`OutputFiles`) khi cần (`IngestConfig.rebalances`).
  */
 object TableWriter {
 
@@ -24,7 +24,7 @@ object TableWriter {
       }
       data.withColumn(b.column, lit(b.value))
     }
-    if (cfg.outputFiles.rebalance) {
+    if (cfg.rebalances) {
       withSessionConf(spark, AdvisoryPartitionSize, cfg.outputFiles.shuffleBytesPerFile.toString) {
         rebalanced(spark, cfg, withBatch)(df => writeTable(spark, cfg, df))
       }

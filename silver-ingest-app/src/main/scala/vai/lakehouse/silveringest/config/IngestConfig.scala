@@ -72,20 +72,32 @@ final case class InputSpec(path: String, format: InputFormat, schema: Option[Str
 final case class Batch(column: String, value: String)
 
 /**
- * Cách chia file khi ghi. `rebalance`: trước khi ghi, gom dữ liệu theo các cột partition (hint `REBALANCE` + AQE) để mỗi file ghi ra có
- * khoảng `shuffleBytesPerFile` byte DỮ LIỆU SHUFFLE (AQE tách partition lớn, gộp partition nhỏ). Không gom thì mỗi task ghi một file cho mỗi
- * partition có trong dữ liệu của nó: với VTT (mọi file landing có đủ 24 giờ) là số task x 24 file nhỏ mỗi ngày.
+ * Cách chia file khi ghi. Gom (`REBALANCE` + AQE): trước khi ghi, gom dữ liệu theo các cột partition để mỗi file ghi ra có khoảng
+ * `shuffleBytesPerFile` byte DỮ LIỆU SHUFFLE (AQE tách partition lớn, gộp partition nhỏ); tốn một shuffle toàn bộ dữ liệu. Không gom thì mỗi
+ * task ghi một file cho mỗi partition có trong dữ liệu của nó: với VTT (mọi file landing có đủ 24 giờ) là số task x 24 file nhỏ mỗi ngày nếu
+ * bảng partition theo giờ, nhưng chỉ MỘT file mỗi task (khoảng 128 MB đầu vào) nếu bảng chỉ partition theo lô.
  *
  * Dữ liệu shuffle (dòng nhị phân, nén lz4) lớn hơn parquet đã nén vài lần: để file parquet khoảng 128 MB thì đặt
  * `OUTPUT_FILE_SHUFFLE_MB` = 128 x (Shuffle Write trên Spark UI / dung lượng parquet đã ghi), đo trên một ngày.
  */
-final case class OutputFiles(rebalance: Boolean, shuffleBytesPerFile: Long)
+final case class OutputFiles(rebalance: Rebalance, shuffleBytesPerFile: Long)
+
+/** `OUTPUT_REBALANCE`: `auto` (mặc định) gom khi bảng có cột partition khác cột lô, `true` luôn gom, `false` không bao giờ gom. */
+sealed abstract class Rebalance(val name: String)
+
+object Rebalance {
+  case object Auto extends Rebalance("auto")
+  case object Always extends Rebalance("true")
+  case object Never extends Rebalance("false")
+  val All: Seq[Rebalance] = Seq(Auto, Always, Never)
+  def parse(value: String): Option[Rebalance] = All.find(_.name.equalsIgnoreCase(value.trim))
+}
 
 object OutputFiles {
   val DefaultShuffleMb = 384 // 128 MB parquet x hệ số giả định 3, cho tới khi đo
   val MinShuffleMb = 16
   val MaxShuffleMb = 4096
-  val Default: OutputFiles = OutputFiles(rebalance = true, shuffleBytesPerFile = DefaultShuffleMb.toLong * 1024 * 1024)
+  val Default: OutputFiles = OutputFiles(Rebalance.Auto, shuffleBytesPerFile = DefaultShuffleMb.toLong * 1024 * 1024)
 }
 
 /**
@@ -183,6 +195,26 @@ final case class IngestConfig(
 
   def target: String = s"$outputDb.$outputTable"
 
+  /**
+   * Có gom dữ liệu theo partition trước khi ghi không. `auto`: chỉ khi bảng có cột partition KHÁC cột lô (vd `hour`). Một lần chạy ghi đúng
+   * một lô, nên bảng chỉ partition theo lô thì mỗi task đọc đã chỉ có một partition: không gom, mỗi task ghi một file cỡ phần nó đọc, khỏi
+   * tốn một shuffle toàn bộ dữ liệu (f015: 145 GiB mỗi ngày).
+   */
+  def rebalances: Boolean = outputFiles.rebalance match {
+    case Rebalance.Always => true
+    case Rebalance.Never => false
+    case Rebalance.Auto => partitionBy.exists(c => !batch.exists(_.column.equalsIgnoreCase(c)))
+  }
+
+  private def describeOutputFiles: String = {
+    val mode = s"(OUTPUT_REBALANCE=${outputFiles.rebalance.name})"
+    if (rebalances) {
+      s"rebalance by ${if (partitionBy.isEmpty) "(no partition column)" else partitionBy.mkString(", ")}, " +
+        s"about ${outputFiles.shuffleBytesPerFile / (1024 * 1024)} MB of shuffle data per file $mode"
+    } else if (outputFiles.rebalance == Rebalance.Never) s"one file per task and partition $mode"
+    else s"one file per read task: the run writes one partition ${batch.fold("")(_.column)} $mode".replace("  ", " ")
+  }
+
   def describe: Seq[(String, String)] = Seq(
     "MODE"                -> mode.name,
     "APP_NAME"            -> appName,
@@ -197,9 +229,7 @@ final case class IngestConfig(
         (if (h.replace.isEmpty) "" else s"; replace ${h.replace.mkString(",")}")
     },
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
-    "OUTPUT_FILES"        -> (if (!outputFiles.rebalance) "one file per task and partition (OUTPUT_REBALANCE=false)"
-                              else s"rebalance by ${if (partitionBy.isEmpty) "(no partition column)" else partitionBy.mkString(", ")}, " +
-                                s"about ${outputFiles.shuffleBytesPerFile / (1024 * 1024)} MB of shuffle data per file"),
+    "OUTPUT_FILES"        -> describeOutputFiles,
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
     "DECRYPT_MODE"             -> v.decryptMode.name,
@@ -358,9 +388,12 @@ object IngestConfig {
     }
 
     val outputFiles = {
-      val rebalance = bool("OUTPUT_REBALANCE", default = true)
+      val rebalance = raw("OUTPUT_REBALANCE").map(v => Rebalance.parse(v).getOrElse {
+        errors += s"OUTPUT_REBALANCE='$v': must be one of ${Rebalance.All.map(_.name).mkString(" / ")}"
+        Rebalance.Auto
+      }).getOrElse(Rebalance.Auto)
       val shuffleMb = raw("OUTPUT_FILE_SHUFFLE_MB").map { v =>
-        if (!rebalance) errors += "OUTPUT_FILE_SHUFFLE_MB: only used with OUTPUT_REBALANCE=true"
+        if (rebalance == Rebalance.Never) errors += "OUTPUT_FILE_SHUFFLE_MB: not used with OUTPUT_REBALANCE=false"
         scala.util.Try(v.trim.toInt).toOption.filter(mb => mb >= OutputFiles.MinShuffleMb && mb <= OutputFiles.MaxShuffleMb).getOrElse {
           errors += s"OUTPUT_FILE_SHUFFLE_MB='$v': must be a whole number of MB from ${OutputFiles.MinShuffleMb} to ${OutputFiles.MaxShuffleMb}"
           OutputFiles.DefaultShuffleMb

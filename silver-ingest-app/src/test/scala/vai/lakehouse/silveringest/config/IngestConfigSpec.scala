@@ -377,11 +377,30 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     text should include("CDR_ENCRYPT_COLUMNS=msisdn, imei")
   }
 
-  "OUTPUT_REBALANCE / OUTPUT_FILE_SHUFFLE_MB" should "gom dữ liệu theo partition trước khi ghi, khoảng 384 MB dữ liệu shuffle mỗi file, khi không đặt gì" in {
+  "OUTPUT_REBALANCE / OUTPUT_FILE_SHUFFLE_MB" should "mặc định auto (chỉ gom khi cần), khoảng 384 MB dữ liệu shuffle mỗi file" in {
     val files = IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.outputFiles
 
-    files shouldBe OutputFiles(rebalance = true, shuffleBytesPerFile = 384L * 1024 * 1024)
+    files shouldBe OutputFiles(Rebalance.Auto, shuffleBytesPerFile = 384L * 1024 * 1024)
     OutputFiles.DefaultShuffleMb shouldBe 384
+  }
+
+  it should "nhận auto, true (luôn gom) và false (không gom), không phân biệt hoa thường" in {
+    for ((value, mode) <- Seq("auto" -> Rebalance.Auto, "TRUE" -> Rebalance.Always, "false" -> Rebalance.Never)) {
+      IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> value)).toOption.get.outputFiles.rebalance shouldBe mode
+    }
+    errors(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> "maybe")) should include("OUTPUT_REBALANCE='maybe': must be one of auto / true / false")
+  }
+
+  it should "chỉ gom ở chế độ auto khi bảng có cột partition khác cột lô (một lần chạy là một lô)" in {
+    def gathers(extra: (String, String)*): Boolean =
+      IngestConfig.fromEnv(Mode.Passthrough, common ++ Map("BATCH_COLUMN" -> "dt", "BATCH_VALUE" -> "20261104") ++ extra).toOption.get
+        .rebalances
+
+    gathers("OUTPUT_PARTITION_BY" -> "hour") shouldBe true // a task holds rows of every hour
+    gathers() shouldBe false // only dt: a task already holds one partition, one file per task of about its input size
+    gathers("OUTPUT_REBALANCE" -> "true") shouldBe true
+    gathers("OUTPUT_PARTITION_BY" -> "hour", "OUTPUT_REBALANCE" -> "false") shouldBe false
+    IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.rebalances shouldBe false // no partition, no batch
   }
 
   it should "nhận số MB dữ liệu shuffle mỗi file trong khoảng cho phép" in {
@@ -397,18 +416,18 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  it should "tắt được bằng OUTPUT_REBALANCE=false (mỗi task ghi một file mỗi partition như trước), khi đó không nhận số MB" in {
-    IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> "false")).toOption.get.outputFiles.rebalance shouldBe false
+  it should "không nhận số MB khi OUTPUT_REBALANCE=false" in {
     errors(Mode.Passthrough, common ++ Map("OUTPUT_REBALANCE" -> "false", "OUTPUT_FILE_SHUFFLE_MB" -> "256")) should
-      include("OUTPUT_FILE_SHUFFLE_MB: only used with OUTPUT_REBALANCE=true")
-    errors(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> "maybe")) should include("OUTPUT_REBALANCE")
+      include("OUTPUT_FILE_SHUFFLE_MB: not used with OUTPUT_REBALANCE=false")
   }
 
   it should "nêu cách ghi file trong describe" in {
-    val on = IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_PARTITION_BY" -> "hour")).toOption.get.describe.toMap
-    on("OUTPUT_FILES") shouldBe "rebalance by hour, about 384 MB of shuffle data per file"
-    val off = IngestConfig.fromEnv(Mode.Passthrough, common + ("OUTPUT_REBALANCE" -> "false")).toOption.get.describe.toMap
-    off("OUTPUT_FILES") shouldBe "one file per task and partition (OUTPUT_REBALANCE=false)"
+    def described(extra: (String, String)*): String =
+      IngestConfig.fromEnv(Mode.Passthrough, common ++ Map("BATCH_COLUMN" -> "dt", "BATCH_VALUE" -> "20261104") ++ extra).toOption.get
+        .describe.toMap.apply("OUTPUT_FILES")
+
+    described("OUTPUT_PARTITION_BY" -> "hour") shouldBe "rebalance by dt, hour, about 384 MB of shuffle data per file (OUTPUT_REBALANCE=auto)"
+    described() shouldBe "one file per read task: the run writes one partition dt (OUTPUT_REBALANCE=auto)"
+    described("OUTPUT_REBALANCE" -> "false") shouldBe "one file per task and partition (OUTPUT_REBALANCE=false)"
   }
 }
-

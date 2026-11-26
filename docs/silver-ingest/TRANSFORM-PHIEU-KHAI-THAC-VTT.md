@@ -499,7 +499,9 @@ Tám bảng hằng ngày cộng lại khoảng **99,5 G một ngày, 1,85 TB cho
 
 **Vấn đề đã gặp:** `f003` ra **281 file mỗi giờ**, mỗi file vài MB. File landing của VTT không chia theo giờ, nên task đọc nào cũng có dòng của cả 24 giờ; khi ghi theo `(dt, hour)`, mỗi task ghi một file cho mỗi giờ, tức số task × 24 file mỗi ngày (khoảng 6 700 với `f003`).
 
-**Cách sửa (mặc định từ bản này):** trước khi ghi, job gom các dòng của cùng một partition (`SELECT /*+ REBALANCE(dt, hour) */`). AQE tách giờ lớn thành các phần khoảng `OUTPUT_FILE_SHUFFLE_MB` và gộp các phần nhỏ, mỗi phần một file. Bảng chỉ partition theo `dt` cũng được chia theo kích thước. Tắt bằng `OUTPUT_REBALANCE=false`. Code: `TableWriter.scala`, cấu hình `OutputFiles` trong `IngestConfig.scala`.
+**Cách sửa (mặc định từ bản này):** trước khi ghi, job gom các dòng của cùng một partition (`SELECT /*+ REBALANCE(dt, hour) */`). AQE tách giờ lớn thành các phần khoảng `OUTPUT_FILE_SHUFFLE_MB` và gộp các phần nhỏ, mỗi phần một file. Bảng chỉ partition theo `dt` cũng được chia theo kích thước. Code: `TableWriter.scala`, cấu hình `OutputFiles` trong `IngestConfig.scala`.
+
+**Chỉ gom khi cần (`OUTPUT_REBALANCE=auto`, mặc định):** một lần chạy chỉ ghi một ngày (`dt`), nên bảng chỉ partition theo `dt` (f014, f015, f016, f-home-bts, f-customer, `d-*`) đã có mỗi task đọc thuộc đúng một partition: không gom, mỗi task ghi một file cỡ phần nó đọc (khoảng 128 MB đầu vào, file parquet khoảng 110 MB với f015). Gom ở các bảng này chỉ tốn thêm một shuffle toàn bộ dữ liệu (f015: 145 GiB mỗi ngày, gấp đôi thời gian) mà file không tốt hơn. Bảng partition theo `(dt, hour)` (f001, f002, f003, f022) vẫn gom. `true` luôn gom, `false` không bao giờ gom.
 
 | `f003` | Trước | Mục tiêu |
 | --- | --- | --- |
