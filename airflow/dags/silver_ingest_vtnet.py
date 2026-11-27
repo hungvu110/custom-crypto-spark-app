@@ -62,9 +62,11 @@ PENDING_WAIT = common.PENDING_WAIT
 #                      5 + 30 x 4 = 125 GB. Estimate: 30 to 60 minutes a day; measure one day (Spark UI: task time, GC) and adjust.
 #   isdn_imsi_mapping  4.8 GB, two columns decrypted under the same lock: about 38 read tasks, up to 6 executors of 2 cores. Peak 13 cores, 26 GB.
 #   nims               32 MB: one small static executor, like the d-* tables of VTT. 3 cores, 4 GB.
-EBS = {"driver_cores": 2, "driver_memory": "4096m", "driver_memory_overhead": "1024m", "executor_cores": 2, "executor_memory": "3072m",
+# EBS reads HKH and waits on it about half of the time (dedup check: CPU time / run time = 0.5): 4 task slots on the 2 CPUs of each executor
+# (the quota still counts 2), so one task computes while another waits; 4 GB for the 4 tasks that write parquet at once; a 1 MB read buffer.
+EBS = {"driver_cores": 2, "driver_memory": "4096m", "driver_memory_overhead": "1024m", "executor_cores": 2, "executor_memory": "4096m",
        "executor_memory_overhead": "1024m", "executors": 8, "min_executors": 4, "max_executors": 30, "shuffle_partitions": 512,
-       "input_split_mb": 384}
+       "input_split_mb": 384, "task_slots": 4, "read_buffer_kb": 1024}
 MAPPING = {"executor_cores": 2, "executor_memory": "3072m", "executor_memory_overhead": "1024m", "executors": 2, "min_executors": 1,
            "max_executors": 6, "shuffle_partitions": 48}
 TINY = {"executors": 1, "executor_cores": 2, "executor_memory": "2048m", "executor_memory_overhead": "512m", "driver_memory": "1024m",
@@ -77,6 +79,9 @@ DATASETS = {
         "mode": "decrypt-encrypt", "input_cluster": "hkh", "hour_glob": "batch=%H%*", "partition_by_hour": True,
         # 2.2 to 2.5 TB a day: written hour by hour, one log line per hour (HOUR HH DONE ...) to follow the run.
         "write_by_hour": True,
+        # DEDUP=check found about 0.13% duplicate rows, 84% of them across files: tells an overlap of adjacent batches from events that repeat
+        # for real. ASSUMPTION: event_id and event_result are codes (few values); drop event_id if it is a unique id of the event.
+        "dedup_profile_columns": ["event_id", "event_result"],
         "decrypt_mode": "column", "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"},
         "encrypt_columns": ["imsi"], "key_field_constant": common.JOIN_KEY_FIELD, "resources": EBS,
     },

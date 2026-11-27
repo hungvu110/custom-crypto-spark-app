@@ -576,6 +576,9 @@ class ResourcesTest(unittest.TestCase):
         self.assertEqual((conf["spark.dynamicAllocation.minExecutors"], conf["spark.dynamicAllocation.maxExecutors"]), ("2", "12"))
         self.assertEqual(conf["spark.dynamicAllocation.initialExecutors"], "6")
         self.assertEqual(conf["spark.dynamicAllocation.executorIdleTimeout"], "120s")
+        # a removed executor moves its shuffle blocks to the others instead of losing them (no FetchFailed, no rerun of its map tasks)
+        for key in ("spark.decommission.enabled", "spark.storage.decommission.enabled", "spark.storage.decommission.shuffleBlocks.enabled"):
+            self.assertEqual(conf[key], "true", key)
         self.assertEqual(spec["executor"]["instances"], 6)
         self.assertEqual(spec["executor"]["cores"], 4)
         self.assertEqual(spec["executor"]["memory"], "7168m")

@@ -680,11 +680,18 @@ def input_token_secret(source):
 #                                writing, the job gathers the rows of each partition (REBALANCE) and AQE cuts them into pieces of about this size,
 #                                one file each. Shuffle data is bigger than compressed parquet: for files of about 128 MB set
 #                                128 x (Shuffle Write on the Spark UI / size of the parquet written), measured on one day.
+# This setting says how the DUPLICATES are analysed while DEDUP=check is on (see DUPLICATE CHECK below):
+#   dedup_profile_columns  optional  up to DEDUP_PROFILE_MAX columns (job env DEDUP_PROFILE_COLUMNS) whose top values among the duplicate
+#                                rows are logged, next to the copies per group and the folders that hold them (same file, same folder, two
+#                                folders: for EBS a pair of adjacent batch=HHMM folders means the source sent an overlap). Same read as the
+#                                measure. Low-cardinality codes only (event type, result): never an encrypted or key column (their values
+#                                would be written to the log, so the DAG and the job refuse them).
 DATASET_KEYS = (
     "mode", "hour_glob", "hour_column", "partition_by_hour", "key_path", "resources",
     "decrypt_mode", "provider_decrypt", "encrypt_columns", "key_field_constant", "transforms",
-    "periodic", "output_file_shuffle_mb", "input_cluster", "write_by_hour",
+    "periodic", "output_file_shuffle_mb", "input_cluster", "write_by_hour", "dedup_profile_columns",
 )
+DEDUP_PROFILE_MAX = 4  # the same limit as the job (DuplicateCheck.MaxProfileColumns)
 PROVIDER_CIPHERS = ("cdr", "vtnet")
 # DUPLICATE CHECK (job env DEDUP): "check" measures the duplicate rows and files of every run in the log (DEDUP_CHECK_RESULT), nothing is removed.
 # It costs one more read of the landing, so it is switched on for a few days only: set the Airflow Variable below to "check" (or "off").
@@ -727,8 +734,27 @@ DYNAMIC_KEYS = ("min_executors", "max_executors")
 # Optional, per dataset: MB of input that one read task takes (spark.sql.files.maxPartitionBytes, Spark default 128). A table written without
 # a shuffle (one file per read task) gets files of about this input size once compressed: raise it for files closer to 128 MB.
 SPLIT_KEY = "input_split_mb"
+# Optional, per dataset: TASK SLOTS of an executor (spark.executor.cores) above its CPUs (executor_cores = the CPU request and limit of the pod,
+# what the quota counts). For a job that waits on its reads about half of the time (VTNET EBS reads HKH: CPU time / run time = 0.5), more tasks
+# than CPUs let one task compute while another waits for the network. Each task gets less memory: raise executor_memory with it.
+TASK_SLOTS_KEY = "task_slots"
+TASK_SLOTS_LIMITS = (1, 32)
+# Optional, per dataset: KB of the read buffer of Hadoop streams (spark.hadoop.io.file.buffer.size, Hadoop default 4 KB). The CSV line reader
+# reads through it: a bigger buffer, fewer read calls on a big remote CSV.
+READ_BUFFER_KEY = "read_buffer_kb"
+READ_BUFFER_KB_LIMITS = (4, 16384)
 SPLIT_MB_LIMITS = (16, 2048)
 DYNAMIC_IDLE_TIMEOUT = "120s"
+# DECOMMISSION: an executor that dynamic allocation removes first moves its shuffle (and cached) blocks to the other executors, then exits.
+# Without it the blocks die with the executor: the next stage fails to fetch them (FetchFailed) and Spark reruns the map tasks of that executor
+# (VTNET EBS, dedup check: executor 17 removed at the end of the map stage, 156 tasks and 47.6 GiB read again, about 3 minutes). It also covers
+# the REBALANCE shuffle before a write (VTT tables).
+DECOMMISSION_CONF = {
+    "spark.decommission.enabled": "true",
+    "spark.storage.decommission.enabled": "true",
+    "spark.storage.decommission.shuffleBlocks.enabled": "true",
+    "spark.storage.decommission.rddBlocks.enabled": "true",
+}
 # WIDE TABLES (VTT f003, f014, f015, f016 have 150 to 450 columns). Above spark.sql.codegen.maxFields (default 100) Spark turns whole-stage codegen
 # off for the plan, which is slower; above spark.sql.debug.maxToStringFields (default 25) it cuts the plan and the schema in the log. One limit for
 # both, well above the widest table. A generated method that grows too big still falls back to the interpreted path (spark.sql.codegen.fallback).
@@ -751,16 +777,18 @@ def check_resources(dataset, resources):
 
     if not isinstance(resources, dict):
         raise ValueError(f"{dataset}: resources must be an object")
-    accepted = tuple(RESOURCE_DEFAULTS) + DYNAMIC_KEYS + (SPLIT_KEY,)
+    accepted = tuple(RESOURCE_DEFAULTS) + DYNAMIC_KEYS + (SPLIT_KEY, TASK_SLOTS_KEY, READ_BUFFER_KEY)
+    whole = {SPLIT_KEY: (SPLIT_MB_LIMITS, "a whole number of MB"), TASK_SLOTS_KEY: (TASK_SLOTS_LIMITS, "a whole number"),
+             READ_BUFFER_KEY: (READ_BUFFER_KB_LIMITS, "a whole number of KB")}
     unknown = set(resources) - set(accepted)
     if unknown:
         raise ValueError(f"{dataset}: resources has keys that are not accepted ({', '.join(sorted(unknown))}); accepted: {', '.join(accepted)}")
     low, high = RESOURCE_MEMORY_LIMITS_MB
     for key, value in resources.items():
-        if key == SPLIT_KEY:
-            first, last = SPLIT_MB_LIMITS
+        if key in whole:
+            (first, last), kind = whole[key]
             if isinstance(value, bool) or not isinstance(value, int) or not first <= value <= last:
-                raise ValueError(f"{dataset}: resources.{key} must be a whole number of MB from {first} to {last}")
+                raise ValueError(f"{dataset}: resources.{key} must be {kind} from {first} to {last}")
         elif key in RESOURCE_COUNT_LIMITS:
             first, last = RESOURCE_COUNT_LIMITS[key]
             if isinstance(value, bool) or not isinstance(value, int) or not first <= value <= last:
@@ -769,6 +797,8 @@ def check_resources(dataset, resources):
             size = memory_mb(value)
             if size is None or not low <= size <= high:
                 raise ValueError(f"{dataset}: resources.{key} must be a memory like '4096m' or '4g', from {low}m to {high // 1024}g")
+    if resources.get(TASK_SLOTS_KEY, 0) and resources[TASK_SLOTS_KEY] < resources.get("executor_cores", RESOURCE_DEFAULTS["executor_cores"]):
+        raise ValueError(f"{dataset}: resources.{TASK_SLOTS_KEY} must be >= executor_cores (it adds task slots, it never removes CPUs)")
     if "max_executors" not in resources:
         if "min_executors" in resources:
             raise ValueError(f"{dataset}: resources.min_executors needs resources.max_executors (dynamic allocation is on only with max_executors)")
@@ -791,6 +821,7 @@ def dynamic_allocation_conf(res):
         "spark.dynamicAllocation.maxExecutors": str(res["max_executors"]),
         "spark.dynamicAllocation.initialExecutors": str(res["executors"]),
         "spark.dynamicAllocation.executorIdleTimeout": DYNAMIC_IDLE_TIMEOUT,
+        **DECOMMISSION_CONF,
     }
 
 
@@ -857,6 +888,26 @@ def check_dataset(dataset, settings):
             raise ValueError(f"{dataset}: write_by_hour needs hour_glob and partition_by_hour (each hour is a group of files and a partition)")
     if "input_cluster" in settings and settings["input_cluster"] not in INPUT_CLUSTERS:
         raise ValueError(f"{dataset}: input_cluster must be one of {', '.join(INPUT_CLUSTERS)}")
+    if "dedup_profile_columns" in settings:
+        check_dedup_profile(dataset, settings)
+
+
+def check_dedup_profile(dataset, settings):
+    """dedup_profile_columns: up to DEDUP_PROFILE_MAX column names, none of them sensitive (their values are written to the log)."""
+
+    profile = check_column_names(dataset, "dedup_profile_columns", settings["dedup_profile_columns"])
+    if len(profile) > DEDUP_PROFILE_MAX:
+        raise ValueError(f"{dataset}: dedup_profile_columns takes at most {DEDUP_PROFILE_MAX} columns")
+    provider = settings.get("provider_decrypt") or {}
+    sensitive = {
+        c.lower()
+        for c in [*settings.get("encrypt_columns", []), *provider.get("columns", []), provider.get("key_field"),
+                  (settings.get("key_field_constant") or {}).get("name")]
+        if c
+    }
+    leaked = sorted(set(profile) & sensitive)
+    if leaked:
+        raise ValueError(f"{dataset}: dedup_profile_columns must not hold a sensitive column ({', '.join(leaked)}): its values would be logged")
 
 
 def check_column_names(dataset, key, value):
@@ -977,6 +1028,7 @@ def dataset_fields(settings):
         "output_file_shuffle_mb": settings.get("output_file_shuffle_mb", DEFAULT_FILE_SHUFFLE_MB),
         **({"input_cluster": settings["input_cluster"]} if "input_cluster" in settings else {}),
         **({"write_by_hour": True} if settings.get("write_by_hour") else {}),
+        **({"dedup_profile_columns": settings["dedup_profile_columns"]} if settings.get("dedup_profile_columns") else {}),
     }
 
 
@@ -1022,7 +1074,11 @@ def build_spec(source):
         # Files of about the same size instead of one file per task and partition (see output_file_shuffle_mb in DATASET_KEYS).
         {"name": "OUTPUT_FILE_SHUFFLE_MB", "value": str(source.get("output_file_shuffle_mb", DEFAULT_FILE_SHUFFLE_MB))},
         {"name": "DEDUP", "value": "{{ var.value.get('" + DEDUP_VARIABLE + "', 'off') }}"},
-    ] + [{"name": k, "value": v} for k, v in source["env"].items()]
+    ] + (
+        # Read by the job only while DEDUP=check (see dedup_profile_columns in DATASET_KEYS).
+        [{"name": "DEDUP_PROFILE_COLUMNS", "value": ",".join(source["dedup_profile_columns"])}]
+        if source.get("dedup_profile_columns") else []
+    ) + [{"name": k, "value": v} for k, v in source["env"].items()]
     if source.get("hour_glob"):
         # The job adds the column `hour` from the path of every file; BATCH_HOURS = the hours of this run (empty: the whole day), so a run
         # replaces exactly the (dt, hour) rows that it ingests. Partitioning by hour only when the dataset asks for it (big datasets): a small
@@ -1100,7 +1156,9 @@ def build_spec(source):
             },
             "executor": {
                 "instances": res["executors"],
-                "cores": res["executor_cores"],
+                # Task slots; the pod asks for executor_cores CPUs (coreRequest/coreLimit) whatever the slots (see TASK_SLOTS_KEY).
+                "cores": res.get(TASK_SLOTS_KEY) or res["executor_cores"],
+                **({"coreRequest": f"{res['executor_cores'] * 1000}m"} if res.get(TASK_SLOTS_KEY) else {}),
                 "coreLimit": f"{res['executor_cores'] * 1000}m",
                 "memory": res["executor_memory"],
                 "memoryOverhead": res["executor_memory_overhead"],
@@ -1144,6 +1202,7 @@ def build_spec(source):
                 "spark.sql.debug.maxToStringFields": str(WIDE_TABLE_MAX_FIELDS),
                 **dynamic_allocation_conf(res),
                 **({"spark.sql.files.maxPartitionBytes": str(res[SPLIT_KEY] * 1024 * 1024)} if res.get(SPLIT_KEY) else {}),
+                **({"spark.hadoop.io.file.buffer.size": str(res[READ_BUFFER_KEY] * 1024)} if res.get(READ_BUFFER_KEY) else {}),
                 "spark.sql.shuffle.partitions": str(res["shuffle_partitions"]),
                 "spark.eventLog.enabled": "true",
                 "spark.eventLog.dir": EVENT_LOG_DIR,

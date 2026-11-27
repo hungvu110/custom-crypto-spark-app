@@ -55,6 +55,19 @@ class EbsJobTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 common.check_dataset("x", bad)
 
+    def test_only_ebs_profiles_its_duplicates_by_event_codes(self):
+        self.assertEqual(driver_env(render(EBS))["DEDUP_PROFILE_COLUMNS"], "event_id,event_result")
+        for dag in (REAL_NIMS, MAPPING, VTT):
+            self.assertNotIn("DEDUP_PROFILE_COLUMNS", driver_env(render(dag)), dag.DAG_ID)
+
+    def test_a_sensitive_or_bad_profile_column_is_refused_when_the_dag_is_parsed(self):
+        ebs = {"mode": "decrypt-encrypt", "decrypt_mode": "column", "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"},
+               "encrypt_columns": ["imsi"], "key_field_constant": common.JOIN_KEY_FIELD}
+        common.check_dataset("x", {**ebs, "dedup_profile_columns": ["event_id"]})
+        for bad in (["IMSI"], [common.JOIN_KEY_FIELD["name"]], ["a", "b", "c", "d", "e"], [], "event_id", ["bad-col"]):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_dataset("x", {**ebs, "dedup_profile_columns": bad})
+
     def test_only_the_vtnet_dataset_loads_the_vtnet_jar(self):
         self.assertIn(common.VTNET_JAR, render(EBS)["spec"]["sparkConf"]["spark.jars"].split(","))
         for dag in (VTT, NIMS):
@@ -202,15 +215,34 @@ class ResourcesTest(unittest.TestCase):
         spec = render(dag)["spec"]
         conf, driver, executor = spec["sparkConf"], spec["driver"], spec["executor"]
         count = int(conf["spark.dynamicAllocation.maxExecutors"]) if conf["spark.dynamicAllocation.enabled"] == "true" else executor["instances"]
-        cores = driver["cores"] + count * executor["cores"]
+        # The CPUs that the pods ask for (what the quota counts): coreRequest when the executor has more task slots than CPUs.
+        cpus = int(executor["coreRequest"].removesuffix("m")) // 1000 if "coreRequest" in executor else executor["cores"]
+        cores = driver["cores"] + count * cpus
         memory = (_mb(driver["memory"]) + _mb(driver["memoryOverhead"]) + count * (_mb(executor["memory"]) + _mb(executor["memoryOverhead"]))) / 1024
         return cores, memory
 
     def test_ebs_has_many_small_executors_because_the_vtnet_library_decrypts_under_one_lock(self):
         spec = render(REAL_EBS)["spec"]
-        self.assertEqual((spec["executor"]["cores"], spec["executor"]["memory"]), (2, "3072m"))
+        self.assertEqual((spec["executor"]["coreRequest"], spec["executor"]["coreLimit"], spec["executor"]["memory"]), ("2000m", "2000m", "4096m"))
         self.assertEqual(spec["sparkConf"]["spark.dynamicAllocation.maxExecutors"], "30")
-        self.assertEqual(self.peak(REAL_EBS), (62, 125.0))
+        self.assertEqual(self.peak(REAL_EBS), (62, 155.0))
+
+    def test_ebs_runs_4_tasks_on_the_2_cpus_of_an_executor_because_it_waits_on_hkh_half_of_the_time(self):
+        spec = render(REAL_EBS)["spec"]
+        self.assertEqual(spec["executor"]["cores"], 4)  # task slots (spark.executor.cores)
+        self.assertEqual(spec["sparkConf"]["spark.hadoop.io.file.buffer.size"], str(1024 * 1024))
+        for dag in (MAPPING, REAL_NIMS, VTT):
+            executor = render(dag)["spec"]["executor"]
+            self.assertNotIn("coreRequest", executor, dag.DAG_ID)
+            self.assertEqual(executor["coreLimit"], f"{executor['cores'] * 1000}m", dag.DAG_ID)
+            self.assertNotIn("spark.hadoop.io.file.buffer.size", render(dag)["spec"]["sparkConf"], dag.DAG_ID)
+
+    def test_task_slots_and_read_buffer_are_checked(self):
+        common.check_resources("x", {"executor_cores": 2, "task_slots": 4, "read_buffer_kb": 1024})
+        for bad in ({"executor_cores": 4, "task_slots": 2}, {"task_slots": 64}, {"task_slots": "4"}, {"read_buffer_kb": 2},
+                    {"read_buffer_kb": True}):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_resources("x", bad)
 
     def test_ebs_reads_bigger_splits_because_it_writes_one_file_per_read_task(self):
         # Hour from the path (batch=HHmm): no shuffle, so a file is about one read task of 384 MB of CSV once compressed.
