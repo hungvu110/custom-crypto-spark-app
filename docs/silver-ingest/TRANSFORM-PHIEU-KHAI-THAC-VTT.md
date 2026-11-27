@@ -581,10 +581,18 @@ Spark app **chưa loại trùng**. Hai file Excel cũng không định nghĩa kh
 Ba số đo cùng một lượt đọc, không đọc file nào trên driver. Bản trước so file bằng checksum HDFS; Isilon không trả checksum nên job đọc
 cả nội dung file qua driver để băm SHA-256 (f022: khoảng 2,2 phút mỗi ngày, gần nửa thời gian đo).
 
+**Lấy mẫu theo hash khi input lớn hơn 64 GiB** (tự động; env `DEDUP_SAMPLE` = N để ép, `1` = chính xác). Gần như mọi dòng là một nhóm
+riêng, nên đếm chính xác phải shuffle và gộp một key cho MỖI dòng. Với EBS (khoảng 1,5 TB, 29 tỷ dòng mỗi ngày), stage đo shuffle 691 GB,
+mỗi task reduce gộp khoảng 57 triệu key: spill nặng, task lỗi, executor chết, stage chạy lại, hơn 37 phút. Khi lấy mẫu, chỉ dòng có
+`pmod(hash, N) = 0` được gom theo hash. Mọi bản trùng của một dòng có cùng hash nên vào mẫu cùng nhau: số nhóm trùng và số dòng thừa của
+mẫu nhân N là ước lượng không chệch (log ghi `~`, dòng tổng kết có `sample=N`). N là luỹ thừa 2 nhỏ nhất để input / N <= 64 GiB (EBS: N = 32,
+shuffle còn khoảng 22 GB, mỗi partition reduce khoảng 40 MB). **Số dòng và file trùng luôn chính xác.** Ví dụ, EBS có 0,1% dòng thừa
+(khoảng 29 triệu): mẫu có khoảng 900 nghìn nhóm, sai số tương đối khoảng 0,1%.
+
 Mỗi run có đúng một dòng tổng kết, để gom số liệu theo ngày và theo bảng:
 
 ```
-DEDUP_CHECK_RESULT files=219 duplicate_files=0 rows=... extra_rows=... duplicate_groups=... within_file_extra_rows=...
+DEDUP_CHECK_RESULT files=219 duplicate_files=0 rows=... extra_rows=... duplicate_groups=... within_file_extra_rows=... sample=1
 ```
 
 `extra_rows` là số dòng mà một lần loại trùng sẽ bỏ. Phần nào lỗi thì ghi `error` (xem cảnh báo `dedup check of ... failed` ngay trên); lần nạp không bị ảnh hưởng.

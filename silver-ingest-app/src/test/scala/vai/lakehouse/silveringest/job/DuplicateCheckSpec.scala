@@ -88,6 +88,37 @@ class DuplicateCheckSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     report.duplicateFiles shouldBe 1 // one file too many
   }
 
+  it should "khi lấy mẫu: số dòng và file trùng vẫn chính xác" in {
+    val (fileReport, rowReport) = DuplicateCheck.measure(spark, files, source, sample = 4)
+
+    rowReport.rows shouldBe 11L
+    rowReport.sample shouldBe 4
+    rowReport.estimated shouldBe true
+    fileReport.duplicateGroups shouldBe 1
+    fileReport.duplicateFiles shouldBe 1
+  }
+
+  it should "khi lấy mẫu: ước lượng số dòng trùng gần đúng (mọi bản trùng của một dòng vào mẫu cùng nhau)" in {
+    // 200 000 distinct ids; every 10th id appears twice -> 20 000 duplicate groups, 20 000 extra rows, all within one partition
+    val ids = spark.range(0, 200000).selectExpr("CAST(id AS STRING) AS isdn", "'c' AS cell")
+    val dup = ids.where("CAST(isdn AS BIGINT) % 10 = 0")
+    val (_, report) = DuplicateCheck.measure(spark, Nil, ids.union(dup), sample = 8)
+
+    report.rows shouldBe 220000L
+    report.duplicateGroups.toDouble shouldBe 20000.0 +- 2000.0 // standard error about 380
+    report.extraRows shouldBe report.duplicateGroups // two copies per group
+    report.duplicateGroups % 8 shouldBe 0L // sampled count x 8
+  }
+
+  "DuplicateCheck.sampleFor" should "đo chính xác tới 64 GiB, lớn hơn thì luỹ thừa 2 nhỏ nhất để mỗi phần <= 64 GiB (tối đa 1024)" in {
+    val gib = 1024L * 1024 * 1024
+    DuplicateCheck.sampleFor(0L) shouldBe 1
+    DuplicateCheck.sampleFor(64 * gib) shouldBe 1
+    DuplicateCheck.sampleFor(64 * gib + 1) shouldBe 2
+    DuplicateCheck.sampleFor(1500 * gib) shouldBe 32 // EBS, about 1.5 TB a day
+    DuplicateCheck.sampleFor(Long.MaxValue) shouldBe 1024
+  }
+
   "DuplicateCheck.groupFiles" should "chỉ gộp file cùng số dòng và cùng tổng hash" in {
     val groups = DuplicateCheck.groupFiles(Seq(
       "x" -> ((3L, 10L, 20L)), "y" -> ((3L, 10L, 20L)), "z" -> ((4L, 10L, 20L)), "w" -> ((3L, 11L, 20L))))

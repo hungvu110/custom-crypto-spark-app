@@ -501,5 +501,19 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
   it should "từ chối giá trị khác" in {
     errors(Mode.Passthrough, common + ("DEDUP" -> "remove")) should include("DEDUP='remove': must be one of off / check")
   }
+
+  "DEDUP_SAMPLE" should "mặc định không đặt (tự chọn theo dung lượng input), nhận 1..1024 và hiện trong describe" in {
+    IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.dedupSample shouldBe None
+    val cfg = IngestConfig.fromEnv(Mode.Passthrough, common ++ Map("DEDUP" -> "check", "DEDUP_SAMPLE" -> "32")).toOption.get
+
+    cfg.dedupSample shouldBe Some(32)
+    cfg.describe.toMap.apply("DEDUP") should endWith(", row sample 1 in 32")
+  }
+
+  it should "từ chối giá trị ngoài 1..1024 hoặc không phải số" in {
+    Seq("0", "2048", "x").foreach { v =>
+      errors(Mode.Passthrough, common + ("DEDUP_SAMPLE" -> v)) should include(s"DEDUP_SAMPLE='$v': must be a whole number from 1 (exact) to 1024")
+    }
+  }
 }
 

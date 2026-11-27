@@ -237,7 +237,9 @@ final case class IngestConfig(
     outputFiles: OutputFiles = OutputFiles.Default,
     dedup: Dedup = Dedup.Off,
     /** `OUTPUT_WRITE_BY_HOUR`: ghi lần lượt từng giờ (một commit mỗi giờ, log sau mỗi giờ), xem [[vai.lakehouse.silveringest.job.HourlyWrite]]. */
-    writeByHour: Boolean = false) {
+    writeByHour: Boolean = false,
+    /** `DEDUP_SAMPLE`: N của mẫu dòng của `DEDUP=check` (1 = chính xác); không đặt = tự chọn theo dung lượng input. */
+    dedupSample: Option[Int] = None) {
 
   def target: String = s"$outputDb.$outputTable"
 
@@ -281,7 +283,7 @@ final case class IngestConfig(
     },
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "OUTPUT_FILES"        -> describeOutputFiles,
-    "DEDUP"               -> dedup.describe,
+    "DEDUP"               -> (dedup.describe + dedupSample.fold("")(n => s", row sample 1 in $n")),
     "OUTPUT_WRITE_BY_HOUR" -> (if (writeByHour) "true (one commit and one log line per hour)" else "false (the whole run in one commit)"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
@@ -460,6 +462,12 @@ object IngestConfig {
       errors += s"DEDUP='$v': must be one of ${Dedup.All.map(_.name).mkString(" / ")}"
       Dedup.Off
     }).getOrElse(Dedup.Off)
+    val dedupSample = raw("DEDUP_SAMPLE").map { v =>
+      scala.util.Try(v.toInt).toOption.filter(n => n >= 1 && n <= 1024).getOrElse {
+        errors += s"DEDUP_SAMPLE='$v': must be a whole number from 1 (exact) to 1024"
+        1
+      }
+    }
 
     val warehousePath = raw("WAREHOUSE_PATH")
     warehousePath.filterNot(isAbsoluteUri).foreach { _ =>
@@ -490,7 +498,7 @@ object IngestConfig {
 
     if (errors.nonEmpty) Left(errors.toList)
     else Right(IngestConfig(mode, raw("APP_NAME").getOrElse(s"SilverIngest-${mode.name}"), input, outDb, outTable,
-      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles, dedup, writeByHour))
+      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles, dedup, writeByHour, dedupSample))
   }
 
   private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],
