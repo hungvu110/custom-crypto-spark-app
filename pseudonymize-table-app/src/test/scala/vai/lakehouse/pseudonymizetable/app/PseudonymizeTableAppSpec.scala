@@ -562,6 +562,19 @@ class PseudonymizeTableAppSpec extends AnyFlatSpec with Matchers with BeforeAndA
     spark.catalog.tableExists("crm", "silver_day_hours_out") shouldBe false
   }
 
+  it should "monthly table (f016): a long range with data on only 2 days writes those 2 days, the empty days are simply not there" in {
+    spark.sql("CREATE TABLE crm.silver_monthly (id BIGINT, isdn STRING, dt STRING, hour STRING) USING parquet PARTITIONED BY (dt)")
+    spark.sql(
+      """INSERT INTO crm.silver_monthly (id, isdn, dt, hour) VALUES
+        |  (1, '84900000001', '20261001', 'NA'), (2, '84900000002', '20261001', 'NA'),
+        |  (3, '84900000003', '20261110', 'NA'), (4, '84900000004', '20260901', 'NA')""".stripMargin)
+
+    runEvents("silver_monthly", "silver_monthly_out", (silverKeys ++ Seq("INPUT_FROM" -> "20261001", "INPUT_TO" -> "20261110")): _*) shouldBe 0
+
+    idsOf("crm.silver_monthly_out") shouldBe Set(1L, 2L, 3L) // 20260901 is outside the range
+    spark.table("crm.silver_monthly_out").select("dt").distinct().collect().map(_.getString(0)).toSet shouldBe Set("20261001", "20261110")
+  }
+
   it should "table source with a range that matches no data fails instead of writing an empty table" in {
     silverTable("silver_none", "dt, hour")
 
