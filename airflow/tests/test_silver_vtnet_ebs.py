@@ -111,6 +111,11 @@ class DatasetSettingsTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 common.check_dataset("x", bad)
 
+    def test_a_normalization_may_be_an_encrypt_column_but_a_grouping_may_not(self):
+        common.check_dataset("x", {**self.BASE, "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"}, "transforms": {"imsi": "ISDN_NATIONAL"}})
+        with self.assertRaises(ValueError):
+            common.check_dataset("x", {**self.BASE, "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"}, "transforms": {"imsi": "AGE_BAND"}})
+
     def test_the_job_env_names_the_cipher_only_when_it_is_set(self):
         vtnet = common.dataset_job_env("x", {**self.BASE, "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"}})
         cdr = common.dataset_job_env("x", {**self.BASE, "provider_decrypt": {"columns": ["isdn"], "key_field": "sta_date"}})
@@ -158,6 +163,13 @@ class DayDatasetsTest(unittest.TestCase):
         self.assertEqual((env["CDR_KEY_FIELD"], env["CDR_KEY_FIELD_VALUE"]), (common.JOIN_KEY_FIELD["name"], common.JOIN_KEY_FIELD["value"]))
         self.assertEqual(env["GLOBAL_KEY_ZONE"], "silver_vtt")
         self.assertIn(common.VTNET_JAR, render(MAPPING)["spec"]["sparkConf"]["spark.jars"])
+
+    def test_the_mapping_turns_its_isdn_into_the_format_of_vtt_before_encrypting_it(self):
+        # VTNET: 84 + 9 digits, VTT: the 9 digits only. Normalized after the decryption, before the encryption: one number, one ciphertext.
+        env = driver_env(render(MAPPING))
+        self.assertEqual(env["COLUMN_TRANSFORMS"], "isdn:ISDN_NATIONAL")
+        self.assertIn("isdn", env["CDR_ENCRYPT_COLUMNS"].split(","))
+        self.assertNotIn("COLUMN_TRANSFORMS", driver_env(render(REAL_EBS)))  # imsi has the same format in both sources
 
     def test_the_mapping_request_must_pick_the_global_key(self):
         without = {k: v for k, v in MAPPING_CONF.items() if k not in ("globalKey", "globalZone")}

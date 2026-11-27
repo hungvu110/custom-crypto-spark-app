@@ -659,7 +659,9 @@ def input_token_secret(source):
 #                                key_field_constant; the request then only carries globalKey/globalZone.
 #   key_field_constant optional  {"name": "...", "value": "..."}: a CONSTANT column that the job adds and uses as the key field of the encryption,
 #                                so the same value gives the same ciphertext in every row and every table (needed to join them after hashing).
-#   transforms         optional  {"column": "AGE_BAND" | "HOUR_BAND"}: columns that the job groups (after the decryption, before the encryption).
+#   transforms         optional  {"column": "AGE_BAND" | "HOUR_BAND" | "ISDN_NATIONAL"}: columns that the job groups or normalizes (after the
+#                                decryption, before the encryption). ISDN_NATIONAL turns 84/+84/0 + 9 digits into the 9 digits of VTT, so the
+#                                isdn of another source gives the same ciphertext as VTT: it may be an encrypt column (a grouping may not).
 # This setting says WHEN a dataset runs:
 #   periodic           optional  false: the DAG has NO schedule even with an approved request (no daily run); it only runs by hand (conf
 #                                {"date": ...}, a bulk load {"fromDate": ..., "toDate": ...} or silver_ingest_backfill.py). For a table that is not
@@ -683,7 +685,9 @@ DEFAULT_FILE_SHUFFLE_MB = 384  # 128 MB of parquet x 3 (assumed ratio until meas
 FILE_SHUFFLE_MB_LIMITS = (16, 4096)  # the same limits as the job
 HOUR_COLUMN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")  # the same rule as a column name of the job
 DECRYPT_MODES = ("file", "column", "none")
-TRANSFORM_KINDS = ("AGE_BAND", "HOUR_BAND")
+TRANSFORM_KINDS = ("AGE_BAND", "HOUR_BAND", "ISDN_NATIONAL")
+# Normalizations: they change a value to a common format BEFORE it is encrypted, so they are allowed on an encrypt column (a grouping is not).
+NORMALIZE_KINDS = ("ISDN_NATIONAL",)
 KEY_FIELD_VALUE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")  # the value of the constant key field is written in every row
 
 # Resources of the Spark job. These defaults are what every dataset used before `resources` existed; the sizes of a big dataset are set in
@@ -918,8 +922,8 @@ def check_decrypt_settings(dataset, settings):
                 raise ValueError(f"{dataset}: transforms has a column name that is not valid")
             if kind not in TRANSFORM_KINDS:
                 raise ValueError(f"{dataset}: transforms.{column} must be one of {', '.join(TRANSFORM_KINDS)}")
-            if column.lower() in encrypt:
-                raise ValueError(f"{dataset}: transforms.{column} is an encrypt column (the grouping runs before the encryption)")
+            if column.lower() in encrypt and kind not in NORMALIZE_KINDS:
+                raise ValueError(f"{dataset}: transforms.{column} is an encrypt column (a grouped value cannot be encrypted)")
 
 
 def dataset_job_env(dataset, settings):

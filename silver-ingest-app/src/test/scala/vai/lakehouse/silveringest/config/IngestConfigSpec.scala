@@ -384,6 +384,11 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
     errors(Mode.Passthrough, common + ("COLUMN_TRANSFORMS" -> "customer_age:AGE_BAND")) should include("only valid for the decrypt-encrypt mode")
   }
 
+  it should "nhận ISDN_NATIONAL cho cột mã hoá (chuẩn hoá trước khi mã hoá), còn gom nhóm thì không" in {
+    settings(vttColumn + ("COLUMN_TRANSFORMS" -> "isdn:ISDN_NATIONAL")).transforms shouldBe Seq(ColumnTransform("isdn", TransformKind.IsdnNational))
+    errors(Mode.DecryptEncrypt, vttColumn + ("COLUMN_TRANSFORMS" -> "isdn:HOUR_BAND")) should include("a grouped value cannot be encrypted")
+  }
+
   "describe (VTT)" should "nêu chế độ giải mã, cột VTT, keyField, giá trị hằng số và transform" in {
     val described = IngestConfig.fromEnv(Mode.DecryptEncrypt, vttColumn).toOption.get.describe.toMap
 

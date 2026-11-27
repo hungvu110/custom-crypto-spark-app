@@ -1,14 +1,15 @@
 package vai.lakehouse.silveringest.job
 
 import org.apache.spark.sql.{Column, DataFrame}
-import org.apache.spark.sql.functions.{coalesce, col, lit, regexp_replace, when}
+import org.apache.spark.sql.functions.{coalesce, col, lit, regexp_extract, regexp_replace, when}
 import org.apache.spark.sql.types.StringType
 import vai.lakehouse.silveringest.config.{ColumnTransform, TransformKind}
 
 /**
- * Gom nhóm cột theo yêu cầu của team DS (docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md mục 3.4): giá trị gốc được thay bằng nhãn khung
- * (tiếng Anh), kiểu cột thành chuỗi, tên và vị trí cột giữ nguyên. Giá trị không hợp lệ (null, rỗng, chữ, số âm, ngoài khoảng) thành `Unknown`.
- * Chạy từng dòng một, không cần đếm hay đọc lại bảng.
+ * Biến đổi cột, chạy SAU giải mã và TRƯỚC mã hoá, từng dòng một (không đếm, không đọc lại bảng); tên và vị trí cột giữ nguyên.
+ *  - Gom nhóm theo yêu cầu của team DS (docs/silver-ingest/TRANSFORM-PHIEU-KHAI-THAC-VTT.md mục 3.4): giá trị gốc thay bằng nhãn khung (tiếng
+ *    Anh), kiểu cột thành chuỗi; giá trị không hợp lệ (null, rỗng, chữ, số âm, ngoài khoảng) thành `Unknown`.
+ *  - Chuẩn hoá số thuê bao (`ISDN_NATIONAL`): về 9 chữ số như VTT, để `isdn` của VTNET ra cùng bản mã (và cùng định danh giả) với VTT.
  */
 object ColumnTransforms {
 
@@ -56,6 +57,15 @@ object ColumnTransforms {
       .otherwise(lit(s"20${Dash}23h"))
   }
 
+  /** `84`/`+84`/`0` + 9 chữ số thành 9 chữ số cuối (định dạng `isdn` của VTT); giá trị khác (và NULL) giữ nguyên. */
+  def isdnNational(column: Column): Column = {
+    val text = stripped(column)
+    when(coalesce(text.rlike(IsdnWithPrefix), lit(false)), regexp_extract(text, "([0-9]{9})$", 1)).otherwise(column.cast(StringType))
+  }
+
+  /** Số thuê bao có mã nước (`84`, `+84`) hoặc số 0 đầu, theo sau là đúng 9 chữ số. */
+  private val IsdnWithPrefix = "^(\\+?84|0)[0-9]{9}$"
+
   /** Áp lần lượt các transform; cột tìm theo tên không phân biệt hoa thường, thiếu cột là lỗi nêu tên cột và các cột có trong dữ liệu. */
   def apply(df: DataFrame, transforms: Seq[ColumnTransform]): DataFrame =
     transforms.foldLeft(df) { (acc, transform) =>
@@ -67,6 +77,7 @@ object ColumnTransforms {
       val banded = transform.kind match {
         case TransformKind.AgeBand => ageBand(column)
         case TransformKind.HourBand => hourBand(column)
+        case TransformKind.IsdnNational => isdnNational(column)
       }
       acc.withColumn(name, banded)
     }

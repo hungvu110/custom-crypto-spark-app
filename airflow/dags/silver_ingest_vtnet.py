@@ -87,6 +87,9 @@ DATASETS = {
         "mode": "decrypt-encrypt", "input_cluster": "hkh", "decrypt_mode": "column",
         "provider_decrypt": {"columns": ["isdn", "imsi"], "cipher": "vtnet"},
         "encrypt_columns": ["isdn", "imsi"], "key_field_constant": common.JOIN_KEY_FIELD, "resources": MAPPING,
+        # VTNET writes the isdn as 84 + 9 digits, VTT as the 9 digits only: normalized after the decryption, before the encryption, so one
+        # number gives one ciphertext (and one pseudonym) in this table and in every VTT table. imsi is the same in both (15 digits, 45204...).
+        "transforms": {"isdn": "ISDN_NATIONAL"},
     },
     # Two datasets that share sensitive columns (msisdn, imsi) to test the GLOBAL key (docs/silver-ingest/KICH-BAN-TEST-KEY-GLOBAL.md): whole
     # days only, plain CSV files, DAK has no by-path key for them (the files are read as they are) and the requests choose the same zone.

@@ -8,6 +8,17 @@ Dữ liệu là CSV có dòng tiêu đề `imsi,lac,sac,eci,event_time,event_id,
 mã hoá, bằng thư viện `PassTranformer`. Job giải mã `imsi`, rồi mã hoá lại bằng key global `silver_vtt` với cột hằng `key_scope=vtt`, giống hệt cách
 làm với `imsi` của f022. Vì vậy hai bảng nối được với nhau theo `imsi`.
 
+## 0. Định dạng `isdn`, `imsi` ở hai nguồn (đã kiểm trên mẫu thật, 2026-11-27)
+
+DS chỉ nối VTT với VTNET qua `isdn` và `imsi`. Giải mã mẫu của từng bảng bằng đúng key và thuật toán của nguồn:
+
+| Cột | VTT | VTNET | Xử lý ở silver |
+| --- | --- | --- | --- |
+| `imsi` | `f022_register`: 15 chữ số, `45204…` (bản rõ ở nguồn) | `ebs_3g_4g`, `isdn_imsi_mapping`: 15 chữ số, `45204…` | Không đổi: cùng định dạng |
+| `isdn` | `f022_register`, `f_home_bts_daily_area`, `f016`: 9 chữ số, không mã nước | `isdn_imsi_mapping`: 11 chữ số, `84` + 9 chữ số | `isdn_imsi_mapping` chuẩn hoá `isdn:ISDN_NATIONAL` (bỏ `84`) sau giải mã, trước mã hoá |
+
+Bản mã và định danh giả là của chuỗi giá trị: không chuẩn hoá thì cùng một số thuê bao ra hai bản mã khác nhau và không nối được.
+
 ## 1. Vì sao dùng token
 
 HLA và HKH dùng **cùng tên realm** `VAILAKEHOUSE.VIETTEL.COM` nhưng có **hai KDC khác nhau** (KDC của HKH ở `10.208.217.245`). Một JVM chỉ đọc

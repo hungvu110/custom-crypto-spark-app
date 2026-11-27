@@ -188,8 +188,12 @@ object ProviderCipher {
  */
 final case class ProviderDecrypt(columns: Seq[String], keyField: Option[String], cipher: ProviderCipher = ProviderCipher.Cdr)
 
-/** Cách gom nhóm một cột (`COLUMN_TRANSFORMS`, dạng `cột:KIND`): giá trị gốc được thay bằng nhãn khung, kiểu cột thành chuỗi. */
-sealed abstract class TransformKind(val name: String)
+/**
+ * Cách biến đổi một cột (`COLUMN_TRANSFORMS`, dạng `cột:KIND`), chạy SAU giải mã và TRƯỚC mã hoá. Gom nhóm (`AGE_BAND`, `HOUR_BAND`): giá trị gốc
+ * thay bằng nhãn khung, kiểu cột thành chuỗi, không dùng cho cột mã hoá. Chuẩn hoá (`ISDN_NATIONAL`): đổi giá trị về định dạng chung để cùng một
+ * giá trị ở hai nguồn ra cùng một bản mã, nên DÙNG ĐƯỢC cho cột mã hoá (`onEncryptedColumn`).
+ */
+sealed abstract class TransformKind(val name: String, val onEncryptedColumn: Boolean = false)
 
 object TransformKind {
   /** Tuổi: `Under 18`, `18–24`, `25–34`, `35–44`, `45–54`, `55–64`, `65+`, ngoài ra `Unknown`. */
@@ -198,7 +202,13 @@ object TransformKind {
   /** Giờ 0..23: `0–5h`, `6–8h`, `9–11h`, `12–13h`, `14–16h`, `17–19h`, `20–23h`, ngoài ra `Unknown`. */
   case object HourBand extends TransformKind("HOUR_BAND")
 
-  val All: Seq[TransformKind] = Seq(AgeBand, HourBand)
+  /**
+   * Số thuê bao về định dạng của VTT: 9 chữ số, không mã nước, không số 0 đầu. `84` + 9 chữ số, `+84` + 9 chữ số và `0` + 9 chữ số (bỏ khoảng
+   * trắng hai đầu) thành 9 chữ số cuối; giá trị khác giữ nguyên, NULL vẫn NULL. VTNET (`isdn_imsi_mapping`) ghi `84` + 9 chữ số.
+   */
+  case object IsdnNational extends TransformKind("ISDN_NATIONAL", onEncryptedColumn = true)
+
+  val All: Seq[TransformKind] = Seq(AgeBand, HourBand, IsdnNational)
 
   def parse(raw: String): Option[TransformKind] = All.find(_.name == raw.trim.toUpperCase(Locale.ROOT))
 }
@@ -618,7 +628,7 @@ object IngestConfig {
       value
     }
 
-  /** `COLUMN_TRANSFORMS` = `cột:KIND,cột:KIND`. Gom nhóm chạy SAU giải mã và TRƯỚC mã hoá, nên không nhận cột đang mã hoá. */
+  /** `COLUMN_TRANSFORMS` = `cột:KIND,cột:KIND`. Chạy SAU giải mã và TRƯỚC mã hoá: gom nhóm không nhận cột đang mã hoá, chuẩn hoá thì nhận. */
   private def columnTransforms(raw: String => Option[String], lowerEncrypt: Set[String],
                                errors: ArrayBuffer[String]): Seq[ColumnTransform] = {
     val tokens = raw("COLUMN_TRANSFORMS").fold(Seq.empty[String])(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq)
@@ -626,11 +636,12 @@ object IngestConfig {
       token.split(":", -1).map(_.trim) match {
         case Array(column, kind) if column.nonEmpty && kind.nonEmpty =>
           if (!column.matches(ColumnName)) errors += s"COLUMN_TRANSFORMS: invalid column name '$column'"
-          if (lowerEncrypt.contains(column.toLowerCase(Locale.ROOT))) {
-            errors += s"COLUMN_TRANSFORMS: column '$column' must not be listed in CDR_ENCRYPT_COLUMNS (transforms run before the encryption)"
-          }
           TransformKind.parse(kind) match {
-            case Some(k) => Some(ColumnTransform(column, k))
+            case Some(k) =>
+              if (!k.onEncryptedColumn && lowerEncrypt.contains(column.toLowerCase(Locale.ROOT))) {
+                errors += s"COLUMN_TRANSFORMS: column '$column' must not be listed in CDR_ENCRYPT_COLUMNS for ${k.name} (a grouped value cannot be encrypted)"
+              }
+              Some(ColumnTransform(column, k))
             case None =>
               errors += s"COLUMN_TRANSFORMS: unknown transform '$kind' (must be one of ${TransformKind.All.map(_.name).mkString(" / ")})"
               None

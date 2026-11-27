@@ -105,6 +105,22 @@ class VtnetColumnPipelineSpec extends AnyFlatSpec with Matchers with BeforeAndAf
       Seq("452041000000011", "452041000000012").map(f022Ciphertext).sorted
   }
 
+  it should "chuẩn hoá isdn 84 + 9 chữ số của mapping về định dạng VTT trước khi mã hoá: cùng số ra cùng bản mã với VTT" in {
+    val dir = Files.createDirectories(workDir.resolve("mapping_isdn"))
+    val rows = Seq("84961234567" -> "452041000000031", "84321234567" -> "452041000000032")
+      .map { case (isdn, imsi) => s"${VtnetCipher.encrypt(vtnetKey, isdn)},${VtnetCipher.encrypt(vtnetKey, imsi)},2026-11-10" }
+    Files.write(dir.resolve("isdn_imsi_mapping-20261110.csv"), ("isdn,imsi,part_date" +: rows).mkString("", "\n", "\n").getBytes(UTF_8))
+    val mapping = env(dir, "mapping_ok", "INPUT_SCHEMA" -> "isdn STRING, imsi STRING, part_date STRING", "KEY_PATH" -> "isdn_imsi_mapping",
+      "PROVIDER_DECRYPT_COLUMNS" -> "isdn,imsi", "CDR_ENCRYPT_COLUMNS" -> "isdn,imsi", "COLUMN_TRANSFORMS" -> "isdn:ISDN_NATIONAL")
+
+    run(mapping) shouldBe SilverApp.ExitOk
+
+    val written = spark.table("silver.mapping_ok").orderBy("imsi").collect()
+    // f022Ciphertext = the ciphertext that a VTT table writes for the same plaintext (global key, key_scope=vtt)
+    written.map(_.getAs[String]("isdn")).toSet shouldBe Set("961234567", "321234567").map(f022Ciphertext)
+    written.map(_.getAs[String]("imsi")).toSet shouldBe Set("452041000000031", "452041000000032").map(f022Ciphertext)
+  }
+
   it should "dừng khi key by-path không phải key VTNET đã dùng (không ghi gì)" in {
     val in = csv("wrong_key", (1 to 40).map(i => row(VtnetCipher.encrypt(vtnetKey, f"452041$i%09d"), i.toLong, 1795193804394L + i)))
 

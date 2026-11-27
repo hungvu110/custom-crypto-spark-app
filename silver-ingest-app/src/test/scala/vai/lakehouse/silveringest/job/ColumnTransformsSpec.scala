@@ -64,6 +64,17 @@ class ColumnTransformsSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
     bands(TransformKind.HourBand, Seq(null, "", "x", "24", "99", "-1", "5.0", "005")) shouldBe Seq.fill(8)("Unknown")
   }
 
+  "ISDN_NATIONAL" should "đưa 84, +84 hoặc 0 cộng 9 chữ số về 9 chữ số như isdn của VTT" in {
+    bands(TransformKind.IsdnNational, Seq("84961234567", "+84961234567", "0961234567", " 84321234567 ")) shouldBe
+      Seq("961234567", "961234567", "961234567", "321234567")
+  }
+
+  it should "giữ nguyên giá trị đã đúng định dạng VTT và mọi giá trị khác, NULL vẫn là NULL" in {
+    // 9 chữ số (VTT), 84 + 8 hoặc 10 chữ số, chữ, rỗng: không đoán, giữ nguyên.
+    bands(TransformKind.IsdnNational, Seq("961234567", "8496123456", "849612345678", "abc", "", null)) shouldBe
+      Seq("961234567", "8496123456", "849612345678", "abc", "", null)
+  }
+
   "ColumnTransforms.apply" should "chỉ đổi các cột đã khai, giữ nguyên tên, thứ tự và các cột còn lại" in {
     val session = spark
     import session.implicits._
