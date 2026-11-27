@@ -12,6 +12,9 @@ import vai.lakehouse.silveringest.config.{Batch, IngestConfig, OutputFormat}
  * liệu lần này). Bảng đã có phải được partition đúng như cấu hình, không thì báo lỗi trước khi ghi. Trước khi ghi, dữ liệu được gom theo
  * partition để file có kích thước gần như nhau (`OutputFiles`) khi cần (`IngestConfig.rebalances`).
  */
+/** Kết quả của một commit Delta: dòng, file và byte đã ghi. */
+final case class CommitMetrics(rows: Long, files: Long, bytes: Long)
+
 object TableWriter {
 
   /** Kích thước partition mà AQE nhắm tới khi tách và gộp partition của `REBALANCE`, đặt riêng cho lần ghi. */
@@ -107,6 +110,16 @@ object TableWriter {
       case None => spark.conf.unset(key)
     }
   }
+
+  /** Số dòng, số file và số byte mà commit Delta MỚI NHẤT của bảng đích ghi ra (đọc từ log của Delta, không đọc dữ liệu). */
+  def lastCommit(spark: SparkSession, cfg: IngestConfig): Option[CommitMetrics] =
+    if (cfg.outputFormat != OutputFormat.Delta) None
+    else scala.util.Try {
+      val m = spark.sql(s"DESCRIBE HISTORY ${quote(cfg.outputDb)}.${quote(cfg.outputTable)} LIMIT 1").select("operationMetrics").head()
+        .getMap[String, String](0)
+      def at(k: String): Long = Option(m.get(k).orNull).flatMap(v => scala.util.Try(v.toLong).toOption).getOrElse(0L)
+      CommitMetrics(at("numOutputRows"), at("numFiles"), at("numOutputBytes"))
+    }.toOption
 
   private def quote(identifier: String): String = s"`${identifier.replace("`", "``")}`"
 }

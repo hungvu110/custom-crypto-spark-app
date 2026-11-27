@@ -75,6 +75,8 @@ DATASETS = {
     # again with the global key and the SAME constant key field as VTT, so an imsi gives the same ciphertext here and in f022-register (join).
     "ebs_3g_4g": {
         "mode": "decrypt-encrypt", "input_cluster": "hkh", "hour_glob": "batch=%H%*", "partition_by_hour": True,
+        # 2.2 to 2.5 TB a day: written hour by hour, one log line per hour (HOUR HH DONE ...) to follow the run.
+        "write_by_hour": True,
         "decrypt_mode": "column", "provider_decrypt": {"columns": ["imsi"], "cipher": "vtnet"},
         "encrypt_columns": ["imsi"], "key_field_constant": common.JOIN_KEY_FIELD, "resources": EBS,
     },

@@ -47,6 +47,14 @@ class EbsJobTest(unittest.TestCase):
         self.assertEqual(env["OUTPUT_PARTITION_BY"], "hour")
         self.assertEqual((env["INPUT_FORMAT"], env["INPUT_OPTION_header"]), ("csv", "true"))
 
+    def test_ebs_writes_its_day_hour_by_hour_and_the_day_tables_do_not(self):
+        self.assertEqual(driver_env(render(EBS))["OUTPUT_WRITE_BY_HOUR"], "true")
+        for dag in (REAL_NIMS, MAPPING, VTT):
+            self.assertNotIn("OUTPUT_WRITE_BY_HOUR", driver_env(render(dag)), dag.DAG_ID)
+        for bad in ({"mode": "passthrough", "write_by_hour": True}, {"mode": "passthrough", "hour_glob": "batch=%H%*", "write_by_hour": "yes"}):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_dataset("x", bad)
+
     def test_only_the_vtnet_dataset_loads_the_vtnet_jar(self):
         self.assertIn(common.VTNET_JAR, render(EBS)["spec"]["sparkConf"]["spark.jars"].split(","))
         for dag in (VTT, NIMS):

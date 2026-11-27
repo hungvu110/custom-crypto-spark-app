@@ -44,12 +44,18 @@ object PassthroughJob {
     Log.section("3. READ SOURCE")
     val files = SourceFiles.list(spark, cfg.input.path, cfg.input.fileGlob)
     Log.kv("files", files.size)
-    val df = PlainSource.read(spark, cfg, files)
-    Log.kv("columns", df.columns.mkString(", "))
+    if (cfg.writeByHour) {
+      Log.section("4. WRITE TARGET HOUR BY HOUR")
+      Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
+      HourlyWrite.run(spark, cfg, files)(identity)
+    } else {
+      val df = PlainSource.read(spark, cfg, files)
+      Log.kv("columns", df.columns.mkString(", "))
 
-    Log.section("4. WRITE TARGET")
-    Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
-    TableWriter.write(spark, cfg, df)
+      Log.section("4. WRITE TARGET")
+      Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}]")
+      TableWriter.write(spark, cfg, df)
+    }
     Log.ok(s"written ${cfg.target}")
     IngestResult.Written(files.size)
   }
@@ -143,8 +149,8 @@ object DecryptEncryptJob {
     Log.section("5. READ, DECRYPT PROVIDER COLUMNS, TRANSFORM, ENCRYPT COLUMNS, WRITE")
     val files = SourceFiles.list(spark, cfg.input.path, cfg.input.fileGlob)
     Log.kv("files", files.size)
-    val plain = PlainSource.read(spark, cfg, files)
-    write(spark, cfg, finish(decryptProviderColumns(plain, cfg.target, provider, prefix)))
+    val prepare = (df: DataFrame) => finish(decryptProviderColumns(df, cfg.target, provider, prefix))
+    if (cfg.writeByHour) writeByHour(spark, cfg, files)(prepare) else write(spark, cfg, prepare(PlainSource.read(spark, cfg, files)))
     IngestResult.Written(files.size, decrypted = true)
   }
 
@@ -223,7 +229,7 @@ object DecryptEncryptJob {
     Log.section("5. READ, TRANSFORM, ENCRYPT COLUMNS, WRITE")
     val files = SourceFiles.list(spark, cfg.input.path, cfg.input.fileGlob)
     Log.kv("files", files.size)
-    write(spark, cfg, finish(PlainSource.read(spark, cfg, files)))
+    if (cfg.writeByHour) writeByHour(spark, cfg, files)(finish) else write(spark, cfg, finish(PlainSource.read(spark, cfg, files)))
     IngestResult.Written(files.size)
   }
 
@@ -270,6 +276,12 @@ object DecryptEncryptJob {
       }
       df.withColumn(name, lit(value))
     case _ => df
+  }
+
+  private def writeByHour(spark: SparkSession, cfg: IngestConfig, files: Seq[SourceFile])(prepare: DataFrame => DataFrame): Unit = {
+    Log.kv("target", s"${cfg.target} [${cfg.outputFormat.name}, ${cfg.outputMode}, hour by hour]")
+    HourlyWrite.run(spark, cfg, files)(prepare)
+    Log.ok(s"written ${cfg.target}")
   }
 
   private def write(spark: SparkSession, cfg: IngestConfig, df: DataFrame): Unit = {

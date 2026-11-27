@@ -235,7 +235,9 @@ final case class IngestConfig(
     batch: Option[Batch] = None,
     hours: Option[Hours] = None,
     outputFiles: OutputFiles = OutputFiles.Default,
-    dedup: Dedup = Dedup.Off) {
+    dedup: Dedup = Dedup.Off,
+    /** `OUTPUT_WRITE_BY_HOUR`: ghi lần lượt từng giờ (một commit mỗi giờ, log sau mỗi giờ), xem [[vai.lakehouse.silveringest.job.HourlyWrite]]. */
+    writeByHour: Boolean = false) {
 
   def target: String = s"$outputDb.$outputTable"
 
@@ -280,6 +282,7 @@ final case class IngestConfig(
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "OUTPUT_FILES"        -> describeOutputFiles,
     "DEDUP"               -> dedup.describe,
+    "OUTPUT_WRITE_BY_HOUR" -> (if (writeByHour) "true (one commit and one log line per hour)" else "false (the whole run in one commit)"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
     "DECRYPT_MODE"             -> v.decryptMode.name,
@@ -474,9 +477,20 @@ object IngestConfig {
       errors += s"BATCH_COLUMN: '${b.column}' must not be CDR_KEY_FIELD"
     }
 
+    // Ghi từng giờ: giờ lấy từ đường dẫn (mỗi nhóm file là một giờ), bảng partition theo (lô, giờ), Delta (replaceWhere theo giờ).
+    val writeByHour = bool("OUTPUT_WRITE_BY_HOUR", default = false)
+    if (writeByHour) {
+      if (!hours.exists(h => h.sourceColumn.isEmpty && partitionBy.exists(_.equalsIgnoreCase(h.column)))) {
+        errors += "OUTPUT_WRITE_BY_HOUR: needs the hour from the path (HOUR_PATH_REGEX) and the hour column in OUTPUT_PARTITION_BY"
+      }
+      if (batch.isEmpty) errors += "OUTPUT_WRITE_BY_HOUR: needs BATCH_VALUE (the day that every hour belongs to)"
+      if (outputFormat != OutputFormat.Delta) errors += "OUTPUT_WRITE_BY_HOUR: only with OUTPUT_FORMAT=delta"
+      if (decryptEncrypt.exists(_.decryptMode == DecryptMode.File)) errors += "OUTPUT_WRITE_BY_HOUR: not with DECRYPT_MODE=file"
+    }
+
     if (errors.nonEmpty) Left(errors.toList)
     else Right(IngestConfig(mode, raw("APP_NAME").getOrElse(s"SilverIngest-${mode.name}"), input, outDb, outTable,
-      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles, dedup))
+      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles, dedup, writeByHour))
   }
 
   private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],

@@ -666,6 +666,10 @@ def input_token_secret(source):
 #   periodic           optional  false: the DAG has NO schedule even with an approved request (no daily run); it only runs by hand (conf
 #                                {"date": ...}, a bulk load {"fromDate": ..., "toDate": ...} or silver_ingest_backfill.py). For a table that is not
 #                                loaded every day (f016, monthly).
+# This setting says how a big day is WRITTEN:
+#   write_by_hour      optional  true: the job writes the hours of a day one by one (one Delta commit per hour) and logs one line after each
+#                                hour (rows, files, size, time), to follow a very big day while it runs (VTNET EBS). Needs hour_glob and
+#                                partition_by_hour. While it runs the day is partly loaded; a failed hour says which hours to rerun.
 # This setting says how big the written FILES are:
 #   output_file_shuffle_mb  optional  MB of SHUFFLE data per written file (job env OUTPUT_FILE_SHUFFLE_MB, default DEFAULT_FILE_SHUFFLE_MB). Before
 #                                writing, the job gathers the rows of each partition (REBALANCE) and AQE cuts them into pieces of about this size,
@@ -674,7 +678,7 @@ def input_token_secret(source):
 DATASET_KEYS = (
     "mode", "hour_glob", "hour_column", "partition_by_hour", "key_path", "resources",
     "decrypt_mode", "provider_decrypt", "encrypt_columns", "key_field_constant", "transforms",
-    "periodic", "output_file_shuffle_mb", "input_cluster",
+    "periodic", "output_file_shuffle_mb", "input_cluster", "write_by_hour",
 )
 PROVIDER_CIPHERS = ("cdr", "vtnet")
 # DUPLICATE CHECK (job env DEDUP): "check" measures the duplicate rows and files of every run in the log (DEDUP_CHECK_RESULT), nothing is removed.
@@ -841,6 +845,11 @@ def check_dataset(dataset, settings):
     check_decrypt_settings(dataset, settings)
     if "periodic" in settings and not isinstance(settings["periodic"], bool):
         raise ValueError(f"{dataset}: periodic must be true or false")
+    if "write_by_hour" in settings:
+        if not isinstance(settings["write_by_hour"], bool):
+            raise ValueError(f"{dataset}: write_by_hour must be true or false")
+        if settings["write_by_hour"] and not (settings.get("hour_glob") and settings.get("partition_by_hour")):
+            raise ValueError(f"{dataset}: write_by_hour needs hour_glob and partition_by_hour (each hour is a group of files and a partition)")
     if "input_cluster" in settings and settings["input_cluster"] not in INPUT_CLUSTERS:
         raise ValueError(f"{dataset}: input_cluster must be one of {', '.join(INPUT_CLUSTERS)}")
 
@@ -962,6 +971,7 @@ def dataset_fields(settings):
         "resources": resources_of(settings),
         "output_file_shuffle_mb": settings.get("output_file_shuffle_mb", DEFAULT_FILE_SHUFFLE_MB),
         **({"input_cluster": settings["input_cluster"]} if "input_cluster" in settings else {}),
+        **({"write_by_hour": True} if settings.get("write_by_hour") else {}),
     }
 
 
@@ -1019,6 +1029,9 @@ def build_spec(source):
         ]
         if source.get("partition_by_hour"):
             job_env.append({"name": "OUTPUT_PARTITION_BY", "value": HOUR_COLUMN})
+        if source.get("write_by_hour"):
+            # One Delta commit and one log line per hour (see write_by_hour in DATASET_KEYS).
+            job_env.append({"name": "OUTPUT_WRITE_BY_HOUR", "value": "true"})
     elif source.get("hour_column"):
         # The hour is a column of the data (the landing has only the day folder): the job derives `hour` from it. No BATCH_HOURS: the files of a
         # day hold every hour, so a run always replaces the whole day (dt), whatever the hours of its rows.

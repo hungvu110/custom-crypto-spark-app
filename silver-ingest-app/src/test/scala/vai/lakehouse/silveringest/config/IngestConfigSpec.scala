@@ -443,6 +443,17 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
       .rebalances shouldBe true
   }
 
+  "OUTPUT_WRITE_BY_HOUR" should "cần giờ lấy từ đường dẫn, cột giờ là partition, có lô và bảng Delta" in {
+    val base = common ++ Map("BATCH_COLUMN" -> "dt", "BATCH_VALUE" -> "20261110", "OUTPUT_PARTITION_BY" -> "hour", "HOUR_COLUMN" -> "hour",
+      "HOUR_PATH_REGEX" -> "/batch=(\\d{2})", "OUTPUT_WRITE_BY_HOUR" -> "true")
+
+    IngestConfig.fromEnv(Mode.Passthrough, base).toOption.get.writeByHour shouldBe true
+    IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.writeByHour shouldBe false
+    errors(Mode.Passthrough, base - "HOUR_PATH_REGEX" + ("HOUR_FROM_COLUMN" -> "hour_id")) should include("needs the hour from the path")
+    errors(Mode.Passthrough, base - "OUTPUT_PARTITION_BY") should include("hour column in OUTPUT_PARTITION_BY")
+    errors(Mode.Passthrough, base + ("OUTPUT_FORMAT" -> "hive")) should include("only with OUTPUT_FORMAT=delta")
+  }
+
   "INPUT_OPTION_pathGlobFilter" should "là mẫu tên file job dùng khi liệt kê file" in {
     IngestConfig.fromEnv(Mode.Passthrough, common + ("INPUT_OPTION_pathGlobFilter" -> "*.csv")).toOption.get.input.fileGlob shouldBe Some("*.csv")
     IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.input.fileGlob shouldBe None

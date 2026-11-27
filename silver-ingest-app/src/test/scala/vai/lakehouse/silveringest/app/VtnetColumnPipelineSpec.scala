@@ -121,6 +121,31 @@ class VtnetColumnPipelineSpec extends AnyFlatSpec with Matchers with BeforeAndAf
     written.map(_.getAs[String]("imsi")).toSet shouldBe Set("452041000000031", "452041000000032").map(f022Ciphertext)
   }
 
+  "OUTPUT_WRITE_BY_HOUR=true" should "ghi từng giờ (một commit mỗi giờ) và chạy lại cả ngày thì thay đúng cả ngày" in {
+    def day(name: String, batches: Seq[(String, String)]): Path = {
+      val d = Files.createDirectories(workDir.resolve(name).resolve("dt=20261110"))
+      batches.foreach { case (batch, imsi) =>
+        val dir = Files.createDirectories(d.resolve(s"batch=$batch"))
+        Files.write(dir.resolve(s"ebs_3g_4g-$batch.csv"), (header +: Seq(row(VtnetCipher.encrypt(vtnetKey, imsi), 1L, 1L))).mkString("", "\n", "\n").getBytes(UTF_8))
+        Files.write(dir.resolve("manifest.json"), "{}".getBytes(UTF_8))
+      }
+      d
+    }
+    def byHour(input: Path) = env(input, "ebs_hourly", "INPUT_OPTION_recursiveFileLookup" -> "true", "INPUT_OPTION_pathGlobFilter" -> "*.csv",
+      "HOUR_PATH_REGEX" -> "/batch=(\\d{2})[^/]*(?:/|$)", "HOUR_COLUMN" -> "hour", "OUTPUT_PARTITION_BY" -> "hour", "OUTPUT_WRITE_BY_HOUR" -> "true")
+    def hours: Map[String, Long] =
+      spark.table("silver.ebs_hourly").groupBy("hour").count().collect().map(r => r.getString(0) -> r.getLong(1)).toMap
+
+    run(byHour(day("hourly_1", Seq("1000" -> "452041000000041", "1020" -> "452041000000042", "1100" -> "452041000000043")))) shouldBe SilverApp.ExitOk
+    hours shouldBe Map("10" -> 2L, "11" -> 1L)
+    spark.sql("DESCRIBE HISTORY silver.ebs_hourly").count() shouldBe 2L // one commit per hour
+
+    // The same day again with only hour 10: the first hour replaces the whole day, so hour 11 is gone (like a one-commit overwrite).
+    run(byHour(day("hourly_2", Seq("1000" -> "452041000000044")))) shouldBe SilverApp.ExitOk
+    hours shouldBe Map("10" -> 1L)
+    spark.table("silver.ebs_hourly").select("imsi").head().getString(0) shouldBe f022Ciphertext("452041000000044")
+  }
+
   it should "dừng khi key by-path không phải key VTNET đã dùng (không ghi gì)" in {
     val in = csv("wrong_key", (1 to 40).map(i => row(VtnetCipher.encrypt(vtnetKey, f"452041$i%09d"), i.toLong, 1795193804394L + i)))
 
