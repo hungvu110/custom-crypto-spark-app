@@ -515,5 +515,27 @@ class IngestConfigSpec extends AnyFlatSpec with Matchers {
       errors(Mode.Passthrough, common + ("DEDUP_SAMPLE" -> v)) should include(s"DEDUP_SAMPLE='$v': must be a whole number from 1 (exact) to 1024")
     }
   }
+
+  "DEDUP_PROFILE_COLUMNS" should "mặc định rỗng, nhận danh sách cột thường và hiện trong describe" in {
+    IngestConfig.fromEnv(Mode.Passthrough, common).toOption.get.dedupProfile shouldBe Nil
+    val cfg = IngestConfig.fromEnv(Mode.DecryptEncrypt, vttColumn ++ Map("DEDUP" -> "check", "DEDUP_PROFILE_COLUMNS" -> "event_id, event_result"))
+      .toOption.get
+
+    cfg.dedupProfile shouldBe Seq("event_id", "event_result")
+    cfg.describe.toMap.apply("DEDUP") should endWith(", profile by event_id, event_result")
+  }
+
+  it should "từ chối cột nhạy cảm (giá trị sẽ ra log): cột mã hoá, cột đối tác mã hoá, cột keyField" in {
+    Seq("isdn", "CUSTOMER_ID", "sta_date", "key_scope").foreach { c =>
+      errors(Mode.DecryptEncrypt, vttColumn + ("DEDUP_PROFILE_COLUMNS" -> s"event_id,$c")) should
+        include(s"DEDUP_PROFILE_COLUMNS: '$c' is a sensitive column")
+    }
+    errors(Mode.DecryptEncrypt, vtnet + ("DEDUP_PROFILE_COLUMNS" -> "imei")) should include("'imei' is a sensitive column")
+  }
+
+  it should "từ chối tên cột sai và quá 4 cột" in {
+    errors(Mode.Passthrough, common + ("DEDUP_PROFILE_COLUMNS" -> "bad-col")) should include("DEDUP_PROFILE_COLUMNS: invalid column name 'bad-col'")
+    errors(Mode.Passthrough, common + ("DEDUP_PROFILE_COLUMNS" -> "a,b,c,d,e")) should include("DEDUP_PROFILE_COLUMNS: at most 4 columns")
+  }
 }
 

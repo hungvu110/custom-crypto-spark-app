@@ -239,7 +239,9 @@ final case class IngestConfig(
     /** `OUTPUT_WRITE_BY_HOUR`: ghi lần lượt từng giờ (một commit mỗi giờ, log sau mỗi giờ), xem [[vai.lakehouse.silveringest.job.HourlyWrite]]. */
     writeByHour: Boolean = false,
     /** `DEDUP_SAMPLE`: N của mẫu dòng của `DEDUP=check` (1 = chính xác); không đặt = tự chọn theo dung lượng input. */
-    dedupSample: Option[Int] = None) {
+    dedupSample: Option[Int] = None,
+    /** `DEDUP_PROFILE_COLUMNS`: cột để phân tích nhóm trùng của `DEDUP=check` (loại sự kiện...), không bao giờ là cột nhạy cảm. */
+    dedupProfile: Seq[String] = Nil) {
 
   def target: String = s"$outputDb.$outputTable"
 
@@ -283,7 +285,8 @@ final case class IngestConfig(
     },
     "OUTPUT_PARTITION_BY" -> (if (partitionBy.isEmpty) "(none)" else partitionBy.mkString(", ")),
     "OUTPUT_FILES"        -> describeOutputFiles,
-    "DEDUP"               -> (dedup.describe + dedupSample.fold("")(n => s", row sample 1 in $n")),
+    "DEDUP"               -> (dedup.describe + dedupSample.fold("")(n => s", row sample 1 in $n") +
+      (if (dedupProfile.isEmpty) "" else s", profile by ${dedupProfile.mkString(", ")}")),
     "OUTPUT_WRITE_BY_HOUR" -> (if (writeByHour) "true (one commit and one log line per hour)" else "false (the whole run in one commit)"),
     "WAREHOUSE_PATH"      -> warehousePath.getOrElse("(Spark/metastore default)"),
     "ENABLE_HIVE_SUPPORT" -> enableHiveSupport.toString) ++ decryptEncrypt.toSeq.flatMap { v => Seq(
@@ -481,6 +484,18 @@ object IngestConfig {
         None
       case Mode.DecryptEncrypt => Some(decryptEncryptSettings(raw, input, partitionBy, columns, errors))
     }
+    // Profile columns are printed in the log (top values): never an encrypted column, a provider-encrypted column or a key field.
+    val dedupProfile = raw("DEDUP_PROFILE_COLUMNS").map(v => columns("DEDUP_PROFILE_COLUMNS", v)).getOrElse(Nil)
+    if (dedupProfile.size > vai.lakehouse.silveringest.job.DuplicateCheck.MaxProfileColumns) {
+      errors += s"DEDUP_PROFILE_COLUMNS: at most ${vai.lakehouse.silveringest.job.DuplicateCheck.MaxProfileColumns} columns"
+    }
+    val sensitive = decryptEncrypt.toSeq.flatMap { v =>
+      v.encryptColumns ++ v.keyField ++ v.providerDecrypt.toSeq.flatMap(pd => pd.columns ++ pd.keyField)
+    }.map(_.toLowerCase(Locale.ROOT)).toSet
+    dedupProfile.filter(c => sensitive.contains(c.toLowerCase(Locale.ROOT))).foreach { c =>
+      errors += s"DEDUP_PROFILE_COLUMNS: '$c' is a sensitive column (encrypted or key field): its values would be written to the log"
+    }
+
     for (b <- batch; v <- decryptEncrypt; k <- v.keyField if b.column.equalsIgnoreCase(k)) {
       errors += s"BATCH_COLUMN: '${b.column}' must not be CDR_KEY_FIELD"
     }
@@ -498,7 +513,7 @@ object IngestConfig {
 
     if (errors.nonEmpty) Left(errors.toList)
     else Right(IngestConfig(mode, raw("APP_NAME").getOrElse(s"SilverIngest-${mode.name}"), input, outDb, outTable,
-      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles, dedup, writeByHour, dedupSample))
+      outputFormat, outputMode, partitionBy, warehousePath, bool("ENABLE_HIVE_SUPPORT", default = true), decryptEncrypt, batch, hours, outputFiles, dedup, writeByHour, dedupSample, dedupProfile))
   }
 
   private def decryptEncryptSettings(raw: String => Option[String], input: InputSpec, partitionBy: Seq[String],

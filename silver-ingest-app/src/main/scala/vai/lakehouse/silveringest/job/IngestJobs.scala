@@ -32,7 +32,7 @@ private[job] object PlainSource {
       case None => SourceReader.read(spark, cfg.input, Seq(cfg.input.path))
       case Some(h) => HourGroups.read(h, files)(group => SourceReader.read(spark, cfg.input, group.map(_.path)))
     }
-    if (cfg.dedup == Dedup.Check) DuplicateCheck.run(spark, files, df, cfg.dedupSample)
+    if (cfg.dedup == Dedup.Check) DuplicateCheck.run(spark, files, df, cfg.dedupSample, cfg.dedupProfile)
     df
   }
 }

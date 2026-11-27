@@ -595,6 +595,16 @@ Mỗi run có đúng một dòng tổng kết, để gom số liệu theo ngày 
 DEDUP_CHECK_RESULT files=219 duplicate_files=0 rows=... extra_rows=... duplicate_groups=... within_file_extra_rows=... sample=1
 ```
 
+**Phân tích nhóm trùng** (`DEDUP_PROFILE_COLUMNS`, setting `dedup_profile_columns` của dataset; hiện chỉ EBS với `event_id, event_result`), cùng
+lượt đo, không đọc lại nguồn: số bản mỗi nhóm, các bản nằm trong cùng file / cùng thư mục / khác thư mục, các cặp thư mục chứa nhiều bản trùng
+nhất, các giá trị hay trùng nhất kèm tỷ lệ trùng của từng giá trị. Đọc kết quả: phần lớn ở **hai lô liền nhau** (`batch=1000 + batch=1020`) là
+nguồn gửi chồng ở ranh giới lô (nên loại trùng, báo VTNET); phần lớn **trong cùng lô** hoặc dồn vào một vài loại sự kiện (lỗi rồi thử lại) thì
+nhiều khả năng là sự kiện thật (hỏi DS/VTNET trước khi loại). Một dòng tổng kết:
+
+```
+DEDUP_PROFILE_RESULT copies_2=... copies_3=... copies_4plus=... same_file=... same_folder=... other_folders=... sample=32
+```
+
 `extra_rows` là số dòng mà một lần loại trùng sẽ bỏ. Phần nào lỗi thì ghi `error` (xem cảnh báo `dedup check of ... failed` ngay trên); lần nạp không bị ảnh hưởng.
 
 **Chọn cách loại trùng từ số liệu** (cho từng bảng):

@@ -23,7 +23,7 @@ object HourlyWrite {
     val day = cfg.batch.map(_.value).getOrElse("")
     val groups = HourGroups.group(hours, files)
     // DEDUP=check measures the whole day once (same numbers as without OUTPUT_WRITE_BY_HOUR).
-    if (cfg.dedup == Dedup.Check) DuplicateCheck.run(spark, files, PlainSource.read(spark, cfg.copy(dedup = Dedup.Off), files), cfg.dedupSample)
+    if (cfg.dedup == Dedup.Check) DuplicateCheck.run(spark, files, PlainSource.read(spark, cfg.copy(dedup = Dedup.Off), files), cfg.dedupSample, cfg.dedupProfile)
     Log.info(s"writing ${groups.size} hour(s) of $day one by one: ${groups.map(_._1).mkString(", ")}")
 
     val start = System.nanoTime()
