@@ -158,6 +158,16 @@ class DayDatasetsTest(unittest.TestCase):
             self.assertFalse({"OUTPUT_PARTITION_BY", "HOUR_PATH_REGEX", "BATCH_HOURS"} & set(env), dag.DAG_ID)
             self.assertEqual(env["INPUT_TOKEN_FILE"], TOKEN_FILE, dag.DAG_ID)
 
+    def test_nims_accepts_the_empty_encrypt_columns_that_dak_writes_but_no_column(self):
+        # DAK writes "encryptColumns": [] on a request without encrypted columns: it must not drop the settings of a passthrough dataset.
+        common.check_schedule_config(REAL_NIMS.SOURCE, {**NIMS_CONF, "outputMode": "overwrite-partitions", "encryptColumns": []})
+        common.check_schedule_config(REAL_NIMS.SOURCE, {**NIMS_CONF, "encryptColumns": [], "keyField": ""})
+        for bad in ({**NIMS_CONF, "encryptColumns": ["imsi"]}, {**NIMS_CONF, "keyField": "key_scope"}, {**NIMS_CONF, "globalKey": True}):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                common.check_schedule_config(REAL_NIMS.SOURCE, bad)
+        dags = _dags_of(load("silver_ingest_vtnet", variables({NIMS_ID: {**NIMS_CONF, "encryptColumns": []}})))
+        self.assertEqual(dags[NIMS_ID].kwargs["schedule"], NIMS_CONF["cron"])  # the DAG keeps its schedule
+
     def test_nims_is_written_as_it_is(self):
         spec = render(REAL_NIMS)["spec"]
         self.assertEqual(spec["mainClass"], "vai.lakehouse.silveringest.app.PassthroughSilverApp")

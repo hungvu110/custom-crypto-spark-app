@@ -337,6 +337,9 @@ def global_zone(config):
     return config.get("globalZone") if config.get("globalKey") is True else None
 
 
+EMPTY_REQUEST_KEYS = ("encryptColumns", "keyField")
+
+
 def check_schedule_config(source, config):
     """Check the settings that DAK wrote into the Airflow Variable of a recurring dataset; raise ValueError when they are invalid.
 
@@ -347,7 +350,9 @@ def check_schedule_config(source, config):
 
     if not isinstance(config, dict):
         raise ValueError("schedule config must be an object")
-    unknown = set(config) - set(source["schedule_keys"])
+    # DAK writes "encryptColumns": [] (and may write an empty keyField) on a request that encrypts nothing (e.g. nims, a passthrough): an
+    # EMPTY value says "no column" and is accepted on any dataset; a non-empty one still needs a dataset that encrypts columns.
+    unknown = {k for k, v in config.items() if not (k in EMPTY_REQUEST_KEYS and v in ([], "", None))} - set(source["schedule_keys"])
     if unknown:
         raise ValueError(
             f"schedule config has keys that are not accepted (only {', '.join(source['schedule_keys'])} are accepted)"
